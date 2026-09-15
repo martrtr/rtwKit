@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, test } from "vitest";
 
 import { DemoUiTransport } from "../src/bridge/demo";
+import { sameOriginWebSocketUrl } from "../src/bridge";
 import { parseHostMessage } from "../src/bridge/schema";
 import {
   PORTABLE_UI_PROTOCOL_MAJOR,
@@ -11,6 +12,16 @@ import {
 } from "../src/bridge/types";
 
 describe("web UI bridge", () => {
+
+  test("derives the production same-origin WebSocket endpoint", () => {
+    expect(sameOriginWebSocketUrl("http:", "127.0.0.1:3000")).toBe(
+      "ws://127.0.0.1:3000/__rintawa/ws",
+    );
+    expect(sameOriginWebSocketUrl("https:", "rintawa.example")).toBe(
+      "wss://rintawa.example/__rintawa/ws",
+    );
+    expect(sameOriginWebSocketUrl("file:", "")).toBeNull();
+  });
   test("accepts exact decimal string revisions", () => {
     const message = parseHostMessage({
       type: "state",
