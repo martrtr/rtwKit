@@ -2,78 +2,43 @@
 
 ## Developer sources
 
-Normal users install immutable `.rtw` release artifacts. Developers should not
-need to manually package a `.rtw` after every edit.
+Published packages are immutable `.rtw` artifacts. Local development uses
+`rintawa-dev`, which may run an explicit build command, create an ephemeral RTW
+snapshot, and watch/reload it through the same validation and runtime path used
+by production.
 
-The Extension Manager owns developer-source UX: selecting a local package/project,
-running its explicit build command when needed, watching it for changes, and
-restarting the affected extension instance.
+Build commands are allowed only for an explicitly selected trusted development
+source or in CI. Normal installation never executes package build scripts.
 
-For the first implementation, keep Core on one canonical artifact path. A dev run
-may materialize an ephemeral RTW snapshot internally, but the developer should not
-have to create, version, publish, or manage that file. Production still uses the
-same RTW validation and activation semantics.
+Mutable developer sources are development-only state. They must not silently
+become reproducible world dependencies; a future freeze operation may persist a
+specific built artifact.
 
-Do not make arbitrary package build scripts part of normal installation. Build
-commands are allowed only for an explicitly selected trusted development source
-or in CI. Published packages arrive prebuilt.
+## Extension Manager
 
-Mutable developer sources must be visibly marked as development content. They
-must not silently become authoritative dependencies of reproducible State Engine
-worlds. A future "freeze snapshot" operation can turn current dev output into an
-immutable stored artifact.
+The Extension Manager is an ordinary `rintawa.extension@1` package. It owns
+repository lookup, versions, dependencies, download, confirmation, install,
+update, and uninstall UX. It does not own local source build/watch mechanics.
 
-## Extension Manager bootstrap
+A Desktop distribution may prebundle its RTW artifact, but activation still uses
+the normal artifact and extension runtime path.
 
-The Extension Manager itself is an ordinary `rintawa.extension@1` package. A
-Desktop distribution may prebundle its RTW artifact, but it must pass through the
-same import/permission/runtime mechanisms as third-party extensions.
 ## One-click install
 
-One-click installation must not force network/package semantics into Core.
-
-A browser or OS may open a generic external intent such as:
-
-```text
-rintawa://rtwkit/install?...
-```
-
-Core only receives and routes the external URI/intent to an installed handler.
-The rtwKit Extension Manager owns the meaning of `install`: source lookup,
-network access, version/dependency resolution, confirmation UI, download, digest
-verification, and the final activation request.
-
-Deep links must open an install proposal, never silently download and execute code.
-The user sees package, source, version, permissions, and dependencies before the
-manager performs installation.
-
-If the manager is absent, Core reports that no handler is available. A future
-verified HTTPS app link may provide web fallback, but custom `rintawa://` links
-are sufficient for the first implementation.
+External intents such as `rintawa://rtwkit/install?...` are routed to an
+installed handler. The Extension Manager interprets the request and must show
+package, source, version, permissions, and dependencies before installation.
+Core does not implement repository or package-manager semantics.
 
 ## Implementation order
 
-Do not start with the full graphical Extension Manager. Its UI itself depends on a
-working UI layer.
+1. Run the React Web UI as a real Web bundle component through `rintawa-dev`.
+2. Add Extension Manager Portable UI surfaces once the Web layer is usable.
+3. Add remote repository install/update, dependency solving, packs, and install
+   intents incrementally.
 
-Recommended order:
-
-1. Finish the small Core bridge from stored RTW `rintawa.extension@1` artifacts to
-   Extension Engine activation.
-2. Implement the Extension Manager backend/headless capabilities needed for a
-   local development source and restart/reload flow.
-3. Implement React Web UI as the first real package, developed through that path.
-4. Add the Extension Manager's Portable UI surfaces once Web UI can render them.
-5. Add remote rtwKit source installation/update UX, dependency solving, packs,
-   deep-link install handling, and richer repository management incrementally.
 ## Dev-mode invariant
 
-"Run from a directory" means no manual or persistent RTW packaging step for the
-developer. It does not initially mean that Core needs a second directory-native
-artifact format.
-
-Prefer an ephemeral snapshot produced by the Extension Manager because this keeps
-validation, identity, and activation behavior identical to production. Introduce
-a directory-backed Core `ArtifactView` only if profiling proves snapshot creation
-is a real iteration bottleneck or a required hot-reload capability cannot be
-implemented cleanly above Core.
+"Run from a directory" means no manual persistent RTW packaging step. The dev
+tool may create ephemeral RTW snapshots internally; Core keeps one canonical
+artifact format and activation path.
