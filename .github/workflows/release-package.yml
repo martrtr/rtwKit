@@ -1,0 +1,75 @@
+name: Release package
+
+on:
+  push:
+    tags:
+      - "pkg-*-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Install Rust 1.98
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Resolve package slug
+        id: package
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" =~ ^pkg-(.+)-v(.+)$ ]]; then
+            echo "slug=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "invalid package tag: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+      - name: Validate repository metadata
+        run: cargo run --locked -p rtwkit-registry-tool -- validate-repository .
+      - name: Build RTW release artifact
+        id: build
+        shell: bash
+        run: |
+          rm -rf dist
+          cargo run --locked -p rtwkit-registry-tool -- build-package \
+            . "${{ steps.package.outputs.slug }}" dist \
+            "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA"
+          artifact="$(find dist -maxdepth 1 -type f -name '*.rtw' -print -quit)"
+          metadata="$(find dist -maxdepth 1 -type f -name '*.registry.json' -print -quit)"
+          test -n "$artifact" && test -n "$metadata"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "metadata=$metadata" >> "$GITHUB_OUTPUT"
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release already exists: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          title="$(jq -r '.package.name + " " + .package.version' "${{ steps.build.outputs.metadata }}")"
+          gh release create "$GITHUB_REF_NAME" \
+            "${{ steps.build.outputs.artifact }}" \
+            "${{ steps.build.outputs.metadata }}" \
+            --verify-tag \
+            --latest=false \
+            --title "$title" \
+            --notes "Immutable RTW package release generated from $GITHUB_SHA."
+
+  publish-registry:
+    needs: release
+    uses: ./.github/workflows/publish-registry.yml
+    permissions:
+      contents: read
+      actions: read
+      pages: write
+      id-token: write

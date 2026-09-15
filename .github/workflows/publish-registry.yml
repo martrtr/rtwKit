@@ -1,0 +1,63 @@
+name: Publish registry
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: rtwkit-pages-registry
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust 1.98
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
+      - name: Download published package metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p _release-metadata _site
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | select(.draft == false) | .assets[] | select(.name | endswith(".registry.json")) | [.name, (.id | tostring)] | @tsv' \
+            > _release-assets.tsv
+          while IFS=$'\t' read -r name asset_id; do
+            test -n "$asset_id" || continue
+            gh api \
+              -H "Accept: application/octet-stream" \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+              > "_release-metadata/${name}"
+          done < _release-assets.tsv
+      - name: Build deterministic registry index
+        run: |
+          cargo run --locked -p rtwkit-registry-tool -- \
+            build-index _release-metadata _site/index.json
+          touch _site/.nojekyll
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages registry
+        id: deployment
+        uses: actions/deploy-pages@v4
