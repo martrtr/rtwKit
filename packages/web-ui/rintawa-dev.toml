@@ -1,0 +1,4 @@
+schema = 1
+artifact-root = "build/rtw"
+build = ["npm", "run", "build:rtw"]
+watch-ignore = ["node_modules/", "dist/", "build/"]

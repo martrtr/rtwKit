@@ -1,0 +1,136 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: var(--rintawa-color-text, #f4f4f5);
+  background: var(--rintawa-color-background, #111113);
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: inherit;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.rintawa-app {
+  min-height: 100vh;
+}
+
+.rintawa-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--rintawa-color-border, #2c2c31);
+}
+
+.rintawa-status {
+  color: var(--rintawa-color-muted, #a1a1aa);
+  font-size: 0.8rem;
+}
+
+.rintawa-status[data-status="connected"] {
+  color: var(--rintawa-color-success, #86efac);
+}
+
+.rintawa-status[data-status="error"] {
+  color: var(--rintawa-color-error, #fca5a5);
+}
+
+.rintawa-surfaces {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.rintawa-surface {
+  padding: 1rem;
+  border: 1px solid var(--rintawa-color-border, #2c2c31);
+  border-radius: var(--rintawa-radius-control, 0.75rem);
+  background: var(--rintawa-color-surface, #18181b);
+}
+
+.rintawa-row,
+.rintawa-column,
+.rintawa-list {
+  display: flex;
+  gap: var(--rintawa-spacing-normal, 0.75rem);
+}
+
+.rintawa-row {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.rintawa-column,
+.rintawa-list {
+  flex-direction: column;
+}
+
+.rintawa-list > * {
+  padding-block: 0.25rem;
+}
+
+.rintawa-markdown > :first-child {
+  margin-top: 0;
+}
+
+.rintawa-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.rintawa-button,
+.rintawa-input {
+  border: 1px solid var(--rintawa-color-border, #3f3f46);
+  border-radius: var(--rintawa-radius-control, 0.5rem);
+  color: inherit;
+  background: var(--rintawa-color-control, #27272a);
+}
+
+.rintawa-button {
+  padding: 0.55rem 0.8rem;
+  cursor: pointer;
+}
+
+.rintawa-button:disabled,
+.rintawa-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.rintawa-input {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+}
+
+.rintawa-textarea {
+  min-height: 7rem;
+  resize: vertical;
+}
+
+.rintawa-error,
+.rintawa-node-error {
+  color: var(--rintawa-color-error, #fca5a5);
+}
+
+.rintawa-error,
+.rintawa-empty {
+  margin: 1rem;
+  padding: 0.75rem;
+}
+
+.rintawa-empty {
+  color: var(--rintawa-color-muted, #a1a1aa);
+}

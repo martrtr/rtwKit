@@ -1,0 +1,12 @@
+schema = 1
+
+[package]
+id = "rintawa.web-ui"
+name = "Rintawa Web UI"
+version = "0.1.0"
+description = "Default web UI layer for Rintawa"
+license = "GPL-3.0-only"
+
+[build]
+artifact-root = "build/rtw"
+command = ["bash", "build.sh"]

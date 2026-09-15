@@ -17,6 +17,18 @@ jobs:
         run: |
           rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
           rustup default 1.98.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Web UI dependencies
+        working-directory: packages/web-ui
+        run: npm ci
+      - name: Check Web UI
+        working-directory: packages/web-ui
+        run: |
+          npm run typecheck
+          npm test
+          npm run build:rtw
       - name: Validate repository metadata
         run: cargo run --locked -p rtwkit-registry-tool -- validate-repository .
       - name: Format

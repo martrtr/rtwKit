@@ -1,0 +1,16 @@
+schema = 1
+bridge-protocol-major = 1
+entry = "web/index.html"
+
+[ui-layer]
+protocol-major = 1
+capabilities = [
+  "rintawa.ui.text@1",
+  "rintawa.ui.markdown@1",
+  "rintawa.ui.button@1",
+  "rintawa.ui.input.text@1",
+  "rintawa.ui.input.text-area@1",
+  "rintawa.ui.layout.row@1",
+  "rintawa.ui.layout.column@1",
+  "rintawa.ui.list@1",
+]
