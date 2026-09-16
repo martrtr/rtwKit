@@ -1,0 +1,31 @@
+:root {
+  /* ui.color.* */
+  --rintawa-ui-color-text-primary: var(--rintawa-color-text, #f4f4f5);
+  --rintawa-ui-color-text-muted: var(--rintawa-color-muted, #a1a1aa);
+  --rintawa-ui-color-surface-primary: var(--rintawa-color-surface, #18181b);
+  --rintawa-ui-color-surface-secondary: var(--rintawa-color-control, #27272a);
+  --rintawa-ui-color-accent: var(--rintawa-color-accent, #a5b4fc);
+  --rintawa-ui-color-warning: var(--rintawa-color-warning, #fde68a);
+  --rintawa-ui-color-error: var(--rintawa-color-error, #fca5a5);
+  --rintawa-ui-color-success: var(--rintawa-color-success, #86efac);
+
+  /* ui.spacing.* */
+  --rintawa-ui-spacing-compact: var(--rintawa-spacing-compact, 0.5rem);
+  --rintawa-ui-spacing-normal: var(--rintawa-spacing-normal, 0.75rem);
+  --rintawa-ui-spacing-relaxed: var(--rintawa-spacing-relaxed, 1rem);
+
+  /* ui.radius.* */
+  --rintawa-ui-radius-control: var(--rintawa-radius-control, 0.5rem);
+
+  /* ui.font.* */
+  --rintawa-ui-font-body: var(--rintawa-font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  --rintawa-ui-font-heading: var(--rintawa-font-heading, var(--rintawa-ui-font-body));
+  --rintawa-ui-font-monospace: var(--rintawa-font-monospace, ui-monospace, SFMono-Regular, monospace);
+
+  /* Web renderer-only seams; these are not portable token IDs. */
+  --rintawa-web-color-scheme: dark;
+  --rintawa-web-color-background: var(--rintawa-color-background, #111113);
+  --rintawa-web-color-border: var(--rintawa-color-border, #2c2c31);
+  --rintawa-web-color-control-border: var(--rintawa-color-border, #3f3f46);
+  --rintawa-web-radius-surface: var(--rintawa-radius-surface, var(--rintawa-radius-control, 0.75rem));
+}

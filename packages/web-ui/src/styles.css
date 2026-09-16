@@ -1,8 +1,8 @@
 :root {
-  color-scheme: dark;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-  color: var(--rintawa-color-text, #f4f4f5);
-  background: var(--rintawa-color-background, #111113);
+  color-scheme: var(--rintawa-web-color-scheme);
+  font-family: var(--rintawa-ui-font-body);
+  color: var(--rintawa-ui-color-text-primary);
+  background: var(--rintawa-web-color-background);
   font-synthesis: none;
 }
 
@@ -31,34 +31,34 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--rintawa-color-border, #2c2c31);
+  padding: var(--rintawa-ui-spacing-normal) var(--rintawa-ui-spacing-relaxed);
+  border-bottom: 1px solid var(--rintawa-web-color-border);
 }
 
 .rintawa-status {
-  color: var(--rintawa-color-muted, #a1a1aa);
+  color: var(--rintawa-ui-color-text-muted);
   font-size: 0.8rem;
 }
 
 .rintawa-status[data-status="connected"] {
-  color: var(--rintawa-color-success, #86efac);
+  color: var(--rintawa-ui-color-success);
 }
 
 .rintawa-status[data-status="error"] {
-  color: var(--rintawa-color-error, #fca5a5);
+  color: var(--rintawa-ui-color-error);
 }
 
 .rintawa-composer {
   position: relative;
   display: grid;
-  gap: 1rem;
-  padding: 1rem;
+  gap: var(--rintawa-ui-spacing-relaxed);
+  padding: var(--rintawa-ui-spacing-relaxed);
 }
 
 .rintawa-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 1rem;
+  gap: var(--rintawa-ui-spacing-relaxed);
   align-items: start;
 }
 
@@ -69,22 +69,22 @@ textarea {
 .rintawa-main-stack,
 .rintawa-surface-group {
   display: grid;
-  gap: 1rem;
+  gap: var(--rintawa-ui-spacing-relaxed);
   min-width: 0;
 }
 
 .rintawa-surface {
-  padding: 1rem;
-  border: 1px solid var(--rintawa-color-border, #2c2c31);
-  border-radius: var(--rintawa-radius-control, 0.75rem);
-  background: var(--rintawa-color-surface, #18181b);
+  padding: var(--rintawa-ui-spacing-relaxed);
+  border: 1px solid var(--rintawa-web-color-border);
+  border-radius: var(--rintawa-web-radius-surface);
+  background: var(--rintawa-ui-color-surface-primary);
 }
 
 .rintawa-row,
 .rintawa-column,
 .rintawa-list {
   display: flex;
-  gap: var(--rintawa-spacing-normal, 0.75rem);
+  gap: var(--rintawa-ui-spacing-normal);
 }
 
 .rintawa-row {
@@ -112,15 +112,29 @@ textarea {
 
 .rintawa-button,
 .rintawa-input {
-  border: 1px solid var(--rintawa-color-border, #3f3f46);
-  border-radius: var(--rintawa-radius-control, 0.5rem);
+  border: 1px solid var(--rintawa-web-color-control-border);
+  border-radius: var(--rintawa-ui-radius-control);
   color: inherit;
-  background: var(--rintawa-color-control, #27272a);
+  background: var(--rintawa-ui-color-surface-secondary);
 }
 
 .rintawa-button {
   padding: 0.55rem 0.8rem;
   cursor: pointer;
+}
+
+.rintawa-button:focus-visible,
+.rintawa-input:focus-visible {
+  outline: 2px solid var(--rintawa-ui-color-accent);
+  outline-offset: 2px;
+}
+
+.rintawa-markdown :is(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--rintawa-ui-font-heading);
+}
+
+.rintawa-markdown :is(code, pre, kbd) {
+  font-family: var(--rintawa-ui-font-monospace);
 }
 
 .rintawa-button:disabled,
@@ -141,22 +155,22 @@ textarea {
 
 .rintawa-error,
 .rintawa-node-error {
-  color: var(--rintawa-color-error, #fca5a5);
+  color: var(--rintawa-ui-color-error);
 }
 
 .rintawa-error,
 .rintawa-empty {
-  margin: 1rem;
-  padding: 0.75rem;
+  margin: var(--rintawa-ui-spacing-relaxed);
+  padding: var(--rintawa-ui-spacing-normal);
 }
 
 .rintawa-empty {
-  color: var(--rintawa-color-muted, #a1a1aa);
+  color: var(--rintawa-ui-color-text-muted);
 }
 
 .rintawa-surface-group[data-placement-group="status"] {
   position: sticky;
-  bottom: 1rem;
+  bottom: var(--rintawa-ui-spacing-relaxed);
   z-index: 10;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
 }
@@ -181,7 +195,7 @@ textarea {
   position: absolute;
   inset: 0;
   place-items: center;
-  padding: 1rem;
+  padding: var(--rintawa-ui-spacing-relaxed);
   overflow: auto;
 }
 
@@ -191,10 +205,10 @@ textarea {
 
 .rintawa-surface-group[data-placement-group="overlay"] {
   position: absolute;
-  top: 1rem;
-  right: 1rem;
-  width: min(calc(100% - 2rem), 24rem);
-  max-height: calc(100vh - 2rem);
+  top: var(--rintawa-ui-spacing-relaxed);
+  right: var(--rintawa-ui-spacing-relaxed);
+  width: min(calc(100% - var(--rintawa-ui-spacing-relaxed) - var(--rintawa-ui-spacing-relaxed)), 24rem);
+  max-height: calc(100vh - var(--rintawa-ui-spacing-relaxed) - var(--rintawa-ui-spacing-relaxed));
   overflow: auto;
 }
 
@@ -204,7 +218,7 @@ textarea {
   }
 
   .rintawa-surface-group[data-placement-group="overlay"] {
-    left: 1rem;
+    left: var(--rintawa-ui-spacing-relaxed);
     width: auto;
   }
 }
