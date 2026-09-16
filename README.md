@@ -22,7 +22,7 @@ GitHub Pages: index.json
 ```
 
 Asset names are stable across versions. The release tag and SHA-256 digest carry
-the versioned/immutable identity, so `pkg-web-ui-v0.1.0` and
+the versioned/immutable identity, so `pkg-web-ui-v0.0.1` and
 `pkg-web-ui-v0.2.0` both contain an asset named `web-ui.rtw`.
 
 The intended Extension Manager source URL is:
@@ -41,7 +41,7 @@ part of the public package source.
 3. Push a tag matching the package version, for example:
 
 ```text
-pkg-web-ui-v0.1.0
+pkg-web-ui-v0.0.1
 ```
 
 The release workflow builds the package with the canonical Rintawa RTW packer,
