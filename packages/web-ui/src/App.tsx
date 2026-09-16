@@ -7,7 +7,7 @@ import {
   createDefaultTransport,
 } from "./bridge";
 import type { UiActionEvent, UiPresentationSurface } from "./bridge";
-import { PortableSurface } from "./renderer/PortableSurface";
+import { SurfaceComposer } from "./renderer/SurfaceComposer";
 
 export default function App() {
   const transport = useMemo(createDefaultTransport, []);
@@ -93,19 +93,11 @@ export default function App() {
 
       {error ? <div className="rintawa-error">{error}</div> : null}
 
-      <div className="rintawa-surfaces">
-        {surfaces.length === 0 ? (
-          <div className="rintawa-empty">No portable UI surfaces are mounted.</div>
-        ) : (
-          surfaces.map((surface) => (
-            <PortableSurface
-              key={`${surface.owner.instance_id}:${surface.snapshot.surface_id}`}
-              surface={surface}
-              onAction={dispatchAction}
-            />
-          ))
-        )}
-      </div>
+      {surfaces.length === 0 ? (
+        <div className="rintawa-empty">No portable UI surfaces are mounted.</div>
+      ) : (
+        <SurfaceComposer surfaces={surfaces} onAction={dispatchAction} />
+      )}
     </main>
   );
 }

@@ -48,10 +48,29 @@ textarea {
   color: var(--rintawa-color-error, #fca5a5);
 }
 
-.rintawa-surfaces {
+.rintawa-composer {
+  position: relative;
   display: grid;
   gap: 1rem;
   padding: 1rem;
+}
+
+.rintawa-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.rintawa-workspace[data-layout="split"] {
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem);
+}
+
+.rintawa-main-stack,
+.rintawa-surface-group {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
 }
 
 .rintawa-surface {
@@ -133,4 +152,59 @@ textarea {
 
 .rintawa-empty {
   color: var(--rintawa-color-muted, #a1a1aa);
+}
+
+.rintawa-surface-group[data-placement-group="status"] {
+  position: sticky;
+  bottom: 1rem;
+  z-index: 10;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+}
+
+.rintawa-surface-group[data-placement-group="status"] .rintawa-surface {
+  padding: 0.65rem 0.8rem;
+}
+
+.rintawa-floating-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  pointer-events: none;
+}
+
+.rintawa-floating-layer .rintawa-surface {
+  pointer-events: auto;
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 35%);
+}
+
+.rintawa-surface-group[data-placement-group="dialog"] {
+  position: absolute;
+  inset: 0;
+  place-items: center;
+  padding: 1rem;
+  overflow: auto;
+}
+
+.rintawa-surface-group[data-placement-group="dialog"] .rintawa-surface {
+  width: min(100%, 40rem);
+}
+
+.rintawa-surface-group[data-placement-group="overlay"] {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  width: min(calc(100% - 2rem), 24rem);
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+}
+
+@media (max-width: 800px) {
+  .rintawa-workspace[data-layout="split"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rintawa-surface-group[data-placement-group="overlay"] {
+    left: 1rem;
+    width: auto;
+  }
 }
