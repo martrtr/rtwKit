@@ -1,6 +1,15 @@
 schema = 1
 bridge-protocol-major = 1
 entry = "web/index.html"
+listen-port = 44719
+
+[[provides]]
+id = "rintawa.ui.layer"
+version = 1
+
+[[provides]]
+id = "rintawa.host.shell"
+version = 1
 
 [ui-layer]
 protocol-major = 1

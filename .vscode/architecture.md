@@ -17,13 +17,20 @@ human-facing package-management UX.
 The boundary is intentional: another package manager must be able to replace the
 rtwKit Extension Manager without changing Core.
 
+`packages/web-runtime` follows the same rule. It is an ordinary root-WASM
+extension that publishes `rintawa.runtime.web-bundle@1`; HTTP, WebSocket and
+browser bridge details remain outside Core. `packages/web-ui` is a separate
+consumer of that execution target and provides the composition roles
+`rintawa.ui.layer@1` and `rintawa.host.shell@1`.
+
 ## Monorepo boundary
 
 `rtwKit` is a monorepo for first-party/recommended packages. Repository boundaries
 must not be confused with package boundaries.
 
 One repository may contain many independently versioned packages, and one package
-may later move to another repository without changing its logical package id.Packages under `packages/<slug>/` may be large applications (`web-ui`), small
+may later move to another repository without changing its logical package id.
+Packages under `packages/<slug>/` may be large applications (`web-ui`), small
 providers, theme collections, or bundles. Size alone is not a reason to split a
 repository. Split when ownership, community, release lifecycle, or branding
 becomes genuinely independent.

@@ -1,0 +1,12 @@
+schema = 1
+
+[package]
+id = "rintawa.web-runtime"
+name = "Rintawa Web Runtime"
+version = "0.0.1"
+description = "External Web bundle execution runtime for Rintawa"
+license = "GPL-3.0-only"
+
+[build]
+artifact-root = "build/rtw"
+command = ["bash", "build.sh"]
