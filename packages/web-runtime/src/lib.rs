@@ -171,7 +171,8 @@ impl exports::rintawa::engine::target_provider::Guest for WebRuntime {
         let prefix = format!("{root}/");
         let mut total_bytes = 0usize;
         let mut assets = BTreeMap::new();
-        for path in source.paths() {
+        let paths = source.paths().map_err(|_| TargetError::Unavailable)?;
+        for path in paths {
             let Some(key) = path.strip_prefix(&prefix) else {
                 continue;
             };
