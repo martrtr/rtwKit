@@ -9,3 +9,6 @@ kind = "ui"
 target = "rintawa.runtime.web-bundle@1"
 entry = "web-layer.toml"
 required = true
+
+[components.permissions]
+runtime = ["background-task", "loopback-listen"]

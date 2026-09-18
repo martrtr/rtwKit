@@ -1,0 +1,19 @@
+[package]
+name = "rintawa-web-runtime"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+base64 = "0.22"
+httparse = "1"
+serde.workspace = true
+serde_json.workspace = true
+sha1 = "0.10"
+toml.workspace = true
+wit-bindgen = "0.57.1"

@@ -1,0 +1,11 @@
+[package]
+name = "rtwkit-componentize"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+wit-component = "0.247.0"

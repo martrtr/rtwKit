@@ -32,8 +32,8 @@ Core does not implement repository or package-manager semantics.
 
 ## Implementation order
 
-1. Run the React Web UI as a real Web bundle component through `rintawa-dev`.
-2. Add Extension Manager Portable UI surfaces once the Web layer is usable.
+1. **Done:** run the React Web UI through the external `web-runtime` RTW provider.
+2. Add Extension Manager Portable UI surfaces now that the Web layer is usable.
 3. Add remote repository install/update, dependency solving, packs, and install
    intents incrementally.
 

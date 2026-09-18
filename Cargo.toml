@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["tools/registry-tool"]
+members = ["tools/registry-tool", "tools/componentize", "packages/web-runtime"]
 
 [workspace.package]
 edition = "2024"

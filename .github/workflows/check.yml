@@ -17,6 +17,7 @@ jobs:
         run: |
           rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
           rustup default 1.98.0
+          rustup target add wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -29,6 +30,9 @@ jobs:
           npm run typecheck
           npm test
           npm run build:rtw
+      - name: Build Web Runtime RTW layout
+        working-directory: packages/web-runtime
+        run: ./build.sh
       - name: Validate repository metadata
         run: cargo run --locked -p rtwkit-registry-tool -- validate-repository .
       - name: Format

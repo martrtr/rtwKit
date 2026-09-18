@@ -34,6 +34,11 @@ https://martrtr.github.io/rtwKit/index.json
 GitHub Actions workflow artifacts are used only for CI diagnostics and are not
 part of the public package source.
 
+## Current packages
+
+- `web-runtime` — external `rintawa.runtime.web-bundle@1` execution-target provider.
+- `web-ui` — React Host Shell / Portable UI Layer executed through `web-runtime`.
+
 ## Publishing a package
 
 1. Update `packages/<slug>/rtwkit.toml` and package sources.
