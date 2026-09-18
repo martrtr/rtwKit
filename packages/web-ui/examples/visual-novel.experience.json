@@ -1,0 +1,41 @@
+{
+  "format": "rintawa.web.experience-pack@1",
+  "id": "rintawa.web.visual-novel",
+  "name": "Rintawa Visual Novel",
+  "extends": "rintawa.web.standard",
+  "theme": {
+    "tokens": {
+      "ui.spacing.relaxed": "1.25rem",
+      "web.radius.surface": "1rem"
+    }
+  },
+  "shell": {
+    "workspace": {
+      "type": "split",
+      "axis": "vertical",
+      "children": [
+        { "type": "region", "region": "scene", "weight": 1 },
+        { "type": "region", "region": "dialogue", "weight": 0.34 }
+      ]
+    },
+    "layers": [
+      { "region": "character-status", "presentation": "status" },
+      { "region": "dialog", "presentation": "dialog" },
+      { "region": "spell-overlay", "presentation": "overlay" }
+    ],
+    "fallback_region": "scene",
+    "rules_mode": "replace",
+    "rules": [
+      { "match": { "semantic": "game.scene@1" }, "region": "scene" },
+      { "match": { "semantic": "game.dialogue@1" }, "region": "dialogue" },
+      { "match": { "semantic": "game.spell-circle@1" }, "region": "spell-overlay" },
+      { "match": { "placement": "dialog" }, "region": "dialog" },
+      { "match": { "placement": "status" }, "region": "character-status" },
+      { "match": { "placement": "overlay" }, "region": "spell-overlay" },
+      { "match": { "placement": "sidebar" }, "region": "character-status" },
+      { "match": { "placement": "primary" }, "region": "scene" },
+      { "match": { "placement": "secondary" }, "region": "dialogue" },
+      { "match": { "placement": "settings" }, "region": "dialog" }
+    ]
+  }
+}

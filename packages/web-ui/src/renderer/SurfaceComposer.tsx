@@ -1,46 +1,54 @@
 import { useMemo } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
 import type { UiActionEvent, UiPresentationSurface } from "../bridge";
-import type { UiPlacementHint } from "../bridge/types";
+import {
+  STANDARD_EXPERIENCE_PACK,
+  regionForSurface,
+} from "../experience";
+import type {
+  ShellLayoutNode,
+  WebExperiencePack,
+} from "../experience/types";
 import { PortableSurface } from "./PortableSurface";
 
-export type SurfaceGroups = Record<UiPlacementHint, UiPresentationSurface[]>;
+export type SurfacesByRegion = Map<string, UiPresentationSurface[]>;
 
-export function groupSurfacesByPlacement(
+export function groupSurfacesByRegion(
   surfaces: readonly UiPresentationSurface[],
-): SurfaceGroups {
-  const groups: SurfaceGroups = {
-    primary: [],
-    secondary: [],
-    sidebar: [],
-    settings: [],
-    dialog: [],
-    status: [],
-    overlay: [],
-  };
+  pack: WebExperiencePack,
+): SurfacesByRegion {
+  const regions: SurfacesByRegion = new Map();
 
   for (const surface of surfaces) {
-    groups[surface.contribution.placement].push(surface);
+    const region = regionForSurface(pack, surface);
+    const current = regions.get(region);
+    if (current) {
+      current.push(surface);
+    } else {
+      regions.set(region, [surface]);
+    }
   }
 
-  return groups;
+  return regions;
 }
 
-interface SurfaceGroupProps {
-  placement: UiPlacementHint;
-  label: string;
+interface RegionProps {
+  region: string;
   surfaces: readonly UiPresentationSurface[];
   onAction: (event: UiActionEvent) => void;
+  style?: CSSProperties;
 }
 
-function SurfaceGroup({ placement, label, surfaces, onAction }: SurfaceGroupProps) {
+function Region({ region, surfaces, onAction, style }: RegionProps) {
   if (surfaces.length === 0) return null;
 
   return (
     <section
-      className="rintawa-surface-group"
-      data-placement-group={placement}
-      aria-label={label}
+      className="rintawa-shell-region"
+      data-shell-region={region}
+      aria-label={region}
+      style={style}
     >
       {surfaces.map((surface) => (
         <PortableSurface
@@ -53,82 +61,96 @@ function SurfaceGroup({ placement, label, surfaces, onAction }: SurfaceGroupProp
   );
 }
 
+function renderLayoutNode(
+  node: ShellLayoutNode,
+  regions: SurfacesByRegion,
+  onAction: (event: UiActionEvent) => void,
+  key: string,
+): ReactNode {
+  if (node.type === "region") {
+    const surfaces = regions.get(node.region) ?? [];
+    if (surfaces.length === 0) return null;
+
+    return (
+      <Region
+        key={key}
+        region={node.region}
+        surfaces={surfaces}
+        onAction={onAction}
+        style={{ flexGrow: node.weight ?? 1 }}
+      />
+    );
+  }
+
+  const children = node.children
+    .map((child, index) =>
+      renderLayoutNode(child, regions, onAction, `${key}.${index}`),
+    )
+    .filter((child) => child !== null);
+
+  if (children.length === 0) return null;
+  if (children.length === 1) return children[0];
+
+  return (
+    <div
+      key={key}
+      className="rintawa-shell-split"
+      data-axis={node.axis}
+    >
+      {children}
+    </div>
+  );
+}
+
 interface SurfaceComposerProps {
   surfaces: readonly UiPresentationSurface[];
   onAction: (event: UiActionEvent) => void;
+  experiencePack?: WebExperiencePack;
 }
 
-export function SurfaceComposer({ surfaces, onAction }: SurfaceComposerProps) {
-  const groups = useMemo(() => groupSurfacesByPlacement(surfaces), [surfaces]);
-  const hasMainSurfaces =
-    groups.primary.length > 0 ||
-    groups.secondary.length > 0 ||
-    groups.settings.length > 0;
-  const hasSidebarSurfaces = groups.sidebar.length > 0;
-  const hasWorkspaceSurfaces = hasMainSurfaces || hasSidebarSurfaces;
-  const hasFloatingSurfaces = groups.dialog.length > 0 || groups.overlay.length > 0;
+export function SurfaceComposer({
+  surfaces,
+  onAction,
+  experiencePack = STANDARD_EXPERIENCE_PACK,
+}: SurfaceComposerProps) {
+  const regions = useMemo(
+    () => groupSurfacesByRegion(surfaces, experiencePack),
+    [surfaces, experiencePack],
+  );
+  const workspace = renderLayoutNode(
+    experiencePack.shell.workspace,
+    regions,
+    onAction,
+    "workspace",
+  );
+
+  const activeLayers = experiencePack.shell.layers.filter(
+    (layer) => (regions.get(layer.region)?.length ?? 0) > 0,
+  );
 
   return (
-    <div className="rintawa-composer">
-      {hasWorkspaceSurfaces ? (
+    <div
+      className="rintawa-composer"
+      data-experience-pack={experiencePack.id}
+    >
+      {workspace ? (
+        <div className="rintawa-shell-workspace">{workspace}</div>
+      ) : null}
+
+      {activeLayers.map((layer) => (
         <div
-          className="rintawa-workspace"
-          data-layout={hasMainSurfaces && hasSidebarSurfaces ? "split" : "single"}
+          key={layer.region}
+          className="rintawa-shell-layer"
+          data-presentation={layer.presentation}
+          data-layer-region={layer.region}
         >
-          {hasMainSurfaces ? (
-            <div className="rintawa-main-stack">
-              <SurfaceGroup
-                placement="primary"
-                label="Primary content"
-                surfaces={groups.primary}
-                onAction={onAction}
-              />
-              <SurfaceGroup
-                placement="secondary"
-                label="Secondary content"
-                surfaces={groups.secondary}
-                onAction={onAction}
-              />
-              <SurfaceGroup
-                placement="settings"
-                label="Settings"
-                surfaces={groups.settings}
-                onAction={onAction}
-              />
-            </div>
-          ) : null}
-          <SurfaceGroup
-            placement="sidebar"
-            label="Sidebar"
-            surfaces={groups.sidebar}
+          <Region
+            region={layer.region}
+            surfaces={regions.get(layer.region) ?? []}
             onAction={onAction}
           />
         </div>
-      ) : null}
-
-      <SurfaceGroup
-        placement="status"
-        label="Status"
-        surfaces={groups.status}
-        onAction={onAction}
-      />
-
-      {hasFloatingSurfaces ? (
-        <div className="rintawa-floating-layer">
-          <SurfaceGroup
-            placement="dialog"
-            label="Dialogs"
-            surfaces={groups.dialog}
-            onAction={onAction}
-          />
-          <SurfaceGroup
-            placement="overlay"
-            label="Overlays"
-            surfaces={groups.overlay}
-            onAction={onAction}
-          />
-        </div>
-      ) : null}
+      ))}
     </div>
   );
 }
