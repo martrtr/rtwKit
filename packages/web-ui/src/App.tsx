@@ -8,9 +8,12 @@ import {
 } from "./bridge";
 import type { UiActionEvent, UiPresentationSurface } from "./bridge";
 import { SurfaceComposer } from "./renderer/SurfaceComposer";
+import { experiencePackStyle, selectedExperiencePack } from "./experience/runtime";
 
 export default function App() {
   const transport = useMemo(createDefaultTransport, []);
+  const experiencePack = useMemo(selectedExperiencePack, []);
+  const experienceStyle = useMemo(() => experiencePackStyle(experiencePack), [experiencePack]);
   const [surfaces, setSurfaces] = useState<UiPresentationSurface[]>([]);
   const [status, setStatus] = useState("connecting");
   const [error, setError] = useState<string | null>(null);
@@ -83,7 +86,7 @@ export default function App() {
   };
 
   return (
-    <main className="rintawa-app">
+    <main className="rintawa-app" style={experienceStyle} data-experience-pack={experiencePack.id}>
       <header className="rintawa-header">
         <strong>Rintawa</strong>
         <span className="rintawa-status" data-status={status}>
@@ -96,7 +99,11 @@ export default function App() {
       {surfaces.length === 0 ? (
         <div className="rintawa-empty">No portable UI surfaces are mounted.</div>
       ) : (
-        <SurfaceComposer surfaces={surfaces} onAction={dispatchAction} />
+        <SurfaceComposer
+          surfaces={surfaces}
+          onAction={dispatchAction}
+          experiencePack={experiencePack}
+        />
       )}
     </main>
   );

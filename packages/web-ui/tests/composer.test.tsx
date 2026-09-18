@@ -2,12 +2,31 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 
 import type { UiPlacementHint, UiPresentationSurface } from "../src/bridge/types";
-import { SurfaceComposer, groupSurfacesByPlacement } from "../src/renderer/SurfaceComposer";
+import {
+  STANDARD_EXPERIENCE_PACK,
+  mergeExperiencePack,
+} from "../src/experience";
+import {
+  SurfaceComposer,
+  groupSurfacesByRegion,
+} from "../src/renderer/SurfaceComposer";
 
-function surface(placement: UiPlacementHint, id: string): UiPresentationSurface {
+function surface(
+  placement: UiPlacementHint,
+  id: string,
+  semantic: string | null = null,
+): UiPresentationSurface {
+  const semanticParts = semantic?.match(/^(.+)@([0-9]+)$/);
   return {
     owner: { instance_id: `demo.${id}`, component_id: "runtime" },
-    contribution: { id, placement, semantic: null, required_capabilities: [] },
+    contribution: {
+      id,
+      placement,
+      semantic: semanticParts
+        ? { id: semanticParts[1], version: Number(semanticParts[2]) }
+        : null,
+      required_capabilities: [],
+    },
     snapshot: {
       surface_id: id,
       revision: "1",
@@ -18,38 +37,29 @@ function surface(placement: UiPlacementHint, id: string): UiPresentationSurface 
 }
 
 describe("surface composer", () => {
-  test("groups surfaces by placement without changing their order", () => {
+  test("maps default placement hints through the standard shell profile", () => {
     const surfaces = [
       surface("sidebar", "sidebar-a"),
       surface("primary", "primary-a"),
       surface("sidebar", "sidebar-b"),
       surface("status", "status-a"),
     ];
-    const groups = groupSurfacesByPlacement(surfaces);
+    const regions = groupSurfacesByRegion(surfaces, STANDARD_EXPERIENCE_PACK);
 
-    expect(groups.primary.map((item) => item.contribution.id)).toEqual(["primary-a"]);
-    expect(groups.sidebar.map((item) => item.contribution.id)).toEqual([
+    expect(regions.get("main")?.map((item) => item.contribution.id)).toEqual(["primary-a"]);
+    expect(regions.get("sidebar")?.map((item) => item.contribution.id)).toEqual([
       "sidebar-a",
       "sidebar-b",
     ]);
-    expect(groups.status.map((item) => item.contribution.id)).toEqual(["status-a"]);
-    expect(groups.dialog).toEqual([]);
-    expect(surfaces.map((item) => item.contribution.id)).toEqual([
-      "sidebar-a",
-      "primary-a",
-      "sidebar-b",
-      "status-a",
-    ]);
+    expect(regions.get("status")?.map((item) => item.contribution.id)).toEqual(["status-a"]);
   });
 
-  test("maps portable placement hints to distinct web regions", () => {
+  test("renders shell topology and floating layers from the experience pack", () => {
     const markup = renderToStaticMarkup(
       <SurfaceComposer
         surfaces={[
           surface("primary", "primary"),
-          surface("secondary", "secondary"),
           surface("sidebar", "sidebar"),
-          surface("settings", "settings"),
           surface("status", "status"),
           surface("dialog", "dialog"),
           surface("overlay", "overlay"),
@@ -58,31 +68,51 @@ describe("surface composer", () => {
       />,
     );
 
-    const placements = [
-      "primary",
-      "secondary",
-      "sidebar",
-      "settings",
-      "status",
-      "dialog",
-      "overlay",
-    ];
-    for (const placement of placements) {
-      expect(markup).toContain(`data-placement-group="${placement}"`);
+    expect(markup).toContain('data-experience-pack="rintawa.web.standard"');
+    expect(markup).toContain('data-axis="horizontal"');
+    for (const region of ["main", "sidebar", "status", "dialog", "overlay"]) {
+      expect(markup).toContain(`data-shell-region="${region}"`);
     }
-    expect(markup).toContain(`class="rintawa-floating-layer"`);
-    expect(markup).toContain(`data-layout="split"`);
+    expect(markup).toContain('data-presentation="dialog"');
+    expect(markup).toContain('data-presentation="overlay"');
   });
 
-  test("uses the full workspace width when only a sidebar is mounted", () => {
-    const markup = renderToStaticMarkup(
-      <SurfaceComposer
-        surfaces={[surface("sidebar", "sidebar")]}
-        onAction={() => undefined}
-      />,
-    );
+  test("semantic rules override generic placement fallback", () => {
+    const visualNovel = mergeExperiencePack(STANDARD_EXPERIENCE_PACK, {
+      format: "rintawa.web.experience-pack@1",
+      id: "demo.visual-novel",
+      name: "Visual Novel",
+      extends: "rintawa.web.standard",
+      shell: {
+        workspace: {
+          type: "split",
+          axis: "vertical",
+          children: [
+            { type: "region", region: "scene" },
+            { type: "region", region: "dialogue" },
+          ],
+        },
+        layers: [{ region: "spell-overlay", presentation: "overlay" }],
+        fallback_region: "scene",
+        rules_mode: "replace",
+        rules: [
+          { match: { placement: "primary" }, region: "scene" },
+          { match: { placement: "overlay" }, region: "scene" },
+          { match: { semantic: "game.dialogue@1" }, region: "dialogue" },
+          { match: { semantic: "game.spell-circle@1" }, region: "spell-overlay" },
+        ],
+      },
+    });
 
-    expect(markup).toContain(`data-layout="single"`);
-    expect(markup).not.toContain(`class="rintawa-main-stack"`);
+    const genericOverlay = surface("overlay", "generic-overlay");
+    const spell = surface("overlay", "spell", "game.spell-circle@1");
+    const regions = groupSurfacesByRegion([genericOverlay, spell], visualNovel);
+
+    expect(regions.get("scene")?.map((item) => item.contribution.id)).toEqual([
+      "generic-overlay",
+    ]);
+    expect(regions.get("spell-overlay")?.map((item) => item.contribution.id)).toEqual([
+      "spell",
+    ]);
   });
 });
