@@ -1,0 +1,14 @@
+id = "rintawa.package-manager"
+name = "Package Manager"
+version = "0.0.1"
+sdk = "^0.0"
+
+[[components]]
+id = "runtime"
+kind = "runtime"
+target = "rintawa.runtime.wasm-component@1"
+entry = "runtime.wasm"
+required = true
+
+[components.permissions]
+runtime = ["background-task", "http-fetch", "artifact-import", "composition-read", "composition-write", "runtime-policy-read", "runtime-policy-write"]

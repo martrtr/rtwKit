@@ -9,18 +9,19 @@ import {
 import type { UiActionEvent, UiPresentationSurface } from "./bridge";
 import { SurfaceComposer } from "./renderer/SurfaceComposer";
 import { experiencePackStyle, selectedExperiencePack } from "./experience/runtime";
+import { InterfaceIconProvider } from "./icons/InterfaceIcon";
 
 export default function App() {
   const transport = useMemo(createDefaultTransport, []);
   const experiencePack = useMemo(selectedExperiencePack, []);
   const experienceStyle = useMemo(() => experiencePackStyle(experiencePack), [experiencePack]);
   const [surfaces, setSurfaces] = useState<UiPresentationSurface[]>([]);
-  const [status, setStatus] = useState("connecting");
+  const [hasReceivedState, setHasReceivedState] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!transport) {
-      setStatus("disconnected");
+      setError("No Web UI transport is available.");
       return;
     }
 
@@ -33,7 +34,7 @@ export default function App() {
           if (isDisposed) return;
           if (message.type === "state") {
             setSurfaces(message.surfaces);
-            setStatus("connected");
+            setHasReceivedState(true);
             setError(null);
           } else {
             setError(`${message.code}: ${message.message}`);
@@ -41,7 +42,6 @@ export default function App() {
         },
         (transportError) => {
           if (!isDisposed) {
-            setStatus("error");
             setError(transportError.message);
           }
         },
@@ -61,7 +61,6 @@ export default function App() {
       })
       .catch((connectError: unknown) => {
         if (!isDisposed) {
-          setStatus("error");
           setError(connectError instanceof Error ? connectError.message : String(connectError));
         }
       });
@@ -86,25 +85,26 @@ export default function App() {
   };
 
   return (
-    <main className="rintawa-app" style={experienceStyle} data-experience-pack={experiencePack.id}>
-      <header className="rintawa-header">
-        <strong>Rintawa</strong>
-        <span className="rintawa-status" data-status={status}>
-          {status}
-        </span>
-      </header>
+    <InterfaceIconProvider mapping={experiencePack.theme.icons ?? {}}>
+      <main
+        className="rintawa-app"
+        style={experienceStyle}
+        data-experience-pack={experiencePack.id}
+      >
+        {error ? <div className="rintawa-error">{error}</div> : null}
 
-      {error ? <div className="rintawa-error">{error}</div> : null}
-
-      {surfaces.length === 0 ? (
-        <div className="rintawa-empty">No portable UI surfaces are mounted.</div>
-      ) : (
-        <SurfaceComposer
-          surfaces={surfaces}
-          onAction={dispatchAction}
-          experiencePack={experiencePack}
-        />
-      )}
-    </main>
+        {!hasReceivedState ? (
+          <div className="rintawa-empty">Connecting to Rintawa…</div>
+        ) : surfaces.length === 0 ? (
+          <div className="rintawa-empty">No portable UI surfaces are mounted.</div>
+        ) : (
+          <SurfaceComposer
+            surfaces={surfaces}
+            onAction={dispatchAction}
+            experiencePack={experiencePack}
+          />
+        )}
+      </main>
+    </InterfaceIconProvider>
   );
 }

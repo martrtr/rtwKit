@@ -1,3 +1,5 @@
+//! Web UI runtime bridge between portable UI surfaces and the browser renderer.
+
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
@@ -9,7 +11,7 @@ use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
 wit_bindgen::generate!({
-    path: "wit",
+    path: "../../wit",
     world: "runtime-provider-task-plugin",
 });
 
@@ -125,8 +127,11 @@ impl exports::rintawa::engine::guest::Guest for WebRuntime {
     fn register() {}
 
     fn start() {
-        if rintawa::engine::execution_targets::register_target(WEB_TARGET).is_err() {
-            panic!("failed to publish Web bundle execution target");
+        if let Err(error) = rintawa::engine::execution_targets::register_target(WEB_TARGET) {
+            rintawa::engine::host::log(
+                rintawa::engine::host::LogLevel::Error,
+                &format!("failed to publish Web bundle execution target: {error:?}"),
+            );
         }
     }
 
@@ -258,11 +263,23 @@ impl exports::rintawa::engine::target_provider::Guest for WebRuntime {
             Ok(component.config.listen_port)
         })?;
 
-        let listener =
-            rintawa::engine::network::listen_loopback(port).map_err(|_| TargetError::Rejected)?;
+        let listener = match rintawa::engine::network::listen_loopback(port) {
+            Ok(listener) => listener,
+            Err(error) => {
+                rintawa::engine::host::log(
+                    rintawa::engine::host::LogLevel::Error,
+                    &format!("Web bundle failed to listen on 127.0.0.1:{port}: {error:?}"),
+                );
+                return Err(TargetError::Rejected);
+            }
+        };
         let task = match rintawa::engine::runtime_tasks::spawn_periodic(TASK_INTERVAL_MS) {
             Ok(task) => task,
-            Err(_) => {
+            Err(error) => {
+                rintawa::engine::host::log(
+                    rintawa::engine::host::LogLevel::Error,
+                    &format!("Web bundle failed to start runtime pump: {error:?}"),
+                );
                 let _ = rintawa::engine::network::close(listener.handle);
                 return Err(TargetError::Rejected);
             }
@@ -276,7 +293,12 @@ impl exports::rintawa::engine::target_provider::Guest for WebRuntime {
             component.listener = Some(listener.handle);
             component.task = Some(task);
             Ok(())
-        })
+        })?;
+        rintawa::engine::host::log(
+            rintawa::engine::host::LogLevel::Info,
+            &format!("Web bundle listening at http://127.0.0.1:{port}/"),
+        );
+        Ok(())
     }
 
     fn stop_component(handle: u64) -> Result<(), TargetError> {
@@ -1296,7 +1318,16 @@ fn state_digest(message: &[u8]) -> [u8; 20] {
 }
 
 fn current_state_message() -> Option<Vec<u8>> {
-    let raw = rintawa::engine::ui_layer::presentation_surfaces().ok()?;
+    let raw = match rintawa::engine::ui_layer::presentation_surfaces() {
+        Ok(raw) => raw,
+        Err(error) => {
+            rintawa::engine::host::log(
+                rintawa::engine::host::LogLevel::Error,
+                &format!("Web UI could not read presentation surfaces: {error:?}"),
+            );
+            return None;
+        }
+    };
     let mut surfaces: Value = serde_json::from_slice(&raw).ok()?;
     convert_surface_revisions_to_strings(&mut surfaces)?;
     serde_json::to_vec(&json!({

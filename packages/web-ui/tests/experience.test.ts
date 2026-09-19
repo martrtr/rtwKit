@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   STANDARD_EXPERIENCE_PACK,
+  applyExperienceModule,
   mergeExperiencePack,
   parseExperiencePack,
   themeCssVariables,
@@ -45,6 +46,47 @@ describe("web experience packs", () => {
 
     expect(custom.shell.rules[0].match.semantic).toBe("game.spell-circle@1");
     expect(custom.shell.rules.length).toBe(STANDARD_EXPERIENCE_PACK.shell.rules.length + 1);
+  });
+
+  test("applies ordered experience modules without changing base workspace identity", () => {
+    const first = applyExperienceModule(STANDARD_EXPERIENCE_PACK, {
+      format: "rintawa.web.experience-module@1",
+      id: "demo.icons",
+      name: "Demo Icons",
+      targets: ["rintawa.web.standard"],
+      theme: {
+        tokens: { "ui.color.accent": "#111111" },
+        icons: { "activity.extensions": "puzzle" },
+      },
+    });
+    const second = applyExperienceModule(first, {
+      format: "rintawa.web.experience-module@1",
+      id: "demo.motion",
+      name: "Demo Motion",
+      theme: {
+        tokens: {
+          "ui.color.accent": "#222222",
+          "web.motion.fast": "80ms",
+        },
+      },
+    });
+
+    expect(second.id).toBe(STANDARD_EXPERIENCE_PACK.id);
+    expect(second.theme.tokens["ui.color.accent"]).toBe("#222222");
+    expect(second.theme.tokens["web.motion.fast"]).toBe("80ms");
+    expect(second.theme.icons?.["activity.extensions"]).toBe("puzzle");
+  });
+
+  test("rejects an experience module targeting another base pack", () => {
+    expect(() =>
+      applyExperienceModule(STANDARD_EXPERIENCE_PACK, {
+        format: "rintawa.web.experience-module@1",
+        id: "demo.foreign",
+        name: "Foreign",
+        targets: ["other.pack"],
+        theme: { tokens: { "ui.color.accent": "#ffffff" } },
+      }),
+    ).toThrow("does not target base pack");
   });
 
   test("rejects rules that target undeclared regions", () => {

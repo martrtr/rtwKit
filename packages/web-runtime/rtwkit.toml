@@ -2,8 +2,8 @@ schema = 1
 
 [package]
 id = "rintawa.web-runtime"
-name = "Rintawa Web Runtime"
-version = "0.0.1"
+name = "Web Runtime"
+version = "0.0.2"
 description = "External Web bundle execution runtime for Rintawa"
 license = "GPL-3.0-only"
 

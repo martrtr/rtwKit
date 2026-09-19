@@ -1,8 +1,11 @@
+//! RTW package assembly and release artifact validation for registry publishing.
+
 use std::{
     collections::HashSet,
     fs,
     path::{Component, Path, PathBuf},
     process::Command,
+    str,
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -10,12 +13,14 @@ use rintawa_artifacts::{RtwArchive, RtwLimits, pack_directory};
 use sha2::{Digest, Sha256};
 
 use crate::model::{
-    PackageManifest, PublishedArtifact, PublishedPackage, PublishedSource, REGISTRY_SCHEMA,
-    RTWKIT_MANIFEST_SCHEMA, ReleaseMetadata,
+    PackageManifest, PublishedArtifact, PublishedAsset, PublishedPackage, PublishedSource,
+    REGISTRY_SCHEMA, RTWKIT_MANIFEST_SCHEMA, ReleaseMetadata,
 };
 
 const PACKAGES_DIRECTORY: &str = "packages";
 const MANIFEST_FILE: &str = "rtwkit.toml";
+const MAX_LOGO_BYTES: u64 = 512 * 1024;
+const MAX_README_BYTES: u64 = 1024 * 1024;
 
 pub struct LoadedPackage {
     pub slug: String,
@@ -107,6 +112,36 @@ pub fn build_package(
     let url = format!(
         "https://github.com/{release_repository}/releases/download/{release_tag}/{artifact_name}"
     );
+    let logo = package
+        .manifest
+        .package
+        .logo
+        .as_deref()
+        .map(|path| {
+            publish_logo(
+                &package,
+                path,
+                output_directory,
+                release_repository,
+                release_tag,
+            )
+        })
+        .transpose()?;
+    let readme = package
+        .manifest
+        .package
+        .readme
+        .as_deref()
+        .map(|path| {
+            publish_readme(
+                &package,
+                path,
+                output_directory,
+                release_repository,
+                release_tag,
+            )
+        })
+        .transpose()?;
     let metadata = ReleaseMetadata {
         schema: REGISTRY_SCHEMA,
         package: PublishedPackage {
@@ -116,8 +151,14 @@ pub fn build_package(
             version: package.manifest.package.version.clone(),
             description: package.manifest.package.description.clone(),
             license: package.manifest.package.license.clone(),
+            authors: package.manifest.package.authors.clone(),
+            homepage: package.manifest.package.homepage.clone(),
+            source_url: package.manifest.package.source_url.clone(),
+            logo,
+            readme,
         },
         content,
+        dependencies: package.manifest.package.dependencies.clone(),
         artifact: PublishedArtifact {
             file: artifact_name,
             url,
@@ -135,6 +176,101 @@ pub fn build_package(
     let metadata_path = output_directory.join(metadata_name);
     fs::write(&metadata_path, serde_json::to_vec_pretty(&metadata)?)?;
     Ok((artifact_path, metadata_path))
+}
+
+fn publish_logo(
+    package: &LoadedPackage,
+    relative: &str,
+    output_directory: &Path,
+    release_repository: &str,
+    release_tag: &str,
+) -> Result<PublishedAsset> {
+    validate_relative_path(relative)?;
+    let source = package.directory.join(relative);
+    let metadata = fs::symlink_metadata(&source)
+        .with_context(|| format!("failed to inspect logo {}", source.display()))?;
+    ensure!(
+        metadata.file_type().is_file(),
+        "package logo must be a regular file"
+    );
+    ensure!(
+        metadata.len() > 0 && metadata.len() <= MAX_LOGO_BYTES,
+        "package logo must be between 1 and {MAX_LOGO_BYTES} bytes"
+    );
+
+    let bytes = fs::read(&source)?;
+    let (extension, media_type) = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        ("png", "image/png")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        ("webp", "image/webp")
+    } else {
+        bail!("package logo must be PNG or WebP");
+    };
+
+    publish_asset_bytes(
+        output_directory,
+        format!("{}.logo.{extension}", package.slug),
+        &bytes,
+        media_type,
+        release_repository,
+        release_tag,
+    )
+}
+
+fn publish_readme(
+    package: &LoadedPackage,
+    relative: &str,
+    output_directory: &Path,
+    release_repository: &str,
+    release_tag: &str,
+) -> Result<PublishedAsset> {
+    validate_relative_path(relative)?;
+    let source = package.directory.join(relative);
+    let metadata = fs::symlink_metadata(&source)
+        .with_context(|| format!("failed to inspect README {}", source.display()))?;
+    ensure!(
+        metadata.file_type().is_file(),
+        "package README must be a regular file"
+    );
+    ensure!(
+        metadata.len() > 0 && metadata.len() <= MAX_README_BYTES,
+        "package README must be between 1 and {MAX_README_BYTES} bytes"
+    );
+
+    let bytes = fs::read(&source)?;
+    str::from_utf8(&bytes).context("package README must be UTF-8")?;
+    publish_asset_bytes(
+        output_directory,
+        format!("{}.README.md", package.slug),
+        &bytes,
+        "text/markdown; charset=utf-8",
+        release_repository,
+        release_tag,
+    )
+}
+
+fn publish_asset_bytes(
+    output_directory: &Path,
+    file_name: String,
+    bytes: &[u8],
+    media_type: &str,
+    release_repository: &str,
+    release_tag: &str,
+) -> Result<PublishedAsset> {
+    let output = output_directory.join(&file_name);
+    fs::write(&output, bytes)?;
+    let sha256 = format!("sha256:{:x}", Sha256::digest(bytes));
+    let size = u64::try_from(bytes.len()).context("asset size does not fit into u64")?;
+    let url = format!(
+        "https://github.com/{release_repository}/releases/download/{release_tag}/{file_name}"
+    );
+    Ok(PublishedAsset {
+        file: file_name,
+        url,
+        sha256,
+        size,
+        media_type: media_type.to_string(),
+    })
 }
 
 fn run_build(package: &LoadedPackage) -> Result<()> {
@@ -167,6 +303,19 @@ fn validate_manifest(manifest: &PackageManifest, slug: &str) -> Result<()> {
         manifest.schema
     );
     validate_package_id(&manifest.package.id)?;
+    let mut dependencies = HashSet::new();
+    for dependency in &manifest.package.dependencies {
+        validate_package_id(&dependency.id)?;
+        ensure!(
+            dependency.id != manifest.package.id,
+            "package cannot depend on itself"
+        );
+        ensure!(
+            dependencies.insert(dependency.id.clone()),
+            "duplicate dependency '{}'",
+            dependency.id
+        );
+    }
     ensure!(
         !manifest.package.name.trim().is_empty(),
         "package name cannot be empty"
@@ -179,6 +328,27 @@ fn validate_manifest(manifest: &PackageManifest, slug: &str) -> Result<()> {
         !manifest.package.license.trim().is_empty(),
         "package license cannot be empty"
     );
+    ensure!(
+        manifest.package.authors.len() <= 32
+            && manifest
+                .package
+                .authors
+                .iter()
+                .all(|author| !author.trim().is_empty() && author.len() <= 128),
+        "package authors must contain at most 32 non-empty values up to 128 bytes"
+    );
+    if let Some(url) = manifest.package.homepage.as_deref() {
+        validate_https_metadata_url(url, "homepage")?;
+    }
+    if let Some(url) = manifest.package.source_url.as_deref() {
+        validate_https_metadata_url(url, "source-url")?;
+    }
+    if let Some(path) = manifest.package.logo.as_deref() {
+        validate_relative_path(path)?;
+    }
+    if let Some(path) = manifest.package.readme.as_deref() {
+        validate_relative_path(path)?;
+    }
     validate_relative_path(&manifest.build.artifact_root)?;
     if let Some(program) = manifest.build.command.first() {
         ensure!(
@@ -223,6 +393,24 @@ fn validate_package_id(id: &str) -> Result<()> {
             "package id must use [a-z0-9_-] segments"
         );
     }
+    Ok(())
+}
+
+fn validate_https_metadata_url(value: &str, label: &str) -> Result<()> {
+    ensure!(
+        value.starts_with("https://") && value.len() <= 2048,
+        "{label} must be a bounded HTTPS URL"
+    );
+    let authority = &value["https://".len()..];
+    ensure!(
+        !authority.is_empty()
+            && !authority.starts_with('/')
+            && authority
+                .split('/')
+                .next()
+                .is_some_and(|host| !host.is_empty() && !host.contains('@')),
+        "{label} is invalid"
+    );
     Ok(())
 }
 

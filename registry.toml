@@ -1,0 +1,8 @@
+schema = 1
+
+[repository]
+id = "rtwkit"
+name = "rtwKit"
+homepage = "https://github.com/martrtr/rtwKit"
+base-url = "https://martrtr.github.io/rtwKit/"
+icon = "packages/package-manager/assets/logo.png"

@@ -270,8 +270,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "rintawa-web-runtime"
+name = "rintawa-package-manager"
 version = "0.0.1"
+dependencies = [
+ "base64",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "rintawa-web-runtime"
+version = "0.0.2"
 dependencies = [
  "base64",
  "httparse",

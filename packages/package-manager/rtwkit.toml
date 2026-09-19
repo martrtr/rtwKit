@@ -1,0 +1,17 @@
+schema = 1
+
+[package]
+id = "rintawa.package-manager"
+name = "Package Manager"
+version = "0.0.1"
+description = "Repository-backed extension manager for Rintawa"
+license = "GPL-3.0-only"
+authors = ["martrtr"]
+homepage = "https://github.com/martrtr/rtwKit"
+source-url = "https://github.com/martrtr/rtwKit"
+logo = "assets/logo.png"
+readme = "README.md"
+
+[build]
+artifact-root = "build/rtw"
+command = ["bash", "build.sh"]

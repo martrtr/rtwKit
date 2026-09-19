@@ -1,6 +1,6 @@
 id = "rintawa.web-ui"
-name = "Rintawa Web UI"
-version = "0.0.3"
+name = "Web UI"
+version = "0.0.4"
 sdk = "^0.0"
 
 [[components]]

@@ -1,4 +1,4 @@
-# Rintawa Web Runtime
+# Web Runtime
 
 External execution-target provider for packaged Web components.
 

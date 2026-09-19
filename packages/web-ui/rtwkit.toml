@@ -2,10 +2,14 @@ schema = 1
 
 [package]
 id = "rintawa.web-ui"
-name = "Rintawa Web UI"
-version = "0.0.3"
+name = "Web UI"
+version = "0.0.4"
 description = "Default web UI layer for Rintawa"
 license = "GPL-3.0-only"
+
+[[package.dependencies]]
+id = "rintawa.web-runtime"
+requirement = ">=0.0.1, <0.1.0"
 
 [build]
 artifact-root = "build/rtw"

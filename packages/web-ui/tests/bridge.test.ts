@@ -33,7 +33,9 @@ describe("web UI bridge", () => {
             id: "main",
             placement: "primary",
             semantic: null,
-            required_capabilities: [],
+            activity: null,
+      traits: [],
+      required_capabilities: [],
           },
           snapshot: {
             surface_id: "main",
@@ -48,6 +50,218 @@ describe("web UI bridge", () => {
     expect(message.type).toBe("state");
   });
 
+
+  test("defaults omitted button appearance for older surfaces", () => {
+    const message = parseHostMessage({
+      type: "state",
+      protocol_major: 1,
+      surfaces: [
+        {
+          owner: { instance_id: "feature", component_id: "runtime" },
+          contribution: {
+            id: "main",
+            placement: "primary",
+            semantic: null,
+            activity: null,
+            traits: [],
+            required_capabilities: ["rintawa.ui.button@1"],
+          },
+          snapshot: {
+            surface_id: "main",
+            revision: "1",
+            root: "button",
+            nodes: [
+              {
+                id: "button",
+                kind: {
+                  type: "button",
+                  data: {
+                    label: "Run",
+                    action: "demo.run",
+                    is_enabled: true,
+                  },
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(message.type).toBe("state");
+    if (message.type === "state") {
+      const button = message.surfaces[0]?.snapshot.nodes[0];
+      expect(button?.kind.type).toBe("button");
+      if (button?.kind.type === "button") {
+        expect(button.kind.data.appearance).toBe("default");
+        expect(button.semantic).toBeNull();
+        expect(button.traits).toEqual([]);
+      }
+    }
+  });
+
+  test("accepts renderer-neutral data grids", () => {
+    const message = parseHostMessage({
+      type: "state",
+      protocol_major: 1,
+      surfaces: [
+        {
+          owner: { instance_id: "feature", component_id: "runtime" },
+          contribution: {
+            id: "main",
+            placement: "primary",
+            semantic: null,
+            activity: null,
+            traits: [],
+            required_capabilities: ["rintawa.ui.data-grid@1"],
+          },
+          snapshot: {
+            surface_id: "main",
+            revision: "1",
+            root: "grid",
+            nodes: [
+              {
+                id: "grid",
+                kind: {
+                  type: "data-grid",
+                  data: {
+                    columns: [
+                      {
+                        key: "name",
+                        label: "Name",
+                        weight: 3,
+                        sort_action: "grid.sort",
+                        sort_direction: "ascending",
+                      },
+                      {
+                        key: "status",
+                        label: "Status",
+                        weight: 1,
+                        sort_action: "grid.sort",
+                        sort_direction: null,
+                      },
+                    ],
+                    cells: ["name", "status"],
+                    selected_rows: [0],
+                    row_keys: ["demo"],
+                    row_action: "grid.activate-row",
+                  },
+                },
+              },
+              { id: "name", kind: { type: "text", data: { text: "Demo" } } },
+              { id: "status", kind: { type: "text", data: { text: "Ready" } } },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(message.type).toBe("state");
+    if (message.type === "state") {
+      const grid = message.surfaces[0]?.snapshot.nodes[0];
+      expect(grid?.kind.type).toBe("data-grid");
+      if (grid?.kind.type === "data-grid") {
+        expect(grid.kind.data.selected_rows).toEqual([0]);
+        expect(grid.kind.data.row_keys).toEqual(["demo"]);
+        expect(grid.kind.data.row_action).toBe("grid.activate-row");
+        expect(grid.kind.data.columns[0]?.key).toBe("name");
+        expect(grid.kind.data.columns[0]?.sort_direction).toBe("ascending");
+      }
+    }
+  });
+
+  test("defaults omitted data-grid selection for older surfaces", () => {
+    const message = parseHostMessage({
+      type: "state",
+      protocol_major: 1,
+      surfaces: [
+        {
+          owner: { instance_id: "feature", component_id: "runtime" },
+          contribution: {
+            id: "main",
+            placement: "primary",
+            semantic: null,
+            activity: null,
+            traits: [],
+            required_capabilities: ["rintawa.ui.data-grid@1"],
+          },
+          snapshot: {
+            surface_id: "main",
+            revision: "1",
+            root: "grid",
+            nodes: [
+              {
+                id: "grid",
+                kind: {
+                  type: "data-grid",
+                  data: {
+                    columns: [{ label: "Name", weight: 1 }],
+                    cells: ["name"],
+                  },
+                },
+              },
+              { id: "name", kind: { type: "text", data: { text: "Demo" } } },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(message.type).toBe("state");
+    if (message.type === "state") {
+      const grid = message.surfaces[0]?.snapshot.nodes[0];
+      if (grid?.kind.type === "data-grid") {
+        expect(grid.kind.data.selected_rows).toEqual([]);
+        expect(grid.kind.data.row_keys).toEqual([]);
+        expect(grid.kind.data.row_action).toBeNull();
+        expect(grid.kind.data.columns[0]?.key).toBeNull();
+        expect(grid.kind.data.columns[0]?.sort_action).toBeNull();
+        expect(grid.kind.data.columns[0]?.sort_direction).toBeNull();
+      }
+    }
+  });
+
+  test("rejects data-grid selection outside the row range", () => {
+    expect(() =>
+      parseHostMessage({
+        type: "state",
+        protocol_major: 1,
+        surfaces: [
+          {
+            owner: { instance_id: "feature", component_id: "runtime" },
+            contribution: {
+              id: "main",
+              placement: "primary",
+              semantic: null,
+              activity: null,
+              traits: [],
+              required_capabilities: ["rintawa.ui.data-grid@1"],
+            },
+            snapshot: {
+              surface_id: "main",
+              revision: "1",
+              root: "grid",
+              nodes: [
+                {
+                  id: "grid",
+                  kind: {
+                    type: "data-grid",
+                    data: {
+                      columns: [{ label: "Name", weight: 1 }],
+                      cells: ["name"],
+                      selected_rows: [1],
+                    },
+                  },
+                },
+                { id: "name", kind: { type: "text", data: { text: "Demo" } } },
+              ],
+            },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
   test("rejects invalid revisions at the web boundary", () => {
     const message = (revision: unknown) => ({
       type: "state",
@@ -59,7 +273,9 @@ describe("web UI bridge", () => {
             id: "main",
             placement: "primary",
             semantic: null,
-            required_capabilities: [],
+            activity: null,
+      traits: [],
+      required_capabilities: [],
           },
           snapshot: {
             surface_id: "main",

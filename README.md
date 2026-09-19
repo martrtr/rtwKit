@@ -8,8 +8,10 @@ artifact model available to third-party repositories.
 
 Source code lives together in this monorepo, but users never need to clone it.
 Each package version is published independently as one immutable `.rtw` GitHub
-Release asset. A small GitHub Pages `index.json` lists the available versions and
-their SHA-256 digests.
+Release asset. A small GitHub Pages `index.json` lists the available versions, package
+presentation assets and their SHA-256 digests. The root `registry.toml`
+describes repository identity; the registry builder publishes its bounded icon
+next to the index and emits a verified asset descriptor.
 
 ```text
 packages/<slug>/ source

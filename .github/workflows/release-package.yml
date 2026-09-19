@@ -58,9 +58,10 @@ jobs:
             exit 1
           fi
           title="$(jq -r '.package.name + " " + .package.version' "${{ steps.build.outputs.metadata }}")"
+          mapfile -t release_assets < <(find dist -maxdepth 1 -type f -print | sort)
+          test "${#release_assets[@]}" -ge 2
           gh release create "$GITHUB_REF_NAME" \
-            "${{ steps.build.outputs.artifact }}" \
-            "${{ steps.build.outputs.metadata }}" \
+            "${release_assets[@]}" \
             --verify-tag \
             --latest=false \
             --title "$title" \

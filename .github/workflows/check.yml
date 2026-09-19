@@ -13,11 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Install Rust 1.98
+      - name: Install repository Rust toolchain
         run: |
-          rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
-          rustup default 1.98.0
-          rustup target add wasm32-unknown-unknown
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
+          rustup default 1.98.1
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -38,6 +37,8 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Test
-        run: cargo test --locked --workspace
+        run: cargo test --locked --workspace --all-features
+      - name: Docs
+        run: cargo doc --locked --workspace --all-features --no-deps

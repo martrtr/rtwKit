@@ -14,11 +14,19 @@ name = "Example"
 version = "0.1.0"
 description = "Example rtwKit package"
 license = "GPL-3.0-only"
+authors = ["Example Author"]
+logo = "assets/logo.png"
+readme = "README.md"
 
 [build]
 artifact-root = "build/rtw"
 command = ["bash", "build.sh"]
 ```
+
+`logo` and `readme` are optional bounded presentation assets. The release tooling
+publishes them independently from the RTW and records HTTPS URL, SHA-256, size,
+and media type in the registry so Extension Manager can show package cards
+without downloading or executing the package.
 
 `artifact-root` is the directory that becomes the root of the final `.rtw` ZIP.
 It must contain a valid `rtw.toml`. The registry tooling reads the RTW content type

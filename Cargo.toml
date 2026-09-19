@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["tools/registry-tool", "tools/componentize", "packages/web-runtime"]
+members = ["tools/registry-tool", "tools/componentize", "packages/web-runtime", "packages/package-manager"]
 
 [workspace.package]
 edition = "2024"
@@ -9,6 +9,7 @@ license = "GPL-3.0-only"
 
 [workspace.dependencies]
 anyhow = "1"
+base64 = "0.22"
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

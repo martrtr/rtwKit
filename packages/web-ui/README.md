@@ -1,4 +1,4 @@
-# Rintawa Web UI
+# Web UI
 
 Default React UI layer for Rintawa.
 

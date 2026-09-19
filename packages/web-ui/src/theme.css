@@ -28,4 +28,10 @@
   --rintawa-web-color-border: var(--rintawa-color-border, #2c2c31);
   --rintawa-web-color-control-border: var(--rintawa-color-border, #3f3f46);
   --rintawa-web-radius-surface: var(--rintawa-radius-surface, var(--rintawa-radius-control, 0.75rem));
+  --rintawa-web-activity-rail-width: 3rem;
+  --rintawa-web-dock-min-width: 13rem;
+  --rintawa-web-tab-height: 2.35rem;
+  --rintawa-web-motion-fast: 120ms;
+  --rintawa-web-motion-normal: 180ms;
+  --rintawa-web-motion-easing: cubic-bezier(0.2, 0, 0, 1);
 }

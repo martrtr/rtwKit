@@ -23,7 +23,28 @@
       "web.color.border": "#2c2c31",
       "web.color.control-border": "#3f3f46",
       "web.radius.surface": "0.75rem",
+      "web.workbench.activity-rail-width": "3rem",
+      "web.workbench.dock-min-width": "13rem",
+      "web.workbench.tab-height": "2.35rem",
+      "web.motion.fast": "120ms",
+      "web.motion.normal": "180ms",
+      "web.motion.easing": "cubic-bezier(0.2, 0, 0, 1)",
       "web.color-scheme": "dark"
+    },
+    "icons": {
+      "activity.extensions": "packages",
+      "activity.extension": "puzzle",
+      "action.download": "download",
+      "action.update": "upload",
+      "action.remove": "trash",
+      "action.settings": "settings",
+      "action.search": "search",
+      "action.more": "dots",
+      "status.warning": "warning",
+      "status.success": "check",
+      "repository.generic": "database",
+      "fallback.package": "package",
+      "fallback.generic": "box"
     }
   },
   "shell": {
@@ -31,8 +52,9 @@
       "type": "split",
       "axis": "horizontal",
       "children": [
+        { "type": "region", "region": "left-dock", "weight": 0.28 },
         { "type": "region", "region": "main", "weight": 1 },
-        { "type": "region", "region": "sidebar", "weight": 0.32 }
+        { "type": "region", "region": "right-dock", "weight": 0.28 }
       ]
     },
     "layers": [
@@ -40,11 +62,46 @@
       { "region": "dialog", "presentation": "dialog" },
       { "region": "overlay", "presentation": "overlay" }
     ],
+    "region_presentations": [
+      {
+        "region": "left-dock",
+        "label": "Left Dock",
+        "mode": "activity-tabs",
+        "accepts_activities": true,
+        "collapsible": true,
+        "resize": { "edge": "end", "min_size": 180, "max_size": 720 }
+      },
+      {
+        "region": "main",
+        "label": "Main",
+        "mode": "activity-tabs",
+        "accepts_activities": true,
+        "collapsible": false
+      },
+      {
+        "region": "right-dock",
+        "label": "Right Dock",
+        "mode": "activity-tabs",
+        "accepts_activities": true,
+        "collapsible": true,
+        "resize": { "edge": "start", "min_size": 180, "max_size": 720 }
+      }
+    ],
+    "activity_bar": {
+      "presentation": "vertical-start"
+    },
     "rules": [
+      { "match": { "semantic": "management.extensions@1" }, "region": "main" },
+      { "match": { "trait": "navigation" }, "region": "left-dock" },
+      { "match": { "trait": "inspector" }, "region": "right-dock" },
+      { "match": { "trait": "workspace-tool" }, "region": "main" },
+      { "match": { "trait": "settings" }, "region": "main" },
+      { "match": { "trait": "scene-primary" }, "region": "main" },
+      { "match": { "trait": "scene-secondary" }, "region": "right-dock" },
       { "match": { "placement": "primary" }, "region": "main" },
       { "match": { "placement": "secondary" }, "region": "main" },
       { "match": { "placement": "settings" }, "region": "main" },
-      { "match": { "placement": "sidebar" }, "region": "sidebar" },
+      { "match": { "placement": "sidebar" }, "region": "left-dock" },
       { "match": { "placement": "status" }, "region": "status" },
       { "match": { "placement": "dialog" }, "region": "dialog" },
       { "match": { "placement": "overlay" }, "region": "overlay" }

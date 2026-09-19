@@ -18,6 +18,8 @@ function demoSurface(): UiPresentationSurface {
       id: "demo.main",
       placement: "primary",
       semantic: null,
+      activity: null,
+      traits: [],
       required_capabilities: [],
     },
     snapshot: {
@@ -29,7 +31,7 @@ function demoSurface(): UiPresentationSurface {
           id: "root",
           kind: { type: "column", data: { children: ["title", "body", "input", "notes", "row", "list"] } },
         },
-        { id: "title", kind: { type: "text", data: { text: "Rintawa Web UI" } } },
+        { id: "title", kind: { type: "text", data: { text: "Web UI" } } },
         {
           id: "body",
           kind: {
@@ -71,7 +73,12 @@ function demoSurface(): UiPresentationSurface {
           id: "button",
           kind: {
             type: "button",
-            data: { label: "Run action", action: "demo.run", is_enabled: true },
+            data: {
+              label: "Run action",
+              action: "demo.run",
+              is_enabled: true,
+              appearance: "default",
+            },
           },
         },
         { id: "status", kind: { type: "text", data: { text: "Ready" } } },

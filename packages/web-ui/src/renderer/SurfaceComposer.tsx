@@ -11,6 +11,7 @@ import type {
   WebExperiencePack,
 } from "../experience/types";
 import { PortableSurface } from "./PortableSurface";
+import { WorkbenchComposer } from "./WorkbenchComposer";
 
 export type SurfacesByRegion = Map<string, UiPresentationSurface[]>;
 
@@ -117,6 +118,22 @@ export function SurfaceComposer({
     () => groupSurfacesByRegion(surfaces, experiencePack),
     [surfaces, experiencePack],
   );
+  const hasActivityWorkbench =
+    experiencePack.shell.activity_bar !== undefined &&
+    experiencePack.shell.activity_bar.presentation !== "hidden" &&
+    (experiencePack.shell.region_presentations ?? []).some(
+      (presentation) => presentation.accepts_activities === true,
+    );
+
+  if (hasActivityWorkbench) {
+    return (
+      <WorkbenchComposer
+        surfaces={surfaces}
+        onAction={onAction}
+        experiencePack={experiencePack}
+      />
+    );
+  }
   const workspace = renderLayoutNode(
     experiencePack.shell.workspace,
     regions,
