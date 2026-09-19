@@ -5,6 +5,10 @@ on:
     workflows: ["Release package"]
     types: [completed]
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-registry.yml"
 
 permissions:
   contents: read
@@ -18,7 +22,7 @@ concurrency:
 
 jobs:
   build:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -40,7 +44,7 @@ jobs:
             gh api \
               -H "Accept: application/octet-stream" \
               "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
-              > "_release-metadata/${name}"
+              > "_release-metadata/${asset_id}-${name}"
           done < _release-assets.tsv
       - name: Build deterministic registry index
         run: |
