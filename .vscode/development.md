@@ -30,6 +30,20 @@ installed handler. The Extension Manager interprets the request and must show
 package, source, version, permissions, and dependencies before installation.
 Core does not implement repository or package-manager semantics.
 
+## Secrets and provider credentials
+
+Real provider credentials are allowed in development, but they must never become
+package source, package metadata, fixtures, logs, release assets, or committed local
+configuration. Provider packages must obtain credentials through the generic
+component-scoped Core secret capability.
+
+The repository security gate uses pinned Gitleaks 8.30.1 with verified release
+archive checksums. `scripts/check.sh` scans complete Git history, unstaged tracked
+changes, and the staged pre-commit diff. Package release CI repeats the scan before
+building an immutable RTW artifact. No secret baseline or broad allowlist is used.
+If a real credential ever enters Git history, rotate/revoke it rather than merely
+deleting the current file.
+
 ## Implementation order
 
 1. **Done:** run the React Web UI through the external `web-runtime` RTW provider.
