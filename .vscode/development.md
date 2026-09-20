@@ -33,9 +33,16 @@ Core does not implement repository or package-manager semantics.
 ## Implementation order
 
 1. **Done:** run the React Web UI through the external `web-runtime` RTW provider.
-2. Add Extension Manager Portable UI surfaces now that the Web layer is usable.
-3. Add remote repository install/update, dependency solving, packs, and install
-   intents incrementally.
+2. **Done:** provide the Package Manager as an ordinary Portable UI extension with
+   repository browse/search, exact-artifact install/update, dependency solving,
+   permission review, enable/disable/uninstall, and immutable release provenance.
+3. **Done:** cover Package Manager self-update through the real WebSocket/Portable
+   UI path, exact persisted digest verification, and restart in release CI.
+4. **Next MVP slice:** add Chat and AI Provider as independently versioned ordinary
+   packages using the generic Core service contract and component-scoped secret
+   capability. Do not add Chat/AI-specific host APIs or Core semantics.
+5. Add install intents/packs only when their concrete UX is required; they are not
+   prerequisites for the first Chat + AI Provider composition.
 
 ## Dev-mode invariant
 
