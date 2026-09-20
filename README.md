@@ -38,8 +38,16 @@ part of the public package source.
 
 ## Current packages
 
+- `package-manager` — repository-backed extension discovery, dependency solving, permission review, and exact-artifact activation.
 - `web-runtime` — external `rintawa.runtime.web-bundle@1` execution-target provider.
 - `web-ui` — React Host Shell / Portable UI Layer executed through `web-runtime`.
+
+Published `(package id, version)` coordinates are immutable: a released version is
+never rebuilt or replaced in-place. The registry digest identifies and verifies the
+exact artifact for those coordinates. Local or development builds may temporarily
+reuse a semantic version while iterating; Package Manager treats a same-version but
+different-digest activation as unpublished and can replace it with the exact
+repository artifact.
 
 ## Publishing a package
 

@@ -36,8 +36,11 @@ pub(crate) enum Message {
     StatusEnabled,
     StatusDisabled,
     StatusUpdateAvailable,
+    StatusPublishedBuildDiffers,
     StatusRequiredDependency,
     StatusDependencyMetadataUnknown,
+    LocalBaseline,
+    LocalUnpublishedBuild,
     All,
     NotInstalled,
     Installed,
@@ -90,8 +93,11 @@ pub(crate) fn message(id: Message) -> &'static str {
         Message::StatusEnabled => "Enabled",
         Message::StatusDisabled => "Disabled",
         Message::StatusUpdateAvailable => "Update available",
+        Message::StatusPublishedBuildDiffers => "Published build differs",
         Message::StatusRequiredDependency => "Required dependency",
         Message::StatusDependencyMetadataUnknown => "Dependency metadata unknown",
+        Message::LocalBaseline => "Local / baseline",
+        Message::LocalUnpublishedBuild => "Local / unpublished build",
         Message::All => "All",
         Message::NotInstalled => "Not installed",
         Message::Installed => "Installed",
@@ -109,4 +115,29 @@ pub(crate) fn message(id: Message) -> &'static str {
         Message::ConfirmInstall => "Confirm install",
         Message::Cancel => "Cancel",
     }
+}
+
+/// Formats the action used to update an installed package to a newer release.
+pub(crate) fn update_to(version: &str) -> String {
+    format!("Update to {version}")
+}
+
+/// Formats the action used to select an older published package release.
+pub(crate) fn switch_to(version: &str) -> String {
+    format!("Switch to {version}")
+}
+
+/// Formats the action used to install one selected package release.
+pub(crate) fn install_version(version: &str) -> String {
+    format!("Install {version}")
+}
+
+/// Formats the disabled action shown for an already-installed exact release.
+pub(crate) fn installed_release(version: &str) -> String {
+    format!("Installed {version}")
+}
+
+/// Formats the action used when the semver matches but the installed artifact digest does not.
+pub(crate) fn replace_with_published_build(version: &str) -> String {
+    format!("Replace with published {version}")
 }

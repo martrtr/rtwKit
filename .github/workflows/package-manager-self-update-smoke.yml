@@ -1,0 +1,70 @@
+name: Package Manager self-update smoke
+
+on:
+  workflow_run:
+    workflows: ["Publish registry"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-update:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out rtwKit
+        uses: actions/checkout@v6
+
+      - name: Check out Core dev
+        uses: actions/checkout@v6
+        with:
+          repository: martrtr/rintawa
+          ref: dev
+          path: core
+
+      - name: Install Core Rust toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup default 1.98.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build Core host
+        working-directory: core
+        run: cargo build --locked -p rintawa
+
+      - name: Resolve published Package Manager registry version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          rm -rf _smoke-release-metadata _smoke-registry
+          mkdir -p _smoke-release-metadata _smoke-registry
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | select(.draft == false) | .assets[] | select(.name | endswith(".registry.json")) | [.name, (.id | tostring)] | @tsv' \
+            > _smoke-release-assets.tsv
+          while IFS=$'\t' read -r name asset_id; do
+            test -n "$asset_id" || continue
+            gh api \
+              -H "Accept: application/octet-stream" \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+              > "_smoke-release-metadata/${asset_id}-${name}"
+          done < _smoke-release-assets.tsv
+          cargo run --locked -p rtwkit-registry-tool -- \
+            build-index _smoke-release-metadata _smoke-registry/index.json
+          version="$(
+            jq -er '.packages[] | select(.id == "rintawa.package-manager") | .latest' \
+              _smoke-registry/index.json
+          )"
+          echo "RINTAWA_EXPECTED_PM_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Exercise previous Package Manager self-update through WebSocket UI
+        env:
+          RINTAWA_BIN: ${{ github.workspace }}/core/target/debug/rintawa
+        run: node scripts/smoke-package-manager-self-update.mjs

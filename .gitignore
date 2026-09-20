@@ -2,4 +2,14 @@
 **/dist/
 **/node_modules/
 **/build/
+__pycache__/
+*.pyc
+
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
 .DS_Store
