@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
-  CSSProperties,
+  KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
 } from "react";
@@ -14,6 +14,19 @@ import type {
 } from "../experience/types";
 import { InterfaceIcon } from "../icons/InterfaceIcon";
 import { PortableSurface } from "./PortableSurface";
+import {
+  effectiveWeights,
+  resizeAdjacentWeightsWithinBounds,
+} from "./portableLayout";
+import {
+  readWorkspacePreferences,
+  shellLayoutIdentity,
+  shellLayoutLabel,
+  shellRegionPresentation,
+  shellResizeBounds,
+  writeWorkspacePreferences,
+} from "./workspaceLayout";
+import type { WorkspacePreferences } from "./workspaceLayout";
 
 export interface DerivedActivity {
   key: string;
@@ -22,41 +35,6 @@ export interface DerivedActivity {
   iconSlot: string | null;
   surfaces: UiPresentationSurface[];
   defaultRegion: string;
-}
-
-interface WorkspacePreferences {
-  placements: Record<string, string>;
-  activeByRegion: Record<string, string>;
-  collapsed: Record<string, boolean>;
-  sizes: Record<string, number>;
-}
-
-const EMPTY_PREFERENCES: WorkspacePreferences = {
-  placements: {},
-  activeByRegion: {},
-  collapsed: {},
-  sizes: {},
-};
-
-function workspaceStorageKey(pack: WebExperiencePack): string {
-  return `rintawa.web.workspace.v1:${pack.id}`;
-}
-
-function readWorkspacePreferences(pack: WebExperiencePack): WorkspacePreferences {
-  if (typeof window === "undefined") return EMPTY_PREFERENCES;
-  try {
-    const raw = window.localStorage.getItem(workspaceStorageKey(pack));
-    if (!raw) return EMPTY_PREFERENCES;
-    const parsed = JSON.parse(raw) as Partial<WorkspacePreferences>;
-    return {
-      placements: parsed.placements ?? {},
-      activeByRegion: parsed.activeByRegion ?? {},
-      collapsed: parsed.collapsed ?? {},
-      sizes: parsed.sizes ?? {},
-    };
-  } catch {
-    return EMPTY_PREFERENCES;
-  }
 }
 
 function humanizeSurface(surface: UiPresentationSurface): string {
@@ -132,13 +110,10 @@ interface ActivityRegionProps {
   activities: readonly DerivedActivity[];
   activeKey: string | undefined;
   collapsed: boolean;
-  size: number | undefined;
   onFocus: (activity: DerivedActivity) => void;
   onToggleCollapsed: () => void;
-  onResize: (size: number) => void;
   onOpenMenu: (activity: DerivedActivity, anchor: HTMLElement) => void;
   onAction: (event: UiActionEvent) => void;
-  style?: CSSProperties;
 }
 
 function ActivityRegion({
@@ -147,13 +122,10 @@ function ActivityRegion({
   activities,
   activeKey,
   collapsed,
-  size,
   onFocus,
   onToggleCollapsed,
-  onResize,
   onOpenMenu,
   onAction,
-  style,
 }: ActivityRegionProps) {
   if (presentation?.collapsible && (collapsed || activities.length === 0)) {
     return null;
@@ -162,41 +134,11 @@ function ActivityRegion({
   const active =
     activities.find((activity) => activity.key === activeKey) ?? activities[0];
 
-  const resize = presentation?.resize;
-  const beginResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!resize) return;
-    const regionElement = event.currentTarget.parentElement;
-    if (!regionElement) return;
-
-    event.preventDefault();
-    const startX = event.clientX;
-    const startSize = regionElement.getBoundingClientRect().width;
-    const minimum = resize.min_size ?? 96;
-    const maximum = resize.max_size ?? 4096;
-    const direction = resize.edge === "end" ? 1 : -1;
-
-    const move = (pointerEvent: PointerEvent) => {
-      const requested =
-        startSize + (pointerEvent.clientX - startX) * direction;
-      onResize(Math.min(maximum, Math.max(minimum, requested)));
-    };
-    const stop = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
-      window.removeEventListener("pointercancel", stop);
-    };
-
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop);
-    window.addEventListener("pointercancel", stop);
-  };
-
   return (
     <section
       className="rintawa-workbench-region"
       data-shell-region={region}
       data-region-mode={presentation?.mode ?? "plain"}
-      style={style}
     >
       {presentation?.mode === "activity-tabs" ? (
         <div className="rintawa-workbench-tabs" role="tablist" aria-label={presentation.label}>
@@ -249,17 +191,6 @@ function ActivityRegion({
           </div>
         )}
       </div>
-
-      {resize ? (
-        <button
-          type="button"
-          className="rintawa-region-resize-handle"
-          data-edge={resize.edge}
-          aria-label={`Resize ${presentation.label}`}
-          aria-valuenow={size === undefined ? undefined : Math.round(size)}
-          onPointerDown={beginResize}
-        />
-      ) : null}
     </section>
   );
 }
@@ -270,26 +201,16 @@ function renderWorkbenchLayout(
   assigned: ReadonlyMap<string, DerivedActivity[]>,
   activeByRegion: Readonly<Record<string, string>>,
   collapsed: Readonly<Record<string, boolean>>,
-  sizes: Readonly<Record<string, number>>,
+  splitWeights: Readonly<Record<string, number[]>>,
   onFocus: (activity: DerivedActivity) => void,
   onToggleCollapsed: (region: string) => void,
-  onResizeRegion: (region: string, size: number) => void,
+  onResizeSplit: (splitId: string, weights: number[]) => void,
   onOpenMenu: (activity: DerivedActivity, anchor: HTMLElement) => void,
   onAction: (event: UiActionEvent) => void,
   key: string,
 ): ReactNode {
   if (node.type === "region") {
-    const presentation = pack.shell.region_presentations?.find(
-      (item) => item.region === node.region,
-    );
-    const requestedSize = presentation?.resize ? sizes[node.region] : undefined;
-    const size =
-      requestedSize !== undefined && Number.isFinite(requestedSize)
-        ? Math.min(
-            presentation?.resize?.max_size ?? 4096,
-            Math.max(presentation?.resize?.min_size ?? 96, requestedSize),
-          )
-        : undefined;
+    const presentation = shellRegionPresentation(pack, node);
     return (
       <ActivityRegion
         key={key}
@@ -298,45 +219,171 @@ function renderWorkbenchLayout(
         activities={assigned.get(node.region) ?? []}
         activeKey={activeByRegion[node.region]}
         collapsed={collapsed[node.region] ?? false}
-        size={size}
         onFocus={onFocus}
         onToggleCollapsed={() => onToggleCollapsed(node.region)}
-        onResize={(nextSize) => onResizeRegion(node.region, nextSize)}
         onOpenMenu={onOpenMenu}
         onAction={onAction}
-        style={{
-          flexGrow: size === undefined ? node.weight ?? 1 : 0,
-          flexBasis: size === undefined ? 0 : `${size}px`,
-        }}
       />
     );
   }
 
-  const children = node.children
-    .map((child, index) =>
-      renderWorkbenchLayout(
+  const splitId = shellLayoutIdentity(node);
+  const defaultWeights = node.children.map((child) =>
+    child.type === "region" ? child.weight ?? 1 : 1,
+  );
+  const weights = effectiveWeights(defaultWeights, splitWeights[splitId]);
+  const visibleChildren = node.children
+    .map((child, sourceIndex) => ({
+      child,
+      sourceIndex,
+      content: renderWorkbenchLayout(
         child,
         pack,
         assigned,
         activeByRegion,
         collapsed,
-        sizes,
+        splitWeights,
         onFocus,
         onToggleCollapsed,
-        onResizeRegion,
+        onResizeSplit,
         onOpenMenu,
         onAction,
-        `${key}.${index}`,
+        `${key}.${sourceIndex}`,
       ),
-    )
-    .filter((child) => child !== null);
+    }))
+    .filter((entry) => entry.content !== null);
 
-  if (children.length === 0) return null;
-  if (children.length === 1) return children[0];
+  if (visibleChildren.length === 0) return null;
+  if (visibleChildren.length === 1) return visibleChildren[0]!.content;
+
+  const resizeVisiblePair = (
+    visibleIndex: number,
+    deltaPixels: number,
+    pairPixels: number,
+  ) => {
+    const first = visibleChildren[visibleIndex];
+    const second = visibleChildren[visibleIndex + 1];
+    if (!first || !second) return;
+
+    const firstBounds = shellResizeBounds(pack, first.child);
+    const secondBounds = shellResizeBounds(pack, second.child);
+    const pair = [weights[first.sourceIndex]!, weights[second.sourceIndex]!];
+    const resized = resizeAdjacentWeightsWithinBounds(
+      pair,
+      0,
+      deltaPixels,
+      pairPixels,
+      {
+        minimumFirstPixels: firstBounds.minimum,
+        minimumSecondPixels: secondBounds.minimum,
+        maximumFirstPixels: firstBounds.maximum,
+        maximumSecondPixels: secondBounds.maximum,
+      },
+    );
+    const next = [...weights];
+    next[first.sourceIndex] = resized[0]!;
+    next[second.sourceIndex] = resized[1]!;
+    onResizeSplit(splitId, next);
+  };
+
+  const adjacentPaneGeometry = (
+    handle: HTMLButtonElement,
+    visibleIndex: number,
+  ) => {
+    const split = handle.parentElement;
+    if (!split) return null;
+    const panes = [...split.children].filter((element) =>
+      element.classList.contains("rintawa-shell-split-pane"),
+    );
+    const first = panes[visibleIndex]?.getBoundingClientRect();
+    const second = panes[visibleIndex + 1]?.getBoundingClientRect();
+    if (!first || !second) return null;
+    const pairPixels =
+      node.axis === "horizontal"
+        ? first.width + second.width
+        : first.height + second.height;
+    return { pairPixels };
+  };
+
+  const resizeByKeyboard = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    visibleIndex: number,
+    deltaPixels: number,
+  ) => {
+    const geometry = adjacentPaneGeometry(event.currentTarget, visibleIndex);
+    if (!geometry) return;
+    resizeVisiblePair(visibleIndex, deltaPixels, geometry.pairPixels);
+  };
+
+  const beginResize = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    visibleIndex: number,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const geometry = adjacentPaneGeometry(event.currentTarget, visibleIndex);
+    if (!geometry) return;
+
+    const horizontal = node.axis === "horizontal";
+    const startCoordinate = horizontal ? event.clientX : event.clientY;
+    const pairPixels = geometry.pairPixels;
+
+    const move = (pointerEvent: PointerEvent) => {
+      const coordinate = horizontal ? pointerEvent.clientX : pointerEvent.clientY;
+      resizeVisiblePair(
+        visibleIndex,
+        coordinate - startCoordinate,
+        pairPixels,
+      );
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  };
 
   return (
     <div key={key} className="rintawa-shell-split" data-axis={node.axis}>
-      {children}
+      {visibleChildren.flatMap((entry, visibleIndex) => {
+        const pane = (
+          <div
+            key={shellLayoutIdentity(entry.child)}
+            className="rintawa-shell-split-pane"
+            style={{ flexGrow: weights[entry.sourceIndex] ?? 1 }}
+          >
+            {entry.content}
+          </div>
+        );
+        if (visibleIndex === visibleChildren.length - 1) return [pane];
+
+        const next = visibleChildren[visibleIndex + 1]!;
+        return [
+          pane,
+          <button
+            key={`${shellLayoutIdentity(entry.child)}:resize`}
+            type="button"
+            className="rintawa-shell-split-resize-handle"
+            data-axis={node.axis}
+            aria-label={`Resize ${shellLayoutLabel(pack, entry.child)} and ${shellLayoutLabel(pack, next.child)}`}
+            onPointerDown={(event) => beginResize(event, visibleIndex)}
+            onKeyDown={(event) => {
+              const decrease = node.axis === "horizontal" ? "ArrowLeft" : "ArrowUp";
+              const increase = node.axis === "horizontal" ? "ArrowRight" : "ArrowDown";
+              if (event.key === decrease) {
+                event.preventDefault();
+                resizeByKeyboard(event, visibleIndex, -40);
+              } else if (event.key === increase) {
+                event.preventDefault();
+                resizeByKeyboard(event, visibleIndex, 40);
+              }
+            }}
+          />,
+        ];
+      })}
     </div>
   );
 }
@@ -379,11 +426,7 @@ export function WorkbenchComposer({
   }, [experiencePack]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(
-      workspaceStorageKey(experiencePack),
-      JSON.stringify(preferences),
-    );
+    writeWorkspacePreferences(experiencePack, preferences);
   }, [experiencePack, preferences]);
 
   const assigned = useMemo(() => {
@@ -456,13 +499,13 @@ export function WorkbenchComposer({
     }));
   };
 
-  const resizeRegion = (region: string, size: number) => {
-    if (!Number.isFinite(size)) return;
+  const resizeSplit = (splitId: string, weights: number[]) => {
+    if (!weights.every((weight) => Number.isFinite(weight) && weight > 0)) return;
     updatePreferences((current) => ({
       ...current,
-      sizes: {
-        ...current.sizes,
-        [region]: size,
+      splitWeights: {
+        ...current.splitWeights,
+        [splitId]: weights,
       },
     }));
   };
@@ -486,10 +529,10 @@ export function WorkbenchComposer({
     assigned,
     effectiveActiveByRegion,
     preferences.collapsed,
-    preferences.sizes,
+    preferences.splitWeights,
     focusActivity,
     toggleCollapsed,
-    resizeRegion,
+    resizeSplit,
     openMenu,
     onAction,
     "workspace",

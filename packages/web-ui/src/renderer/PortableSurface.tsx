@@ -13,6 +13,7 @@ import type { UiNode, UiTextInputNode } from "../bridge/types";
 import { InterfaceIcon } from "../icons/InterfaceIcon";
 import {
   EMPTY_PORTABLE_LAYOUT_OVERRIDES,
+  effectiveChildOrder,
   effectiveWeights,
   portableLayoutStorageKey,
   readPortableLayoutOverrides,
@@ -162,7 +163,7 @@ function NodeRenderer({ surface, onAction, nodeId, nodes, ancestors }: NodeRende
 
   const nextAncestors = new Set(ancestors).add(nodeId);
   const children = (ids: string[]) =>
-    ids.map((childId) => (
+    effectiveChildOrder(ids, layout.overrides.childOrder[node.id]).map((childId) => (
       <NodeRenderer
         key={childId}
         surface={surface}

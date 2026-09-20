@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  effectiveChildOrder,
   effectiveWeights,
   resizeAdjacentWeights,
+  resizeAdjacentWeightsWithinBounds,
 } from "../src/renderer/portableLayout";
 
 describe("portable layout overrides", () => {
@@ -26,5 +28,23 @@ describe("portable layout overrides", () => {
 
     expect(result[0]).toBeCloseTo(0.6);
     expect(result[1]).toBeCloseTo(1.4);
+  });
+
+  it("honors asymmetric minimum and maximum resize bounds", () => {
+    const result = resizeAdjacentWeightsWithinBounds([1, 1], 0, 10_000, 500, {
+      minimumFirstPixels: 120,
+      minimumSecondPixels: 100,
+      maximumFirstPixels: 260,
+      maximumSecondPixels: 400,
+    });
+
+    expect(result[0]).toBeCloseTo(1.04);
+    expect(result[1]).toBeCloseTo(0.96);
+  });
+
+  it("keeps user child order stable while appending newly introduced nodes", () => {
+    expect(
+      effectiveChildOrder(["a", "b", "c", "d"], ["c", "a", "stale", "c"]),
+    ).toEqual(["c", "a", "b", "d"]);
   });
 });

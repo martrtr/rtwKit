@@ -3,7 +3,7 @@ schema = 1
 [package]
 id = "rintawa.web-ui"
 name = "Web UI"
-version = "0.0.4"
+version = "0.0.5"
 description = "Default web UI layer for Rintawa"
 license = "GPL-3.0-only"
 

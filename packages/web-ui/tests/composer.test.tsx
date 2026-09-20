@@ -85,7 +85,11 @@ describe("surface composer", () => {
       expect(markup).toContain(`data-shell-region="${region}"`);
     }
     expect(markup).toContain('class="rintawa-activity-rail"');
-    expect(markup).toContain('class="rintawa-region-resize-handle"');
+    expect(
+      markup.match(/class="rintawa-shell-split-resize-handle"/g),
+    ).toHaveLength(2);
+    expect(markup).toContain('aria-label="Resize Left Dock and Main"');
+    expect(markup).toContain('aria-label="Resize Main and Right Dock"');
     expect(markup).toContain('data-presentation="dialog"');
     expect(markup).toContain('data-presentation="overlay"');
   });

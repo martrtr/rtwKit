@@ -1,11 +1,13 @@
 export interface PortableLayoutOverrides {
   splitWeights: Record<string, number[]>;
   gridWeights: Record<string, number[]>;
+  childOrder: Record<string, string[]>;
 }
 
 export const EMPTY_PORTABLE_LAYOUT_OVERRIDES: PortableLayoutOverrides = {
   splitWeights: {},
   gridWeights: {},
+  childOrder: {},
 };
 
 export function portableLayoutStorageKey(
@@ -27,6 +29,7 @@ export function readPortableLayoutOverrides(
     return {
       splitWeights: parsed.splitWeights ?? {},
       gridWeights: parsed.gridWeights ?? {},
+      childOrder: parsed.childOrder ?? {},
     };
   } catch {
     return EMPTY_PORTABLE_LAYOUT_OVERRIDES;
@@ -58,6 +61,72 @@ export function effectiveWeights(
   return [...defaults];
 }
 
+export function effectiveChildOrder(
+  defaults: readonly string[],
+  override: readonly string[] | undefined,
+): string[] {
+  if (!override) return [...defaults];
+
+  const available = new Set(defaults);
+  const seen = new Set<string>();
+  const ordered = override.filter((childId) => {
+    if (!available.has(childId) || seen.has(childId)) return false;
+    seen.add(childId);
+    return true;
+  });
+
+  for (const childId of defaults) {
+    if (!seen.has(childId)) ordered.push(childId);
+  }
+  return ordered;
+}
+
+export interface AdjacentResizeBounds {
+  minimumFirstPixels: number;
+  minimumSecondPixels: number;
+  maximumFirstPixels?: number;
+  maximumSecondPixels?: number;
+}
+
+export function resizeAdjacentWeightsWithinBounds(
+  weights: readonly number[],
+  index: number,
+  deltaPixels: number,
+  pairPixels: number,
+  bounds: AdjacentResizeBounds,
+): number[] {
+  if (index < 0 || index + 1 >= weights.length || pairPixels <= 0) {
+    return [...weights];
+  }
+
+  const minimumFirst = Math.max(0, bounds.minimumFirstPixels);
+  const minimumSecond = Math.max(0, bounds.minimumSecondPixels);
+  const maximumFirst = Math.max(
+    minimumFirst,
+    bounds.maximumFirstPixels ?? Number.POSITIVE_INFINITY,
+  );
+  const maximumSecond = Math.max(
+    minimumSecond,
+    bounds.maximumSecondPixels ?? Number.POSITIVE_INFINITY,
+  );
+  const lowerBound = Math.max(minimumFirst, pairPixels - maximumSecond);
+  const upperBound = Math.min(maximumFirst, pairPixels - minimumSecond);
+  if (lowerBound > upperBound) return [...weights];
+
+  const pairWeight = weights[index]! + weights[index + 1]!;
+  const firstPixels = (weights[index]! / pairWeight) * pairPixels;
+  const nextFirstPixels = Math.min(
+    upperBound,
+    Math.max(lowerBound, firstPixels + deltaPixels),
+  );
+  const nextFirstWeight = (nextFirstPixels / pairPixels) * pairWeight;
+
+  const next = [...weights];
+  next[index] = nextFirstWeight;
+  next[index + 1] = pairWeight - nextFirstWeight;
+  return next;
+}
+
 export function resizeAdjacentWeights(
   weights: readonly number[],
   index: number,
@@ -65,24 +134,14 @@ export function resizeAdjacentWeights(
   pairPixels: number,
   minimumPanePixels: number,
 ): number[] {
-  if (
-    index < 0 ||
-    index + 1 >= weights.length ||
-    pairPixels <= minimumPanePixels * 2
-  ) {
-    return [...weights];
-  }
-
-  const pairWeight = weights[index]! + weights[index + 1]!;
-  const leftPixels = (weights[index]! / pairWeight) * pairPixels;
-  const nextLeftPixels = Math.min(
-    pairPixels - minimumPanePixels,
-    Math.max(minimumPanePixels, leftPixels + deltaPixels),
+  return resizeAdjacentWeightsWithinBounds(
+    weights,
+    index,
+    deltaPixels,
+    pairPixels,
+    {
+      minimumFirstPixels: minimumPanePixels,
+      minimumSecondPixels: minimumPanePixels,
+    },
   );
-  const nextLeftWeight = (nextLeftPixels / pairPixels) * pairWeight;
-
-  const next = [...weights];
-  next[index] = nextLeftWeight;
-  next[index + 1] = pairWeight - nextLeftWeight;
-  return next;
 }
