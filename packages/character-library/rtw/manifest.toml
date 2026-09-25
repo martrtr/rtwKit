@@ -9,3 +9,13 @@ kind = "runtime"
 target = "rintawa.runtime.wasm-component@1"
 entry = "content-handler.wasm"
 required = true
+
+[[components]]
+id = "runtime"
+kind = "runtime"
+target = "rintawa.runtime.wasm-component@1"
+entry = "runtime.wasm"
+required = true
+
+[components.permissions]
+runtime = ["user-content-read"]

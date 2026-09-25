@@ -20,3 +20,4 @@ rintawa-sdk.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+rintawa-ui-runtime.workspace = true

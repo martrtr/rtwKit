@@ -325,7 +325,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 [[package]]
 name = "rintawa-artifacts"
 version = "0.0.1"
-source = "git+https://github.com/martrtr/rintawa.git?rev=820286a#820286a45827d47bb29e6a29bb81b24cfd7dff9e"
+source = "git+https://github.com/martrtr/rintawa.git?rev=7337fcc#7337fcc3b3b570a3ac18eed93f2a465c43a5d78b"
 dependencies = [
  "serde",
  "sha2",
@@ -345,6 +345,7 @@ dependencies = [
  "flate2",
  "rintawa-artifacts",
  "rintawa-sdk",
+ "rintawa-ui-runtime",
  "serde",
  "serde_json",
  "tempfile",
@@ -356,6 +357,16 @@ name = "rintawa-character-library-handler"
 version = "0.0.1"
 dependencies = [
  "rintawa-character-library",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "rintawa-character-library-runtime"
+version = "0.0.1"
+dependencies = [
+ "rintawa-character-library",
+ "rintawa-sdk",
+ "serde_json",
  "wit-bindgen",
 ]
 
@@ -374,7 +385,7 @@ dependencies = [
 [[package]]
 name = "rintawa-sdk"
 version = "0.0.1"
-source = "git+https://github.com/martrtr/rintawa.git?rev=820286a#820286a45827d47bb29e6a29bb81b24cfd7dff9e"
+source = "git+https://github.com/martrtr/rintawa.git?rev=7337fcc#7337fcc3b3b570a3ac18eed93f2a465c43a5d78b"
 dependencies = [
  "secrecy",
  "serde",
@@ -385,7 +396,7 @@ dependencies = [
 [[package]]
 name = "rintawa-ui-runtime"
 version = "0.0.1"
-source = "git+https://github.com/martrtr/rintawa.git?rev=820286a#820286a45827d47bb29e6a29bb81b24cfd7dff9e"
+source = "git+https://github.com/martrtr/rintawa.git?rev=7337fcc#7337fcc3b3b570a3ac18eed93f2a465c43a5d78b"
 dependencies = [
  "rintawa-sdk",
  "serde",

@@ -38,9 +38,13 @@ part of the public package source.
 
 ## Current packages
 
-- `package-manager` — repository-backed extension discovery, dependency solving, permission review, and exact-artifact activation.
+- `package-manager` — repository-backed extension discovery, dependency solving,
+  permission review, and exact-artifact activation.
 - `web-runtime` — external `rintawa.runtime.web-bundle@1` execution-target provider.
 - `web-ui` — React Host Shell / Portable UI Layer executed through `web-runtime`.
+- `world-manager` — standard replaceable World catalog/lifecycle Portable UI package.
+- `character-library` — CharacterTemplate content handler plus read-only Library
+  Portable UI over the generic user-content capability.
 
 Published `(package id, version)` coordinates are immutable: a released version is
 never rebuilt or replaced in-place. The registry digest identifies and verifies the

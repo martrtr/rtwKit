@@ -7,12 +7,23 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, rustdoc::broken_intra_doc_links)]
 
+mod catalog;
+mod controller;
 mod instantiate;
 mod model;
 #[cfg(not(target_arch = "wasm32"))]
 mod rtw;
 mod tavern_v2;
+mod ui;
 
+pub use catalog::{
+    CharacterContentDocument, CharacterContentRecord, CharacterLibraryEntry, CharacterLibraryError,
+    CharacterLibraryGateway, CharacterLibraryGatewayError, CharacterLibraryState,
+    MAX_CHARACTER_LIBRARY_ENTRIES, MAX_CHARACTER_LIBRARY_ID_BYTES,
+};
+pub use controller::{
+    CHARACTER_LIBRARY_ACTION_REFRESH, CHARACTER_LIBRARY_ACTION_SELECT, CharacterLibraryController,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use instantiate::instantiate_character;
 pub use instantiate::{
@@ -32,4 +43,9 @@ pub use rtw::{
 };
 pub use tavern_v2::{
     MAX_TAVERN_CARD_BYTES, TavernV2Error, TavernV2Result, export_tavern_v2_json, import_tavern_v2,
+};
+
+pub use ui::{
+    CHARACTER_LIBRARY_ACTIVITY_ID, CHARACTER_LIBRARY_SURFACE_ID, build_character_library_snapshot,
+    character_library_surface_contribution, entry_select_node_id,
 };

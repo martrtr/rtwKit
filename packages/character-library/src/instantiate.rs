@@ -120,15 +120,6 @@ pub fn character_world_schemas() -> Result<Vec<WorldSchemaContribution>, Charact
     ])
 }
 
-/// Builds a runtime-neutral instantiation plan from one immutable template revision.
-///
-/// Session greetings and narration hints deliberately remain outside the returned
-/// plan. They are initialization/configuration inputs for higher-level
-/// Conversation/Narrator packages, not canonical properties of the live entity.
-///
-/// # Errors
-///
-/// Returns a validation or static schema-key failure before any plan is returned.
 /// Builds a runtime-neutral instantiation plan using an authoritative entity identity.
 ///
 /// The caller supplies `entity_id` so sandboxed Component Model guests never need
