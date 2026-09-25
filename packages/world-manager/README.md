@@ -4,4 +4,4 @@ World Manager is the recommended first-party Rintawa package for browsing persis
 
 The package owns product policy and Portable UI presentation only. World identity, durable storage, activation authority, permissions, and lifecycle execution remain generic Rintawa Core mechanisms. Another package can replace World Manager without changing Core.
 
-The current `0.0.1` source slice contains the bounded deterministic catalog/controller and Portable UI rendering model. The thin WASM adapter that binds those domain APIs to the public `world-sessions` and `portable-ui` WIT imports is still pending, so release builds do not emit a placeholder RTW artifact until that adapter exists.
+The `0.0.1` package contains the bounded deterministic catalog/controller, Portable UI rendering model, and a thin WASM adapter over the public `world-sessions` and `portable-ui` WIT contracts. The adapter requests only `world-session-read` and `world-session-write`; it does not receive privileged Core integration.

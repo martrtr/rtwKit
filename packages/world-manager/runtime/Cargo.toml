@@ -1,0 +1,17 @@
+[package]
+name = "rintawa-world-manager-runtime"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "WASM adapter for the standard Rintawa World Manager package"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+serde_json.workspace = true
+wit-bindgen = "0.57.1"
+rintawa-sdk.workspace = true
+rintawa-world-manager = { path = ".." }
