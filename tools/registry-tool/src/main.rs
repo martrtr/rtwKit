@@ -1,3 +1,5 @@
+//! CLI for validating, building, and publishing rtwKit package metadata.
+
 mod model;
 mod package;
 mod registry;

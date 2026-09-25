@@ -14,16 +14,18 @@ interface host {
     /// Logs a message to the host's tracing system.
     log: func(level: log-level, message: string);
 
-    /// An explicit event-publication failure.
+    /// An explicit extension-originated event-publication failure.
     variant publish-error {
-        /// Event publication is unavailable until the Event Runtime exists.
+        /// Guest publication is unavailable under the current host policy.
         unavailable,
     }
 
-    /// Requests host event publication.
+    /// Requests extension-originated runtime event publication.
     ///
-    /// MVP 0.0.1 has no Event Runtime, so the host returns `unavailable`
-    /// instead of accepting and silently discarding the event.
+    /// Host-to-subscriber Event Runtime delivery exists, but arbitrary guest
+    /// publication remains fail-closed until publisher/topic authorization and
+    /// guest-to-host quotas are part of the contract. The host therefore returns
+    /// `unavailable` instead of accepting an event it cannot authorize safely.
     publish-event: func(topic: string, payload: list<u8>) -> result<_, publish-error>;
 
 }
@@ -81,6 +83,37 @@ interface registration {
     unregister-capability: func(name: string) -> result<_, error>;
 }
 
+/// World-schema declarations available only from guest `register`.
+interface world-registration {
+    /// Semantic category of one immutable world schema.
+    enum schema-kind {
+        entity,
+        relation,
+        facet,
+        command,
+        event,
+        effect,
+        projection,
+    }
+
+    /// Failure while declaring immutable world metadata.
+    variant error {
+        registration-not-active,
+        duplicate-world-schema,
+        invalid-world-schema,
+        message-too-large,
+    }
+
+    /// Declares one immutable versioned world schema.
+    /// Ownership is assigned by the host from the current extension principal.
+    register-world-schema: func(
+        id: string,
+        version: u32,
+        kind: schema-kind,
+        definition-json: string,
+    ) -> result<_, error>;
+}
+
 /// Reversible effects available from guest `start` and `on-event`.
 interface runtime-effects {
     /// A guest-local handle for one host-owned runtime effect.
@@ -102,6 +135,12 @@ interface runtime-effects {
 
     /// Removes a subscription previously returned by `subscribe-event`.
     unsubscribe-event: func(handle: handle) -> result<_, error>;
+
+    /// Adds an owner-scoped ephemeral runtime-signal subscription.
+    subscribe-signal: func(topic: string) -> result<handle, error>;
+
+    /// Removes a signal subscription previously returned by `subscribe-signal`.
+    unsubscribe-signal: func(handle: handle) -> result<_, error>;
 }
 
 /// Owner-scoped cooperative background tasks.
@@ -228,6 +267,65 @@ interface artifact-store {
 }
 
 
+/// Generic access to the immutable raw asset store.
+interface asset-store {
+    /// Immutable identity returned after bytes enter the asset CAS.
+    record asset-ref {
+        digest: string,
+        size: u64,
+        media-type: string,
+    }
+
+    /// Failure while importing one raw asset.
+    variant error {
+        access-not-active,
+        permission-denied,
+        message-too-large,
+        invalid-asset,
+        rejected,
+        unavailable,
+    }
+
+    /// Imports exact bytes under a canonical media type and returns an AssetRef.
+    import-asset: func(bytes: list<u8>, media-type: string) -> result<asset-ref, error>;
+}
+
+/// Generic persistent-world catalog and deferred runtime lifecycle control.
+interface world-sessions {
+    /// One persistent world plus host runtime lifecycle status.
+    record summary {
+        world-id: string,
+        commit-position: u64,
+        active: bool,
+        pending-active: option<bool>,
+        last-error: option<string>,
+    }
+
+    /// Failure while reading or mutating world-session lifecycle state.
+    variant error {
+        access-not-active,
+        permission-denied,
+        invalid-world-id,
+        not-found,
+        queue-full,
+        limit-exceeded,
+        message-too-large,
+        rejected,
+        unavailable,
+    }
+
+    /// Lists persistent worlds. Requires `world-session-read`.
+    list-worlds: func() -> result<list<summary>, error>;
+
+    /// Creates one empty persistent world. Requires `world-session-write`.
+    create: func() -> result<summary, error>;
+
+    /// Requests active/inactive runtime state. Requires `world-session-write`.
+    /// The request is applied after the current guest callback unwinds, during a
+    /// later host runtime pump; `pending-active` exposes the accepted desired state.
+    set-active: func(world-id: string, active: bool) -> result<_, error>;
+}
+
 /// Owner-scoped non-authoritative persistent preferences.
 interface preferences {
     /// Failure while accessing one bounded preference value.
@@ -262,6 +360,7 @@ interface composition {
         instance-id: string,
         scope-id: string,
         enabled: bool,
+        world-default: bool,
     }
 
     /// Failure while reading or mutating profile selection.
@@ -288,11 +387,35 @@ interface composition {
     /// Changes persisted enabled state. Changes take effect on a later bootstrap.
     set-enabled: func(subject: string, enabled: bool) -> result<_, error>;
 
+    /// Marks whether this baseline selection is copied into newly created worlds.
+    /// Existing world overlays remain pinned and are not rewritten.
+    set-world-default: func(subject: string, world-default: bool) -> result<_, error>;
+
     /// Removes a persisted baseline selection and related policy references.
     /// Running instances are not torn down implicitly.
     remove-activation: func(subject: string) -> result<_, error>;
+
+
 }
 
+
+/// Generic mutation/read boundary for one explicit host composition scope.
+interface scoped-composition {
+    use composition.{activation, error};
+
+    list-activations: func(scope-id: string) -> result<list<activation>, error>;
+    select-artifact: func(
+        scope-id: string,
+        digest: string,
+        enabled: option<bool>,
+    ) -> result<activation, error>;
+    set-enabled: func(
+        scope-id: string,
+        subject: string,
+        enabled: bool,
+    ) -> result<_, error>;
+    remove-activation: func(scope-id: string, subject: string) -> result<_, error>;
+}
 
 /// Administrative runtime permission policy for exact baseline components.
 interface runtime-policy {
@@ -352,6 +475,13 @@ interface runtime-policy {
         component-id: string,
         permission: string,
     ) -> result<_, error>;
+}
+
+/// Administrative runtime-permission policy for one explicit composition scope.
+interface scoped-runtime-policy {
+    use runtime-policy.{component-policy, error};
+
+    list-components: func(scope-id: string) -> result<list<component-policy>, error>;
 }
 
 /// Dynamic execution targets published by an active runtime-provider component.
@@ -563,6 +693,13 @@ interface target-provider {
     /// Permanently releases provider-local state after the proxy is unloaded.
     drop-component: func(handle: component-handle) -> result<_, error>;
 
+    /// Handles one subscribed runtime event for the dependent component.
+    handle-event: func(
+        handle: component-handle,
+        topic: string,
+        payload: list<u8>,
+    ) -> result<_, error>;
+
     /// Handles one validated portable UI action for the dependent component.
     handle-ui-action: func(handle: component-handle, action-json: list<u8>) -> result<_, error>;
 
@@ -610,14 +747,19 @@ interface guest {
 world plugin {
     import host;
     import registration;
+    import world-registration;
     import runtime-effects;
     import runtime-tasks;
     import network;
     import http-fetch;
     import artifact-store;
+    import asset-store;
+    import world-sessions;
     import preferences;
     import composition;
+    import scoped-composition;
     import runtime-policy;
+    import scoped-runtime-policy;
     import execution-targets;
     import secrets;
     import services;
@@ -641,14 +783,19 @@ world task-plugin {
 world task-runtime-plugin {
     import host;
     import registration;
+    import world-registration;
     import runtime-effects;
     import runtime-tasks;
     import network;
     import http-fetch;
     import artifact-store;
+    import asset-store;
+    import world-sessions;
     import preferences;
     import composition;
+    import scoped-composition;
     import runtime-policy;
+    import scoped-runtime-policy;
     import execution-targets;
     import secrets;
     import services;
@@ -662,14 +809,19 @@ world task-runtime-plugin {
 world runtime-provider-plugin {
     import host;
     import registration;
+    import world-registration;
     import runtime-effects;
     import runtime-tasks;
     import network;
     import http-fetch;
     import artifact-store;
+    import asset-store;
+    import world-sessions;
     import preferences;
     import composition;
+    import scoped-composition;
     import runtime-policy;
+    import scoped-runtime-policy;
     import execution-targets;
     import secrets;
     import services;
@@ -683,14 +835,19 @@ world runtime-provider-plugin {
 world runtime-provider-task-plugin {
     import host;
     import registration;
+    import world-registration;
     import runtime-effects;
     import runtime-tasks;
     import network;
     import http-fetch;
     import artifact-store;
+    import asset-store;
+    import world-sessions;
     import preferences;
     import composition;
+    import scoped-composition;
     import runtime-policy;
+    import scoped-runtime-policy;
     import execution-targets;
     import secrets;
     import services;

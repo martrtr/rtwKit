@@ -1,0 +1,16 @@
+schema = 1
+
+[package]
+id = "rintawa.character-library"
+name = "Character Library"
+version = "0.0.1"
+description = "Standard CharacterTemplate library and Tavern V2 compatibility package"
+license = "GPL-3.0-only"
+authors = ["martrtr"]
+homepage = "https://github.com/martrtr/rtwKit"
+source-url = "https://github.com/martrtr/rtwKit"
+readme = "README.md"
+
+[build]
+artifact-root = "build/rtw"
+command = ["bash", "build.sh"]

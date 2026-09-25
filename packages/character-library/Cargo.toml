@@ -1,0 +1,22 @@
+[package]
+name = "rintawa-character-library"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Standard Character Library content package for Rintawa"
+
+[dependencies]
+base64.workspace = true
+crc32fast = "1"
+flate2 = "1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2"
+tempfile = "3"
+rintawa-artifacts.workspace = true
+rintawa-sdk.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true

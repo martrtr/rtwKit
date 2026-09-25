@@ -1,0 +1,16 @@
+[package]
+name = "rintawa-world-manager"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Standard World Manager domain and Portable UI package for Rintawa"
+
+[dependencies]
+thiserror = "2"
+rintawa-sdk.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+rintawa-ui-runtime.workspace = true

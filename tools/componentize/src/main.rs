@@ -1,3 +1,5 @@
+//! CLI for wrapping core WebAssembly modules as validated WebAssembly Components.
+
 use std::{env, fs};
 
 use anyhow::{Context, Result};

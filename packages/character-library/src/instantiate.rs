@@ -1,0 +1,160 @@
+//! CharacterTemplate instantiation planning over public SDK identities.
+//!
+//! This module deliberately does not construct Core `WorldTransaction` values.
+//! An ordinary package owns feature semantics; a runtime adapter maps the returned
+//! plan into the public world-System service ABI and Core remains authoritative.
+
+use rintawa_artifacts::ArtifactDigest;
+use rintawa_sdk::{
+    contributions::WorldSchemaContribution,
+    world::{EntityId, SchemaId, SchemaKey, SchemaKind, SchemaVersion},
+};
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::CharacterTemplate;
+
+/// Versioned schema identity of a live Character entity.
+pub const CHARACTER_ENTITY_SCHEMA: &str = "rintawa.character.entity@1";
+/// Versioned schema identity of the minimal live Character identity facet.
+pub const CHARACTER_IDENTITY_FACET_SCHEMA: &str = "rintawa.character.identity@1";
+
+const CHARACTER_ENTITY_SCHEMA_JSON: &str = r#"{
+  "type": "object",
+  "additionalProperties": false
+}"#;
+const CHARACTER_IDENTITY_SCHEMA_JSON: &str = r#"{
+  "type": "object",
+  "required": ["name", "template-id", "template-revision"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "template-id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "template-revision": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  },
+  "additionalProperties": false
+}"#;
+
+/// Minimal live identity copied from reusable content when a Character is instantiated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct CharacterIdentityFacet {
+    /// Display name copied from the selected template revision.
+    pub name: String,
+    /// Stable logical user-content library identity.
+    pub template_id: String,
+    /// Exact immutable RTW revision used for this instantiation.
+    pub template_revision: String,
+}
+
+/// Runtime-neutral plan for instantiating one reusable CharacterTemplate revision.
+///
+/// The plan contains only public SDK identities and feature-owned facet data. It is
+/// intentionally not a Core transaction: the package's future WASM adapter must map
+/// this into the versioned world-System service contract, where Core performs normal
+/// schema, authority, and stale-position validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CharacterInstantiationPlan {
+    /// Newly allocated live Character entity identity.
+    pub entity_id: EntityId,
+    /// Package-owned Entity schema to use for the live Character.
+    pub entity_schema: SchemaKey,
+    /// Package-owned Facet schema carrying minimal live identity/provenance.
+    pub identity_facet_schema: SchemaKey,
+    /// Minimal live identity payload; session/narration hints are intentionally absent.
+    pub identity: CharacterIdentityFacet,
+}
+
+/// Failure while building package-owned Character instantiation output.
+#[derive(Debug, Error)]
+pub enum CharacterInstantiationError {
+    /// Logical library identity is empty or above the package bound.
+    #[error("template library id must be non-empty and at most 128 bytes")]
+    InvalidTemplateId,
+    /// A static Character world schema key could not be constructed.
+    #[error("invalid package-owned Character schema key")]
+    InvalidSchemaKey,
+    /// The CharacterTemplate itself is invalid.
+    #[error(transparent)]
+    InvalidTemplate(#[from] crate::model::CharacterTemplateError),
+}
+
+/// Returns the standard live Character entity schema key.
+///
+/// # Errors
+///
+/// Returns [`CharacterInstantiationError::InvalidSchemaKey`] only if the package's
+/// compile-time schema constant is malformed.
+pub fn character_entity_schema_key() -> Result<SchemaKey, CharacterInstantiationError> {
+    schema_key("rintawa.character.entity", 1)
+}
+
+/// Returns the standard Character identity facet schema key.
+///
+/// # Errors
+///
+/// Returns [`CharacterInstantiationError::InvalidSchemaKey`] only if the package's
+/// compile-time schema constant is malformed.
+pub fn character_identity_facet_schema_key() -> Result<SchemaKey, CharacterInstantiationError> {
+    schema_key("rintawa.character.identity", 1)
+}
+
+/// Returns package-owned schema contributions required for Character instantiation.
+///
+/// # Errors
+///
+/// Returns [`CharacterInstantiationError::InvalidSchemaKey`] if a static schema
+/// identity is malformed.
+pub fn character_world_schemas() -> Result<Vec<WorldSchemaContribution>, CharacterInstantiationError>
+{
+    Ok(vec![
+        WorldSchemaContribution::new(
+            character_entity_schema_key()?,
+            SchemaKind::Entity,
+            CHARACTER_ENTITY_SCHEMA_JSON,
+        ),
+        WorldSchemaContribution::new(
+            character_identity_facet_schema_key()?,
+            SchemaKind::Facet,
+            CHARACTER_IDENTITY_SCHEMA_JSON,
+        ),
+    ])
+}
+
+/// Builds a runtime-neutral instantiation plan from one immutable template revision.
+///
+/// Session greetings and narration hints deliberately remain outside the returned
+/// plan. They are initialization/configuration inputs for higher-level
+/// Conversation/Narrator packages, not canonical properties of the live entity.
+///
+/// # Errors
+///
+/// Returns a validation or static schema-key failure before any plan is returned.
+pub fn instantiate_character(
+    template: &CharacterTemplate,
+    template_id: impl Into<String>,
+    template_revision: &ArtifactDigest,
+) -> Result<CharacterInstantiationPlan, CharacterInstantiationError> {
+    template.validate()?;
+    let template_id = template_id.into();
+    if template_id.trim().is_empty() || template_id.len() > 128 {
+        return Err(CharacterInstantiationError::InvalidTemplateId);
+    }
+
+    Ok(CharacterInstantiationPlan {
+        entity_id: EntityId::new(),
+        entity_schema: character_entity_schema_key()?,
+        identity_facet_schema: character_identity_facet_schema_key()?,
+        identity: CharacterIdentityFacet {
+            name: template.name.clone(),
+            template_id,
+            template_revision: template_revision.to_string(),
+        },
+    })
+}
+
+fn schema_key(id: &str, version: u32) -> Result<SchemaKey, CharacterInstantiationError> {
+    let id = SchemaId::parse(id).map_err(|_| CharacterInstantiationError::InvalidSchemaKey)?;
+    let version =
+        SchemaVersion::new(version).map_err(|_| CharacterInstantiationError::InvalidSchemaKey)?;
+    Ok(SchemaKey::new(id, version))
+}

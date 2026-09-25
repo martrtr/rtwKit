@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["tools/registry-tool", "tools/componentize", "packages/web-runtime", "packages/package-manager"]
+members = [
+    "tools/registry-tool",
+    "tools/componentize",
+    "packages/web-runtime",
+    "packages/package-manager",
+    "packages/character-library",
+    "packages/world-manager",
+]
 
 [workspace.package]
 edition = "2024"
@@ -15,4 +22,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 toml = "0.9"
-rintawa-artifacts = { git = "https://github.com/martrtr/rintawa.git", rev = "e2698b9f206fe86b61d019b2d7e115a6e29b0c28" }
+rintawa-artifacts = { git = "https://github.com/martrtr/rintawa.git", rev = "5c460b0a10f47aaf655ec1c3b842306f2613689f" }
+rintawa-sdk = { git = "https://github.com/martrtr/rintawa.git", rev = "5c460b0a10f47aaf655ec1c3b842306f2613689f" }
+rintawa-ui-runtime = { git = "https://github.com/martrtr/rintawa.git", rev = "5c460b0a10f47aaf655ec1c3b842306f2613689f" }

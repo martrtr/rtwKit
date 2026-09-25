@@ -1,0 +1,16 @@
+schema = 1
+
+[package]
+id = "rintawa.world-manager"
+name = "World Manager"
+version = "0.0.1"
+description = "Standard World catalog and lifecycle management UI for Rintawa"
+license = "GPL-3.0-only"
+authors = ["martrtr"]
+homepage = "https://github.com/martrtr/rtwKit"
+source-url = "https://github.com/martrtr/rtwKit"
+readme = "README.md"
+
+[build]
+artifact-root = "build/rtw"
+command = ["bash", "build.sh"]

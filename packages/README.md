@@ -3,6 +3,8 @@
 Each direct child of this directory is one independently versioned RTW package.
 The directory name is its release slug; it is not the Rintawa package identity.
 
+A package may exist in source form before its first release while a runtime adapter is still being implemented. Such a package must remain clearly marked as unreleased and must not emit a placeholder RTW artifact merely to satisfy tooling.
+
 Every package contains `rtwkit.toml`:
 
 ```toml

@@ -52,10 +52,13 @@ deleting the current file.
    permission review, enable/disable/uninstall, and immutable release provenance.
 3. **Done:** cover Package Manager self-update through the real WebSocket/Portable
    UI path, exact persisted digest verification, and restart in release CI.
-4. **Next MVP slice:** add Chat and AI Provider as independently versioned ordinary
-   packages using the generic Core service contract and component-scoped secret
-   capability. Do not add Chat/AI-specific host APIs or Core semantics.
-5. Add install intents/packs only when their concrete UX is required; they are not
+4. **Current MVP slice:** finish the thin runtime adapters for World Manager and
+   Character Library now that their domain/content code lives in this repository. Keep them
+   ordinary packages over `world-sessions`, Portable UI, content-handler, asset, and world
+   contracts; do not add feature-specific Core APIs.
+5. Add Chat and AI Provider as independently versioned ordinary packages using the generic
+   Core service contract and component-scoped secret capability.
+6. Add install intents/packs only when their concrete UX is required; they are not
    prerequisites for the first Chat + AI Provider composition.
 
 ## Dev-mode invariant

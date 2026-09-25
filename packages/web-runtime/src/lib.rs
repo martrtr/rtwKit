@@ -335,6 +335,16 @@ impl exports::rintawa::engine::target_provider::Guest for WebRuntime {
         }
     }
 
+    fn handle_event(handle: u64, _topic: String, _payload: Vec<u8>) -> Result<(), TargetError> {
+        if component_exists(handle) {
+            // Hosted web bundles do not currently declare runtime-event subscriptions.
+            // Fail closed instead of acknowledging and silently discarding an event.
+            Err(TargetError::Unavailable)
+        } else {
+            Err(TargetError::UnknownComponent)
+        }
+    }
+
     fn handle_ui_action(handle: u64, _action_json: Vec<u8>) -> Result<(), TargetError> {
         if component_exists(handle) {
             Ok(())

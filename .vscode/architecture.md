@@ -23,6 +23,16 @@ browser bridge details remain outside Core. `packages/web-ui` is a separate
 consumer of that execution target and provides the composition roles
 `rintawa.ui.layer@1` and `rintawa.host.shell@1`.
 
+`packages/world-manager` and `packages/character-library` follow the same boundary.
+World Manager owns product-facing world catalog/lifecycle UX over the generic
+`world-sessions` capability. Character Library owns CharacterTemplate/Tavern compatibility
+and Character instantiation semantics over generic content/world contracts. Neither feature
+belongs in the Rintawa Core repository.
+
+`wit/engine.wit` is a checked-in authoring mirror of the public Rintawa guest ABI used by
+rtwKit packages. It must track the exact pinned Rintawa Git revision in `Cargo.toml`; rtwKit
+must not invent package-only host capabilities.
+
 ## Monorepo boundary
 
 `rtwKit` is a monorepo for first-party/recommended packages. Repository boundaries
