@@ -187,7 +187,17 @@ pub(crate) fn validate_record(
         .map_err(|_| CharacterLibraryError::InvalidRevision)
 }
 
-pub(crate) fn decode_document(
+/// Decodes one exact CharacterTemplate document after validating host metadata.
+///
+/// This is shared by the catalog controller and the World System runtime so both
+/// paths enforce the same content type, immutable revision, descriptor bound, and
+/// CharacterTemplate invariants.
+///
+/// # Errors
+///
+/// Returns [`CharacterLibraryError`] when metadata is inconsistent, the descriptor
+/// is oversized/malformed, or the decoded CharacterTemplate is invalid.
+pub fn decode_character_content_document(
     expected: &CharacterContentRecord,
     document: CharacterContentDocument,
 ) -> Result<CharacterLibraryEntry, CharacterLibraryError> {

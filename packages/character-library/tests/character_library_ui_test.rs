@@ -4,12 +4,12 @@ use std::collections::BTreeMap;
 
 use rintawa_artifacts::ArtifactDigest;
 use rintawa_character_library::{
-    CHARACTER_LIBRARY_ACTION_REFRESH, CHARACTER_LIBRARY_ACTION_SELECT,
-    CHARACTER_LIBRARY_SURFACE_ID, CHARACTER_TEMPLATE_CONTENT_V1, CharacterContentDocument,
-    CharacterContentRecord, CharacterLibraryController, CharacterLibraryError,
-    CharacterLibraryGateway, CharacterLibraryGatewayError, CharacterTemplate,
-    MAX_CHARACTER_LIBRARY_ENTRIES, build_character_library_snapshot,
-    character_library_surface_contribution, entry_select_node_id,
+    CHARACTER_LIBRARY_ACTION_INSTANTIATE, CHARACTER_LIBRARY_ACTION_REFRESH,
+    CHARACTER_LIBRARY_ACTION_SELECT, CHARACTER_LIBRARY_SURFACE_ID, CHARACTER_TEMPLATE_CONTENT_V1,
+    CharacterContentDocument, CharacterContentRecord, CharacterLibraryController,
+    CharacterLibraryError, CharacterLibraryGateway, CharacterLibraryGatewayError,
+    CharacterLibraryIntent, CharacterTemplate, MAX_CHARACTER_LIBRARY_ENTRIES,
+    build_character_library_snapshot, character_library_surface_contribution, entry_select_node_id,
 };
 use rintawa_sdk::{
     contracts::ComponentRef,
@@ -196,6 +196,17 @@ fn test_should_fail_closed_for_stale_spoofed_or_invalid_payload_actions() -> any
         Err(CharacterLibraryError::WrongActionNode)
     );
 
+    let spoofed_instantiate = action(
+        controller.state().revision(),
+        entry_select_node_id(0),
+        CHARACTER_LIBRARY_ACTION_INSTANTIATE,
+        UiActionPayload::None,
+    );
+    assert_eq!(
+        controller.handle_action(&spoofed_instantiate),
+        Err(CharacterLibraryError::WrongActionNode)
+    );
+
     let payload = action(
         controller.state().revision(),
         entry_select_node_id(0),
@@ -252,6 +263,40 @@ fn test_should_bound_every_rendered_text_node_with_long_utf8_content() -> anyhow
             assert!(text.text.len() <= 4 * 1024);
         }
     }
+    Ok(())
+}
+
+#[test]
+fn test_should_emit_exact_revision_instantiation_intent() -> anyhow::Result<()> {
+    let mut controller = CharacterLibraryController::new(gateway(&[("id-a", "Alice", "Ada")]));
+    controller.refresh()?;
+    let snapshot = build_character_library_snapshot(controller.state());
+    let button = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "details.instantiate")
+        .ok_or_else(|| anyhow::anyhow!("instantiate button must be rendered"))?;
+    assert!(matches!(button.kind, UiNodeKind::Button(_)));
+
+    let expected_revision = controller
+        .state()
+        .selected_entry()
+        .ok_or_else(|| anyhow::anyhow!("selected fixture entry must exist"))?
+        .revision
+        .to_string();
+    let intent = controller.handle_action(&action(
+        controller.state().revision(),
+        UiNodeId::new("details.instantiate"),
+        CHARACTER_LIBRARY_ACTION_INSTANTIATE,
+        UiActionPayload::None,
+    ))?;
+    assert_eq!(
+        intent,
+        CharacterLibraryIntent::InstantiateSelected {
+            template_id: String::from("id-a"),
+            template_revision: expected_revision,
+        }
+    );
     Ok(())
 }
 

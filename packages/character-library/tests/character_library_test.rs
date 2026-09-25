@@ -225,9 +225,11 @@ fn test_should_build_runtime_neutral_identity_plan_without_session_or_narration_
         instantiate_character(&template, "018f0000-0000-7000-8000-000000000001", &revision)?;
 
     let schemas = character_world_schemas()?;
-    assert_eq!(schemas.len(), 2);
+    assert_eq!(schemas.len(), 4);
     assert_eq!(schemas[0].kind(), SchemaKind::Entity);
     assert_eq!(schemas[1].kind(), SchemaKind::Facet);
+    assert_eq!(schemas[2].kind(), SchemaKind::Command);
+    assert_eq!(schemas[3].kind(), SchemaKind::Event);
     for schema in &schemas {
         let definition: Value = serde_json::from_str(schema.definition_json())?;
         assert_eq!(definition["type"], "object");
@@ -284,4 +286,51 @@ fn push_png_chunk(png: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) {
     hasher.update(chunk_type);
     hasher.update(data);
     png.extend_from_slice(&hasher.finalize().to_be_bytes());
+}
+
+#[test]
+fn test_should_build_deterministic_authoritative_character_transaction() -> anyhow::Result<()> {
+    use rintawa_character_library::{
+        CHARACTER_INSTANTIATE_COMMAND_SCHEMA, CharacterInstantiateCommand,
+        build_character_instantiation_transaction, character_entity_schema_key,
+        character_identity_facet_schema_key, character_instantiate_command_schema_key,
+        character_instantiated_event_schema_key,
+    };
+    use rintawa_sdk::{
+        world::CommandId,
+        world_system::{WorldSystemFacetTarget, WorldSystemMutation},
+    };
+
+    let template = import_tavern_v2(&serde_json::to_vec(&card_json())?)?;
+    let command_id = CommandId::new();
+    let command = CharacterInstantiateCommand {
+        template_id: String::from("character-template-id"),
+        template_revision: ArtifactDigest::sha256(b"template").to_string(),
+    };
+    let transaction = build_character_instantiation_transaction(&template, &command, command_id)?;
+    assert_eq!(transaction.mutations.len(), 2);
+    let expected_entity = rintawa_sdk::world::EntityId::from_bytes(command_id.into_bytes());
+    assert!(matches!(
+        &transaction.mutations[0],
+        WorldSystemMutation::CreateEntity { entity_id, schema }
+            if *entity_id == expected_entity && schema == &character_entity_schema_key()?
+    ));
+    assert!(matches!(
+        &transaction.mutations[1],
+        WorldSystemMutation::SetFacet {
+            target: WorldSystemFacetTarget::Entity(entity_id),
+            schema,
+            ..
+        } if *entity_id == expected_entity && schema == &character_identity_facet_schema_key()?
+    ));
+    assert_eq!(transaction.events.len(), 1);
+    assert_eq!(
+        transaction.events[0].schema,
+        character_instantiated_event_schema_key()?
+    );
+    assert_eq!(
+        character_instantiate_command_schema_key()?.to_string(),
+        CHARACTER_INSTANTIATE_COMMAND_SCHEMA
+    );
+    Ok(())
 }

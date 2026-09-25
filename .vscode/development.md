@@ -52,13 +52,17 @@ deleting the current file.
    permission review, enable/disable/uninstall, and immutable release provenance.
 3. **Done:** cover Package Manager self-update through the real WebSocket/Portable
    UI path, exact persisted digest verification, and restart in release CI.
-4. **Current MVP slice:** finish the thin runtime adapters for World Manager and
-   Character Library now that their domain/content code lives in this repository. Keep them
-   ordinary packages over `world-sessions`, Portable UI, content-handler, asset, and world
-   contracts; do not add feature-specific Core APIs.
-5. Add Chat and AI Provider as independently versioned ordinary packages using the generic
+4. **Done:** ship World Manager and Character Library runtime adapters as ordinary
+   packages over generic Core contracts. Character Library now registers its own World
+   schemas/System service, preflights `world-default`, and creates/opens a World before
+   submitting an exact-revision instantiation command through authenticated generic
+   `world-commands`. Core remains feature-neutral and authoritative for validation/commit.
+5. **Current MVP slice:** extract imported Character PNG artwork into generic `AssetRef`
+   storage and bind the resulting portrait reference into Character content without
+   broadening Core with Character-specific APIs.
+6. Add Chat and AI Provider as independently versioned ordinary packages using the generic
    Core service contract and component-scoped secret capability.
-6. Add install intents/packs only when their concrete UX is required; they are not
+7. Add install intents/packs only when their concrete UX is required; they are not
    prerequisites for the first Chat + AI Provider composition.
 
 ## Dev-mode invariant

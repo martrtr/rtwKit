@@ -1,15 +1,17 @@
-//! WASM adapter from generic user-content reads to Character Library Portable UI.
+//! WASM adapter for Character Library UI and authoritative World materialization.
 //!
-//! Content validation remains in the separate permissionless content-handler
-//! component. This runtime receives only `user-content-read` and cannot mutate the
-//! library, import artifacts, or access filesystem paths.
+//! Content validation remains in the separate permissionless content-handler.
+//! This adapter uses only generic user-content, world-session, world-command,
+//! world-schema, World System service, and Portable UI contracts.
 
 use std::cell::RefCell;
+
+mod materialization;
 
 use rintawa_character_library::{
     CHARACTER_LIBRARY_SURFACE_ID, CHARACTER_TEMPLATE_CONTENT_V1, CharacterContentDocument,
     CharacterContentRecord, CharacterLibraryController, CharacterLibraryGateway,
-    CharacterLibraryGatewayError, build_character_library_snapshot,
+    CharacterLibraryGatewayError, CharacterLibraryIntent, build_character_library_snapshot,
     character_library_surface_contribution,
 };
 use rintawa_sdk::ui::{UiActionEvent, UiPlacementHint};
@@ -53,7 +55,7 @@ struct CharacterLibraryRuntime;
 
 impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
     fn register() {
-        let error = register_surface().err();
+        let error = register_runtime().err();
         REGISTRATION_ERROR.with(|slot| {
             *slot.borrow_mut() = error;
         });
@@ -113,7 +115,16 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
                 .handle_action(&event)
                 .map_err(|error| format!("Character Library action failed: {error}"))
         });
-        if let Err(error) = result {
+        let intent = match result {
+            Ok(intent) => intent,
+            Err(error) => {
+                log_error(&error);
+                return;
+            }
+        };
+        if intent != CharacterLibraryIntent::None
+            && let Err(error) = materialization::execute_intent(intent)
+        {
             log_error(&error);
             return;
         }
@@ -122,9 +133,14 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
         }
     }
 
-    fn handle_service(_contract: String, _version: u32, _payload: Vec<u8>) -> Vec<u8> {
-        Vec::new()
+    fn handle_service(contract: String, version: u32, payload: Vec<u8>) -> Vec<u8> {
+        materialization::handle_world_system_service(&contract, version, &payload)
     }
+}
+
+fn register_runtime() -> Result<(), String> {
+    materialization::register_world_materialization()?;
+    register_surface()
 }
 
 fn register_surface() -> Result<(), String> {

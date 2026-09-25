@@ -5,10 +5,7 @@
 //! plan into the public world-System service ABI and Core remains authoritative.
 
 use rintawa_artifacts::ArtifactDigest;
-use rintawa_sdk::{
-    contributions::WorldSchemaContribution,
-    world::{EntityId, SchemaId, SchemaKey, SchemaKind, SchemaVersion},
-};
+use rintawa_sdk::world::{EntityId, SchemaId, SchemaKey, SchemaVersion};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -18,21 +15,6 @@ use crate::CharacterTemplate;
 pub const CHARACTER_ENTITY_SCHEMA: &str = "rintawa.character.entity@1";
 /// Versioned schema identity of the minimal live Character identity facet.
 pub const CHARACTER_IDENTITY_FACET_SCHEMA: &str = "rintawa.character.identity@1";
-
-const CHARACTER_ENTITY_SCHEMA_JSON: &str = r#"{
-  "type": "object",
-  "additionalProperties": false
-}"#;
-const CHARACTER_IDENTITY_SCHEMA_JSON: &str = r#"{
-  "type": "object",
-  "required": ["name", "template-id", "template-revision"],
-  "properties": {
-    "name": { "type": "string", "minLength": 1, "maxLength": 512 },
-    "template-id": { "type": "string", "minLength": 1, "maxLength": 128 },
-    "template-revision": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
-  },
-  "additionalProperties": false
-}"#;
 
 /// Minimal live identity copied from reusable content when a Character is instantiated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,28 +78,6 @@ pub fn character_entity_schema_key() -> Result<SchemaKey, CharacterInstantiation
 /// compile-time schema constant is malformed.
 pub fn character_identity_facet_schema_key() -> Result<SchemaKey, CharacterInstantiationError> {
     schema_key("rintawa.character.identity", 1)
-}
-
-/// Returns package-owned schema contributions required for Character instantiation.
-///
-/// # Errors
-///
-/// Returns [`CharacterInstantiationError::InvalidSchemaKey`] if a static schema
-/// identity is malformed.
-pub fn character_world_schemas() -> Result<Vec<WorldSchemaContribution>, CharacterInstantiationError>
-{
-    Ok(vec![
-        WorldSchemaContribution::new(
-            character_entity_schema_key()?,
-            SchemaKind::Entity,
-            CHARACTER_ENTITY_SCHEMA_JSON,
-        ),
-        WorldSchemaContribution::new(
-            character_identity_facet_schema_key()?,
-            SchemaKind::Facet,
-            CHARACTER_IDENTITY_SCHEMA_JSON,
-        ),
-    ])
 }
 
 /// Builds a runtime-neutral instantiation plan using an authoritative entity identity.

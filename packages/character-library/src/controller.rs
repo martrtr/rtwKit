@@ -6,13 +6,30 @@ use rintawa_sdk::ui::{UiActionEvent, UiActionPayload};
 
 use crate::{
     CharacterLibraryError, CharacterLibraryGateway, CharacterLibraryState,
-    MAX_CHARACTER_LIBRARY_ENTRIES, catalog::decode_document, ui::REFRESH_NODE,
+    MAX_CHARACTER_LIBRARY_ENTRIES, decode_character_content_document,
+    ui::{INSTANTIATE_NODE, REFRESH_NODE},
 };
 
 /// Semantic action used by the explicit catalog refresh control.
 pub const CHARACTER_LIBRARY_ACTION_REFRESH: &str = "rintawa.character-library.refresh";
 /// Semantic action used by per-row selection controls.
 pub const CHARACTER_LIBRARY_ACTION_SELECT: &str = "rintawa.character-library.select";
+/// Semantic action used to instantiate the exact selected template into a new World.
+pub const CHARACTER_LIBRARY_ACTION_INSTANTIATE: &str = "rintawa.character-library.instantiate";
+
+/// Side effect requested by one already validated Character Library action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CharacterLibraryIntent {
+    /// No Host-side operation is required after applying the action.
+    None,
+    /// Create/open a new World and instantiate one exact immutable template revision.
+    InstantiateSelected {
+        /// Stable logical user-content identity.
+        template_id: String,
+        /// Exact immutable artifact revision selected by the user.
+        template_revision: String,
+    },
+}
 
 /// Stateful Character Library controller parameterized by a runtime adapter.
 pub struct CharacterLibraryController<G> {
@@ -66,7 +83,7 @@ where
                 return Err(CharacterLibraryError::DuplicateEntryId);
             }
             let document = self.gateway.read_template(&record.id)?;
-            entries.push(decode_document(&record, document)?);
+            entries.push(decode_character_content_document(&record, document)?);
         }
         entries.sort_by(|left, right| {
             left.template
@@ -117,7 +134,10 @@ where
     /// # Errors
     ///
     /// Returns action-validation, gateway, catalog-validation, or revision errors.
-    pub fn handle_action(&mut self, event: &UiActionEvent) -> Result<(), CharacterLibraryError> {
+    pub fn handle_action(
+        &mut self,
+        event: &UiActionEvent,
+    ) -> Result<CharacterLibraryIntent, CharacterLibraryError> {
         if event.surface_id.as_str() != crate::ui::CHARACTER_LIBRARY_SURFACE_ID {
             return Err(CharacterLibraryError::WrongSurface);
         }
@@ -133,7 +153,8 @@ where
                 if event.node_id.as_str() != REFRESH_NODE {
                     return Err(CharacterLibraryError::WrongActionNode);
                 }
-                self.refresh()
+                self.refresh()?;
+                Ok(CharacterLibraryIntent::None)
             }
             CHARACTER_LIBRARY_ACTION_SELECT => {
                 let index = self
@@ -145,7 +166,21 @@ where
                         (crate::ui::entry_select_node_id(index) == event.node_id).then_some(index)
                     })
                     .ok_or(CharacterLibraryError::UnknownEntryAction)?;
-                self.select_index(index)
+                self.select_index(index)?;
+                Ok(CharacterLibraryIntent::None)
+            }
+            CHARACTER_LIBRARY_ACTION_INSTANTIATE => {
+                if event.node_id.as_str() != INSTANTIATE_NODE {
+                    return Err(CharacterLibraryError::WrongActionNode);
+                }
+                let entry = self
+                    .state
+                    .selected_entry()
+                    .ok_or(CharacterLibraryError::UnknownEntryAction)?;
+                Ok(CharacterLibraryIntent::InstantiateSelected {
+                    template_id: entry.id.clone(),
+                    template_revision: entry.revision.to_string(),
+                })
             }
             _ => Err(CharacterLibraryError::UnknownAction),
         }

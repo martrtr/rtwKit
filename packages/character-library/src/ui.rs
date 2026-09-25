@@ -8,8 +8,8 @@ use rintawa_sdk::ui::{
 };
 
 use crate::{
-    CHARACTER_LIBRARY_ACTION_REFRESH, CHARACTER_LIBRARY_ACTION_SELECT, CharacterLibraryEntry,
-    CharacterLibraryState,
+    CHARACTER_LIBRARY_ACTION_INSTANTIATE, CHARACTER_LIBRARY_ACTION_REFRESH,
+    CHARACTER_LIBRARY_ACTION_SELECT, CharacterLibraryEntry, CharacterLibraryState,
 };
 
 /// Stable Portable UI surface identity owned by Character Library.
@@ -26,6 +26,7 @@ const CATALOG_NODE: &str = "catalog";
 const EMPTY_NODE: &str = "catalog.empty";
 const DETAILS_NODE: &str = "details";
 const DETAILS_EMPTY_NODE: &str = "details.empty";
+pub(crate) const INSTANTIATE_NODE: &str = "details.instantiate";
 const MAX_PRESENTATION_TEXT_BYTES: usize = 4 * 1024;
 
 /// Returns the static Portable UI surface declaration for Character Library.
@@ -168,6 +169,7 @@ fn append_details(nodes: &mut Vec<UiNode>, selected: Option<&CharacterLibraryEnt
                 creator.into(),
                 tags.into(),
                 revision.into(),
+                INSTANTIATE_NODE.into(),
             ],
         }),
     ));
@@ -191,6 +193,13 @@ fn append_details(nodes: &mut Vec<UiNode>, selected: Option<&CharacterLibraryEnt
     };
     nodes.push(text_node(tags, detail_line("Tags", &tag_text)));
     nodes.push(text_node(revision, format!("Revision: {}", entry.revision)));
+    nodes.push(button_node(
+        INSTANTIATE_NODE,
+        "Create World",
+        CHARACTER_LIBRARY_ACTION_INSTANTIATE,
+        true,
+        UiButtonAppearance::Default,
+    ));
 }
 
 fn detail_line(label: &str, value: &str) -> String {

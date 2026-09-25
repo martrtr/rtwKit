@@ -26,8 +26,10 @@ consumer of that execution target and provides the composition roles
 `packages/world-manager` and `packages/character-library` follow the same boundary.
 World Manager owns product-facing world catalog/lifecycle UX over the generic
 `world-sessions` capability. Character Library owns CharacterTemplate/Tavern compatibility
-and Character instantiation semantics over generic content/world contracts. Neither feature
-belongs in the Rintawa Core repository.
+and Character instantiation semantics over generic content/world contracts. Its baseline UI
+uses exact `world-default` composition metadata plus generic world lifecycle/command access;
+the inherited world-scoped instance provides the public World System contract that proposes
+ordinary entity/facet/event changes. Neither feature belongs in the Rintawa Core repository.
 
 `wit/engine.wit` is a checked-in authoring mirror of the public Rintawa guest ABI used by
 rtwKit packages. It must track the exact pinned Rintawa Git revision in `Cargo.toml`; rtwKit
