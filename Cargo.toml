@@ -6,6 +6,7 @@ members = [
     "packages/web-runtime",
     "packages/package-manager",
     "packages/character-library",
+    "packages/character-library/content-handler",
     "packages/world-manager",
     "packages/world-manager/runtime",
 ]

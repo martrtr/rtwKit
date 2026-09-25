@@ -9,13 +9,16 @@
 
 mod instantiate;
 mod model;
+#[cfg(not(target_arch = "wasm32"))]
 mod rtw;
 mod tavern_v2;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use instantiate::instantiate_character;
 pub use instantiate::{
     CHARACTER_ENTITY_SCHEMA, CHARACTER_IDENTITY_FACET_SCHEMA, CharacterIdentityFacet,
     CharacterInstantiationError, CharacterInstantiationPlan, character_entity_schema_key,
-    character_identity_facet_schema_key, character_world_schemas, instantiate_character,
+    character_identity_facet_schema_key, character_world_schemas, instantiate_character_with_id,
 };
 pub use model::{
     CHARACTER_TEMPLATE_CONTENT_V1, CharacterAssets, CharacterMetadata, CharacterTemplate,
@@ -23,6 +26,7 @@ pub use model::{
     TavernV2Compatibility, character_template_content_handler_contract,
     validate_character_template_descriptor,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use rtw::{
     CHARACTER_TEMPLATE_ENTRY_PATH, CharacterTemplateRtwError, pack_character_template_rtw,
 };

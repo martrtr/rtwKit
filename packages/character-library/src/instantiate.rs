@@ -129,10 +129,21 @@ pub fn character_world_schemas() -> Result<Vec<WorldSchemaContribution>, Charact
 /// # Errors
 ///
 /// Returns a validation or static schema-key failure before any plan is returned.
-pub fn instantiate_character(
+/// Builds a runtime-neutral instantiation plan using an authoritative entity identity.
+///
+/// The caller supplies `entity_id` so sandboxed Component Model guests never need
+/// ambient randomness merely to propose world state. Hosts/controllers can allocate
+/// the identity according to their own authority boundary and then invoke this pure
+/// package logic.
+///
+/// # Errors
+///
+/// Returns a validation or static schema-key failure before any plan is returned.
+pub fn instantiate_character_with_id(
     template: &CharacterTemplate,
     template_id: impl Into<String>,
     template_revision: &ArtifactDigest,
+    entity_id: EntityId,
 ) -> Result<CharacterInstantiationPlan, CharacterInstantiationError> {
     template.validate()?;
     let template_id = template_id.into();
@@ -141,7 +152,7 @@ pub fn instantiate_character(
     }
 
     Ok(CharacterInstantiationPlan {
-        entity_id: EntityId::new(),
+        entity_id,
         entity_schema: character_entity_schema_key()?,
         identity_facet_schema: character_identity_facet_schema_key()?,
         identity: CharacterIdentityFacet {
@@ -150,6 +161,24 @@ pub fn instantiate_character(
             template_revision: template_revision.to_string(),
         },
     })
+}
+
+/// Builds an instantiation plan and allocates a native live entity identity.
+///
+/// This convenience API is intentionally unavailable to `wasm32` guests. Sandboxed
+/// adapters must obtain an authoritative identity from their host/controller and use
+/// [`instantiate_character_with_id`] instead.
+///
+/// # Errors
+///
+/// Returns the same validation failures as [`instantiate_character_with_id`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn instantiate_character(
+    template: &CharacterTemplate,
+    template_id: impl Into<String>,
+    template_revision: &ArtifactDigest,
+) -> Result<CharacterInstantiationPlan, CharacterInstantiationError> {
+    instantiate_character_with_id(template, template_id, template_revision, EntityId::new())
 }
 
 fn schema_key(id: &str, version: u32) -> Result<SchemaKey, CharacterInstantiationError> {

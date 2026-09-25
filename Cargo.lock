@@ -352,6 +352,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rintawa-character-library-handler"
+version = "0.0.1"
+dependencies = [
+ "rintawa-character-library",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "rintawa-package-manager"
 version = "0.0.2"
 dependencies = [

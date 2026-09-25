@@ -1,0 +1,11 @@
+id = "rintawa.character-library"
+name = "Character Library"
+version = "0.0.1"
+sdk = "^0.0"
+
+[[components]]
+id = "content-handler"
+kind = "runtime"
+target = "rintawa.runtime.wasm-component@1"
+entry = "content-handler.wasm"
+required = true
