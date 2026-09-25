@@ -4,11 +4,12 @@ use std::collections::BTreeMap;
 
 use rintawa_artifacts::ArtifactDigest;
 use rintawa_character_library::{
-    CHARACTER_LIBRARY_ACTION_INSTANTIATE, CHARACTER_LIBRARY_ACTION_REFRESH,
-    CHARACTER_LIBRARY_ACTION_SELECT, CHARACTER_LIBRARY_SURFACE_ID, CHARACTER_TEMPLATE_CONTENT_V1,
-    CharacterContentDocument, CharacterContentRecord, CharacterLibraryController,
-    CharacterLibraryError, CharacterLibraryGateway, CharacterLibraryGatewayError,
-    CharacterLibraryIntent, CharacterTemplate, MAX_CHARACTER_LIBRARY_ENTRIES,
+    CHARACTER_LIBRARY_ACTION_IMPORT, CHARACTER_LIBRARY_ACTION_INSTANTIATE,
+    CHARACTER_LIBRARY_ACTION_REFRESH, CHARACTER_LIBRARY_ACTION_SELECT,
+    CHARACTER_LIBRARY_SURFACE_ID, CHARACTER_TEMPLATE_CONTENT_V1, CharacterContentDocument,
+    CharacterContentRecord, CharacterLibraryController, CharacterLibraryError,
+    CharacterLibraryGateway, CharacterLibraryGatewayError, CharacterLibraryIntent,
+    CharacterTemplate, MAX_CHARACTER_IMPORT_TEXT_BYTES, MAX_CHARACTER_LIBRARY_ENTRIES,
     build_character_library_snapshot, character_library_surface_contribution, entry_select_node_id,
 };
 use rintawa_sdk::{
@@ -221,6 +222,116 @@ fn test_should_fail_closed_for_stale_spoofed_or_invalid_payload_actions() -> any
 }
 
 #[test]
+fn test_should_validate_and_reconcile_tavern_json_import_actions() -> anyhow::Result<()> {
+    let mut controller = CharacterLibraryController::new(gateway(&[]));
+    controller.refresh()?;
+    let snapshot = build_character_library_snapshot(controller.state());
+    let import_node = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "import.source")
+        .ok_or_else(|| anyhow::anyhow!("import text area must be rendered"))?;
+    assert!(matches!(
+        &import_node.kind,
+        UiNodeKind::TextArea(area)
+            if area.is_enabled
+                && area.change_action.is_none()
+                && area.submit_action.as_ref().is_some_and(
+                    |action| action.as_str() == CHARACTER_LIBRARY_ACTION_IMPORT
+                )
+    ));
+
+    let source =
+        String::from(r#"{"spec":"chara_card_v2","spec_version":"2.0","data":{"name":"Alice"}}"#);
+    let intent = controller.handle_action(&action(
+        controller.state().revision(),
+        UiNodeId::new("import.source"),
+        CHARACTER_LIBRARY_ACTION_IMPORT,
+        UiActionPayload::Text(source.clone()),
+    ))?;
+    assert_eq!(
+        intent,
+        CharacterLibraryIntent::ImportTavernJson {
+            source: source.clone()
+        }
+    );
+    assert!(controller.state().import_pending());
+    assert_eq!(controller.state().import_source(), source);
+
+    assert_eq!(
+        controller.handle_action(&action(
+            controller.state().revision(),
+            UiNodeId::new("import.source"),
+            CHARACTER_LIBRARY_ACTION_IMPORT,
+            UiActionPayload::Text(String::from("{}")),
+        )),
+        Err(CharacterLibraryError::ImportAlreadyPending)
+    );
+
+    controller.fail_import("invalid card")?;
+    assert!(!controller.state().import_pending());
+    assert_eq!(controller.state().import_source(), source);
+    assert_eq!(controller.state().import_status(), Some("invalid card"));
+    let failed_snapshot = build_character_library_snapshot(controller.state());
+    assert!(matches!(
+        failed_snapshot
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "import.source")
+            .map(|node| &node.kind),
+        Some(UiNodeKind::TextArea(area)) if area.is_enabled && area.value == source
+    ));
+
+    assert_eq!(
+        controller.handle_action(&action(
+            controller.state().revision(),
+            UiNodeId::new("import.source"),
+            CHARACTER_LIBRARY_ACTION_IMPORT,
+            UiActionPayload::Text(String::from("   ")),
+        )),
+        Err(CharacterLibraryError::EmptyImportSource)
+    );
+    assert_eq!(
+        controller.handle_action(&action(
+            controller.state().revision(),
+            UiNodeId::new("import.source"),
+            CHARACTER_LIBRARY_ACTION_IMPORT,
+            UiActionPayload::Text("x".repeat(MAX_CHARACTER_IMPORT_TEXT_BYTES + 1)),
+        )),
+        Err(CharacterLibraryError::ImportSourceTooLarge)
+    );
+    Ok(())
+}
+
+#[test]
+fn test_should_select_imported_item_only_after_validated_refresh() -> anyhow::Result<()> {
+    let mut gateway = gateway(&[]);
+    let (imported, document) = record("id-imported", "Imported Alice", "Ada");
+    gateway.next_records = Some(vec![imported]);
+    gateway.next_documents = Some(BTreeMap::from([(String::from("id-imported"), document)]));
+    let mut controller = CharacterLibraryController::new(gateway);
+    controller.refresh()?;
+    controller.handle_action(&action(
+        controller.state().revision(),
+        UiNodeId::new("import.source"),
+        CHARACTER_LIBRARY_ACTION_IMPORT,
+        UiActionPayload::Text(String::from(
+            r#"{"spec":"chara_card_v2","spec_version":"2.0","data":{"name":"Alice"}}"#,
+        )),
+    ))?;
+
+    controller.complete_import("id-imported")?;
+    assert!(!controller.state().import_pending());
+    assert!(controller.state().import_source().is_empty());
+    assert_eq!(controller.state().selected_id(), Some("id-imported"));
+    assert_eq!(
+        controller.state().import_status(),
+        Some("Imported Imported Alice.")
+    );
+    Ok(())
+}
+
+#[test]
 fn test_should_preserve_previous_state_when_refresh_document_metadata_is_spoofed()
 -> anyhow::Result<()> {
     let mut gateway = gateway(&[("id-a", "Alice", "Ada")]);
@@ -313,7 +424,7 @@ fn test_should_bound_catalog_and_render_maximum_snapshot() -> anyhow::Result<()>
     let mut controller = CharacterLibraryController::new(catalog_gateway);
     controller.refresh()?;
     let snapshot = build_character_library_snapshot(controller.state());
-    assert!(snapshot.nodes.len() < 4096);
+    assert!(snapshot.nodes.len() < 1024);
 
     let mut oversized = gateway(&[]);
     for index in 0..=MAX_CHARACTER_LIBRARY_ENTRIES {

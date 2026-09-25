@@ -13,12 +13,15 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    CharacterInstantiationError, CharacterTemplate, character_entity_schema_key,
-    character_identity_facet_schema_key, instantiate_character_with_id,
+    CharacterInstantiationError, CharacterTemplate, CharacterTemplateRtwError,
+    character_entity_schema_key, character_identity_facet_schema_key,
+    encode_character_template_rtw, instantiate_character_with_id,
 };
 
-/// Versioned command schema that instantiates one reusable CharacterTemplate.
+/// Legacy v1 command schema retained for persisted World compatibility.
 pub const CHARACTER_INSTANTIATE_COMMAND_SCHEMA: &str = "rintawa.character.instantiate@1";
+/// Current self-contained command schema for CharacterTemplate instantiation.
+pub const CHARACTER_INSTANTIATE_COMMAND_SCHEMA_V2: &str = "rintawa.character.instantiate@2";
 /// Versioned event schema emitted after one Character is instantiated.
 pub const CHARACTER_INSTANTIATED_EVENT_SCHEMA: &str = "rintawa.character.instantiated@1";
 
@@ -56,12 +59,22 @@ const CHARACTER_IDENTITY_SCHEMA_V2_JSON: &str = r#"{
   },
   "additionalProperties": false
 }"#;
-const CHARACTER_INSTANTIATE_SCHEMA_JSON: &str = r#"{
+const CHARACTER_INSTANTIATE_SCHEMA_V1_JSON: &str = r#"{
   "type": "object",
   "required": ["template-id", "template-revision"],
   "properties": {
     "template-id": { "type": "string", "minLength": 1, "maxLength": 128 },
     "template-revision": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  },
+  "additionalProperties": false
+}"#;
+const CHARACTER_INSTANTIATE_SCHEMA_V2_JSON: &str = r#"{
+  "type": "object",
+  "required": ["template-id", "template-revision", "template"],
+  "properties": {
+    "template-id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "template-revision": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "template": { "type": "object" }
   },
   "additionalProperties": false
 }"#;
@@ -76,7 +89,7 @@ const CHARACTER_INSTANTIATED_SCHEMA_JSON: &str = r#"{
   "additionalProperties": false
 }"#;
 
-/// Payload submitted by Character Library to instantiate one exact template revision.
+/// Legacy v1 payload that identifies a reusable template by library provenance only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct CharacterInstantiateCommand {
@@ -94,12 +107,40 @@ impl CharacterInstantiateCommand {
     /// Returns [`CharacterWorldMaterializationError`] for an empty/oversized id or
     /// malformed artifact digest.
     pub fn validate(&self) -> Result<ArtifactDigest, CharacterWorldMaterializationError> {
-        if self.template_id.trim().is_empty() || self.template_id.len() > 128 {
-            return Err(CharacterWorldMaterializationError::InvalidTemplateId);
+        validate_template_provenance(&self.template_id, &self.template_revision)
+    }
+}
+
+/// Self-contained v2 command used by deterministic World System execution.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct CharacterInstantiateCommandV2 {
+    /// Stable logical user-content identity used as durable provenance.
+    pub template_id: String,
+    /// Exact immutable RTW revision selected by the user.
+    pub template_revision: String,
+    /// Validated reusable content captured before entering the World System boundary.
+    pub template: CharacterTemplate,
+}
+
+impl CharacterInstantiateCommandV2 {
+    /// Validates provenance plus the embedded reusable template.
+    ///
+    /// The embedded value makes System execution independent from Host user-content
+    /// access. Its canonical package RTW bytes must hash to the claimed library revision,
+    /// so alternate command submitters cannot spoof durable content provenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CharacterWorldMaterializationError`] for invalid provenance, template
+    /// invariants, or an embedded descriptor above the content protocol bound.
+    pub fn validate(&self) -> Result<ArtifactDigest, CharacterWorldMaterializationError> {
+        let revision = validate_template_provenance(&self.template_id, &self.template_revision)?;
+        let canonical_rtw = encode_character_template_rtw(&self.template)?;
+        if ArtifactDigest::sha256(&canonical_rtw) != revision {
+            return Err(CharacterWorldMaterializationError::TemplateRevisionMismatch);
         }
-        self.template_revision
-            .parse::<ArtifactDigest>()
-            .map_err(|_| CharacterWorldMaterializationError::InvalidTemplateRevision)
+        Ok(revision)
     }
 }
 
@@ -124,6 +165,12 @@ pub enum CharacterWorldMaterializationError {
     /// Immutable template revision is not a canonical artifact digest.
     #[error("template revision must be a canonical SHA-256 artifact digest")]
     InvalidTemplateRevision,
+    /// Embedded reusable content could not be encoded as canonical CharacterTemplate RTW bytes.
+    #[error(transparent)]
+    TemplateArtifact(#[from] CharacterTemplateRtwError),
+    /// Embedded reusable content does not match the claimed immutable RTW revision.
+    #[error("embedded CharacterTemplate does not match the claimed template revision")]
+    TemplateRevisionMismatch,
     /// Package-owned schema identity is malformed.
     #[error("invalid package-owned Character schema key")]
     InvalidSchemaKey,
@@ -135,7 +182,7 @@ pub enum CharacterWorldMaterializationError {
     Serialization(#[from] serde_json::Error),
 }
 
-/// Returns the Character instantiation command schema key.
+/// Returns the legacy v1 Character instantiation command schema key.
 ///
 /// # Errors
 ///
@@ -144,6 +191,17 @@ pub enum CharacterWorldMaterializationError {
 pub fn character_instantiate_command_schema_key()
 -> Result<SchemaKey, CharacterWorldMaterializationError> {
     schema_key("rintawa.character.instantiate", 1)
+}
+
+/// Returns the current self-contained v2 Character instantiation command schema key.
+///
+/// # Errors
+///
+/// Returns [`CharacterWorldMaterializationError::InvalidSchemaKey`] only if the
+/// compile-time package constant is malformed.
+pub fn character_instantiate_command_schema_key_v2()
+-> Result<SchemaKey, CharacterWorldMaterializationError> {
+    schema_key("rintawa.character.instantiate", 2)
 }
 
 /// Returns the Character-instantiated durable event schema key.
@@ -183,7 +241,12 @@ pub fn character_world_schemas()
         WorldSchemaContribution::new(
             character_instantiate_command_schema_key()?,
             SchemaKind::Command,
-            CHARACTER_INSTANTIATE_SCHEMA_JSON,
+            CHARACTER_INSTANTIATE_SCHEMA_V1_JSON,
+        ),
+        WorldSchemaContribution::new(
+            character_instantiate_command_schema_key_v2()?,
+            SchemaKind::Command,
+            CHARACTER_INSTANTIATE_SCHEMA_V2_JSON,
         ),
         WorldSchemaContribution::new(
             character_instantiated_event_schema_key()?,
@@ -193,11 +256,11 @@ pub fn character_world_schemas()
     ])
 }
 
-/// Builds an ordinary authoritative transaction proposal for one exact template revision.
+/// Builds a legacy v1 transaction proposal when the caller already owns exact template bytes.
 ///
-/// The live EntityId is deterministically derived from the Host-generated CommandId.
-/// Retries of the same idempotent command therefore propose the same entity identity
-/// without requiring ambient randomness inside the WASM guest.
+/// This helper is retained for compatibility with native tooling/tests. New runtime commands use
+/// [`build_character_instantiation_transaction_v2`] so World System execution does not require
+/// Host user-content access.
 ///
 /// # Errors
 ///
@@ -208,9 +271,36 @@ pub fn build_character_instantiation_transaction(
     command_id: CommandId,
 ) -> Result<WorldSystemTransaction, CharacterWorldMaterializationError> {
     let revision = command.validate()?;
+    build_transaction(template, &command.template_id, &revision, command_id)
+}
+
+/// Builds the current deterministic transaction from one self-contained v2 command.
+///
+/// # Errors
+///
+/// Returns validation, schema construction, instantiation, or serialization failures.
+pub fn build_character_instantiation_transaction_v2(
+    command: &CharacterInstantiateCommandV2,
+    command_id: CommandId,
+) -> Result<WorldSystemTransaction, CharacterWorldMaterializationError> {
+    let revision = command.validate()?;
+    build_transaction(
+        &command.template,
+        &command.template_id,
+        &revision,
+        command_id,
+    )
+}
+
+fn build_transaction(
+    template: &CharacterTemplate,
+    template_id: &str,
+    revision: &ArtifactDigest,
+    command_id: CommandId,
+) -> Result<WorldSystemTransaction, CharacterWorldMaterializationError> {
     let entity_id = EntityId::from_bytes(command_id.into_bytes());
     let plan =
-        instantiate_character_with_id(template, command.template_id.clone(), &revision, entity_id)?;
+        instantiate_character_with_id(template, template_id.to_string(), revision, entity_id)?;
 
     let mut transaction = WorldSystemTransaction::new();
     transaction.push_mutation(WorldSystemMutation::CreateEntity {
@@ -226,11 +316,23 @@ pub fn build_character_instantiation_transaction(
         schema: character_instantiated_event_schema_key()?,
         payload: serde_json::to_value(CharacterInstantiatedEvent {
             entity_id: plan.entity_id,
-            template_id: command.template_id.clone(),
+            template_id: template_id.to_string(),
             template_revision: revision.to_string(),
         })?,
     });
     Ok(transaction)
+}
+
+fn validate_template_provenance(
+    template_id: &str,
+    template_revision: &str,
+) -> Result<ArtifactDigest, CharacterWorldMaterializationError> {
+    if template_id.trim().is_empty() || template_id.len() > 128 {
+        return Err(CharacterWorldMaterializationError::InvalidTemplateId);
+    }
+    template_revision
+        .parse::<ArtifactDigest>()
+        .map_err(|_| CharacterWorldMaterializationError::InvalidTemplateRevision)
 }
 
 fn schema_key(id: &str, version: u32) -> Result<SchemaKey, CharacterWorldMaterializationError> {

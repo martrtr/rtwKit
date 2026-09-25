@@ -59,6 +59,46 @@ function dataGridSurface(selectedRows: number[]): UiPresentationSurface {
   };
 }
 
+
+function textAreaSurface(submitAction: string | null): UiPresentationSurface {
+  return {
+    owner: {
+      instance_id: "demo.text-area",
+      component_id: "runtime",
+    },
+    contribution: {
+      id: "notes",
+      placement: "primary",
+      semantic: null,
+      activity: null,
+      traits: [],
+      required_capabilities: ["rintawa.ui.input.text-area@1"],
+    },
+    snapshot: {
+      surface_id: "notes",
+      revision: "1",
+      root: "notes",
+      nodes: [
+        {
+          id: "notes",
+          semantic: null,
+          traits: [],
+          kind: {
+            type: "text-area",
+            data: {
+              value: "draft",
+              placeholder: "Notes",
+              change_action: null,
+              submit_action: submitAction,
+              is_enabled: true,
+            },
+          },
+        },
+      ],
+    },
+  };
+}
+
 describe("portable surface", () => {
   test("marks feature-selected data-grid rows without owning selection state", () => {
     const markup = renderToStaticMarkup(
@@ -82,5 +122,21 @@ describe("portable surface", () => {
     expect(markup).toContain('data-ui-traits="collection primary-content"');
     expect(markup).toContain("First");
     expect(markup).toContain("Second");
+  });
+
+  test("renders a visible renderer-owned submit affordance for multiline inputs", () => {
+    const withSubmit = renderToStaticMarkup(
+      <PortableSurface
+        surface={textAreaSurface("notes.submit")}
+        onAction={() => undefined}
+      />,
+    );
+    const withoutSubmit = renderToStaticMarkup(
+      <PortableSurface surface={textAreaSurface(null)} onAction={() => undefined} />,
+    );
+
+    expect(withSubmit).toContain('class="rintawa-button rintawa-textarea-submit"');
+    expect(withSubmit).toContain(">Submit</button>");
+    expect(withoutSubmit).not.toContain("rintawa-textarea-submit");
   });
 });

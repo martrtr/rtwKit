@@ -2,14 +2,16 @@
 
 use rintawa_sdk::ui::{
     UI_CAPABILITY_BUTTON, UI_CAPABILITY_COLUMN, UI_CAPABILITY_LIST, UI_CAPABILITY_ROW,
-    UI_CAPABILITY_TEXT, UiActionId, UiActivityContribution, UiButtonAppearance, UiButtonNode,
-    UiContainerNode, UiNode, UiNodeId, UiNodeKind, UiPlacementHint, UiSurfaceContribution,
-    UiSurfaceId, UiSurfaceSnapshot, UiTextNode,
+    UI_CAPABILITY_TEXT, UI_CAPABILITY_TEXT_AREA, UiActionId, UiActivityContribution,
+    UiButtonAppearance, UiButtonNode, UiContainerNode, UiNode, UiNodeId, UiNodeKind,
+    UiPlacementHint, UiSurfaceContribution, UiSurfaceId, UiSurfaceSnapshot, UiTextAreaNode,
+    UiTextNode,
 };
 
 use crate::{
-    CHARACTER_LIBRARY_ACTION_INSTANTIATE, CHARACTER_LIBRARY_ACTION_REFRESH,
-    CHARACTER_LIBRARY_ACTION_SELECT, CharacterLibraryEntry, CharacterLibraryState,
+    CHARACTER_LIBRARY_ACTION_IMPORT, CHARACTER_LIBRARY_ACTION_INSTANTIATE,
+    CHARACTER_LIBRARY_ACTION_REFRESH, CHARACTER_LIBRARY_ACTION_SELECT, CharacterLibraryEntry,
+    CharacterLibraryState,
 };
 
 /// Stable Portable UI surface identity owned by Character Library.
@@ -21,6 +23,10 @@ const ROOT_NODE: &str = "root";
 const TITLE_NODE: &str = "title";
 const TOOLBAR_NODE: &str = "toolbar";
 pub(crate) const REFRESH_NODE: &str = "toolbar.refresh";
+const IMPORT_PANEL_NODE: &str = "import";
+const IMPORT_LABEL_NODE: &str = "import.label";
+pub(crate) const IMPORT_SOURCE_NODE: &str = "import.source";
+const IMPORT_STATUS_NODE: &str = "import.status";
 const BODY_NODE: &str = "body";
 const CATALOG_NODE: &str = "catalog";
 const EMPTY_NODE: &str = "catalog.empty";
@@ -40,6 +46,7 @@ pub fn character_library_surface_contribution() -> UiSurfaceContribution {
         .requiring_capability(UI_CAPABILITY_ROW)
         .requiring_capability(UI_CAPABILITY_LIST)
         .requiring_capability(UI_CAPABILITY_TEXT)
+        .requiring_capability(UI_CAPABILITY_TEXT_AREA)
         .requiring_capability(UI_CAPABILITY_BUTTON)
 }
 
@@ -54,7 +61,12 @@ pub fn build_character_library_snapshot(state: &CharacterLibraryState) -> UiSurf
         UiNode::new(
             ROOT_NODE,
             UiNodeKind::Column(UiContainerNode {
-                children: vec![TITLE_NODE.into(), TOOLBAR_NODE.into(), BODY_NODE.into()],
+                children: vec![
+                    TITLE_NODE.into(),
+                    TOOLBAR_NODE.into(),
+                    IMPORT_PANEL_NODE.into(),
+                    BODY_NODE.into(),
+                ],
             }),
         ),
         text_node(TITLE_NODE, "Characters"),
@@ -70,6 +82,36 @@ pub fn build_character_library_snapshot(state: &CharacterLibraryState) -> UiSurf
             CHARACTER_LIBRARY_ACTION_REFRESH,
             true,
             UiButtonAppearance::Subtle,
+        ),
+        UiNode::new(
+            IMPORT_PANEL_NODE,
+            UiNodeKind::Column(UiContainerNode {
+                children: vec![
+                    IMPORT_LABEL_NODE.into(),
+                    IMPORT_SOURCE_NODE.into(),
+                    IMPORT_STATUS_NODE.into(),
+                ],
+            }),
+        ),
+        text_node(
+            IMPORT_LABEL_NODE,
+            "Import Tavern V2 JSON by submitting the field below.",
+        ),
+        UiNode::new(
+            IMPORT_SOURCE_NODE,
+            UiNodeKind::TextArea(UiTextAreaNode {
+                value: state.import_source().to_string(),
+                placeholder: Some(String::from("Paste Tavern V2 JSON here")),
+                change_action: None,
+                submit_action: Some(UiActionId::new(CHARACTER_LIBRARY_ACTION_IMPORT)),
+                is_enabled: !state.import_pending(),
+            }),
+        ),
+        text_node(
+            IMPORT_STATUS_NODE,
+            state
+                .import_status()
+                .unwrap_or("No import is currently pending."),
         ),
         UiNode::new(
             BODY_NODE,

@@ -2,12 +2,13 @@
 
 use rintawa_character_library::{
     CHARACTER_TEMPLATE_CONTENT_V1, CharacterContentDocument, CharacterContentRecord,
-    CharacterInstantiateCommand, CharacterLibraryIntent, build_character_instantiation_transaction,
-    character_instantiate_command_schema_key, character_world_schemas,
-    decode_character_content_document,
+    CharacterInstantiateCommand, CharacterInstantiateCommandV2, CharacterLibraryIntent,
+    build_character_instantiation_transaction, build_character_instantiation_transaction_v2,
+    character_instantiate_command_schema_key, character_instantiate_command_schema_key_v2,
+    character_world_schemas, decode_character_content_document,
 };
 use rintawa_sdk::{
-    world::SchemaKind,
+    world::{SchemaKey, SchemaKind},
     world_system::{
         WorldSystemServiceRequest, WorldSystemServiceResponse, world_system_service_contract_key,
     },
@@ -40,18 +41,28 @@ pub(crate) fn register_world_materialization() -> Result<(), String> {
         .map_err(|error| format!("Character world schema registration failed: {error:?}"))?;
     }
 
-    let command_schema = character_instantiate_command_schema_key()
-        .map_err(|error| format!("Character command schema construction failed: {error}"))?;
-    let contract = world_system_service_contract_key(&command_schema);
-    let contract_name = contract.id.to_string();
-    registration::provide_contract(&contract_name, contract.version.major(), &[])
-        .map_err(|error| format!("Character World System registration failed: {error:?}"))
+    let command_schemas = [
+        character_instantiate_command_schema_key()
+            .map_err(|error| format!("Character command schema construction failed: {error}"))?,
+        character_instantiate_command_schema_key_v2()
+            .map_err(|error| format!("Character command schema construction failed: {error}"))?,
+    ];
+    for command_schema in command_schemas {
+        let contract = world_system_service_contract_key(&command_schema);
+        let contract_name = contract.id.to_string();
+        registration::provide_contract(&contract_name, contract.version.major(), &[])
+            .map_err(|error| format!("Character World System registration failed: {error:?}"))?;
+    }
+    Ok(())
 }
 
 /// Executes one validated Host-side intent emitted by the Character Library controller.
 pub(crate) fn execute_intent(intent: CharacterLibraryIntent) -> Result<(), String> {
     match intent {
         CharacterLibraryIntent::None => Ok(()),
+        CharacterLibraryIntent::ImportTavernJson { .. } => Err(String::from(
+            "Character import intent cannot enter World materialization",
+        )),
         CharacterLibraryIntent::InstantiateSelected {
             template_id,
             template_revision,
@@ -59,27 +70,34 @@ pub(crate) fn execute_intent(intent: CharacterLibraryIntent) -> Result<(), Strin
     }
 }
 
-/// Handles the public Character World System service contract.
+/// Handles the public Character World System service contracts.
 pub(crate) fn handle_world_system_service(contract: &str, version: u32, payload: &[u8]) -> Vec<u8> {
-    let expected_schema = match character_instantiate_command_schema_key() {
+    let legacy_schema = match character_instantiate_command_schema_key() {
         Ok(schema) => schema,
         Err(error) => {
             log_error(&format!(
                 "Character command schema construction failed: {error}"
             ));
-            return encode_response(WorldSystemServiceResponse::Failed {
-                reason: String::from(DIAGNOSTIC_INVALID_REQUEST),
-            });
+            return failed_request();
         }
     };
-    let expected_contract = world_system_service_contract_key(&expected_schema);
-    if contract != expected_contract.id.to_string() || version != expected_contract.version.major()
-    {
+    let current_schema = match character_instantiate_command_schema_key_v2() {
+        Ok(schema) => schema,
+        Err(error) => {
+            log_error(&format!(
+                "Character command schema construction failed: {error}"
+            ));
+            return failed_request();
+        }
+    };
+    let expected_schema = if contract_matches(&current_schema, contract, version) {
+        &current_schema
+    } else if contract_matches(&legacy_schema, contract, version) {
+        &legacy_schema
+    } else {
         log_error("Character runtime received an unexpected System service contract");
-        return encode_response(WorldSystemServiceResponse::Failed {
-            reason: String::from(DIAGNOSTIC_INVALID_REQUEST),
-        });
-    }
+        return failed_request();
+    };
 
     let request = match serde_json::from_slice::<WorldSystemServiceRequest>(payload) {
         Ok(request) => request,
@@ -87,38 +105,68 @@ pub(crate) fn handle_world_system_service(contract: &str, version: u32, payload:
             log_error(&format!(
                 "Character System request decoding failed: {error}"
             ));
-            return encode_response(WorldSystemServiceResponse::Failed {
-                reason: String::from(DIAGNOSTIC_INVALID_REQUEST),
-            });
+            return failed_request();
         }
     };
-    if request.command.schema != expected_schema {
+    if &request.command.schema != expected_schema {
         log_error("Character System request carried the wrong command schema");
-        return encode_response(WorldSystemServiceResponse::Failed {
-            reason: String::from(DIAGNOSTIC_INVALID_REQUEST),
-        });
+        return failed_request();
     }
 
+    if expected_schema == &current_schema {
+        handle_current_request(request)
+    } else {
+        handle_legacy_request(request)
+    }
+}
+
+fn contract_matches(schema: &SchemaKey, contract: &str, version: u32) -> bool {
+    let expected = world_system_service_contract_key(schema);
+    contract == expected.id.to_string() && version == expected.version.major()
+}
+
+fn handle_current_request(request: WorldSystemServiceRequest) -> Vec<u8> {
+    let command = match serde_json::from_value::<CharacterInstantiateCommandV2>(
+        request.command.payload.clone(),
+    ) {
+        Ok(command) => command,
+        Err(error) => {
+            log_error(&format!(
+                "Character instantiate@2 payload decoding failed: {error}"
+            ));
+            return rejected_command();
+        }
+    };
+    let transaction =
+        match build_character_instantiation_transaction_v2(&command, request.command.id) {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                log_error(&format!(
+                    "Character instantiate@2 proposal validation failed: {error}"
+                ));
+                return rejected_command();
+            }
+        };
+    encode_response(WorldSystemServiceResponse::Transaction { transaction })
+}
+
+fn handle_legacy_request(request: WorldSystemServiceRequest) -> Vec<u8> {
     let command = match serde_json::from_value::<CharacterInstantiateCommand>(
         request.command.payload.clone(),
     ) {
         Ok(command) => command,
         Err(error) => {
             log_error(&format!(
-                "Character instantiate payload decoding failed: {error}"
+                "Character instantiate@1 payload decoding failed: {error}"
             ));
-            return encode_response(WorldSystemServiceResponse::Rejected {
-                reason: String::from(DIAGNOSTIC_INVALID_COMMAND),
-            });
+            return rejected_command();
         }
     };
     if let Err(error) = command.validate() {
         log_error(&format!(
-            "Character instantiate command validation failed: {error}"
+            "Character instantiate@1 command validation failed: {error}"
         ));
-        return encode_response(WorldSystemServiceResponse::Rejected {
-            reason: String::from(DIAGNOSTIC_INVALID_COMMAND),
-        });
+        return rejected_command();
     }
     let template = match load_exact_template(&command) {
         Ok(template) => template,
@@ -138,15 +186,24 @@ pub(crate) fn handle_world_system_service(contract: &str, version: u32, payload:
             Ok(transaction) => transaction,
             Err(error) => {
                 log_error(&format!(
-                    "Character materialization proposal failed: {error}"
+                    "Character instantiate@1 proposal validation failed: {error}"
                 ));
-                return encode_response(WorldSystemServiceResponse::Rejected {
-                    reason: String::from(DIAGNOSTIC_INVALID_COMMAND),
-                });
+                return rejected_command();
             }
         };
-
     encode_response(WorldSystemServiceResponse::Transaction { transaction })
+}
+
+fn failed_request() -> Vec<u8> {
+    encode_response(WorldSystemServiceResponse::Failed {
+        reason: String::from(DIAGNOSTIC_INVALID_REQUEST),
+    })
+}
+
+fn rejected_command() -> Vec<u8> {
+    encode_response(WorldSystemServiceResponse::Rejected {
+        reason: String::from(DIAGNOSTIC_INVALID_COMMAND),
+    })
 }
 
 fn create_world_with_character(
@@ -154,18 +211,32 @@ fn create_world_with_character(
     template_revision: String,
 ) -> Result<(), String> {
     require_world_default()?;
+    let provenance = CharacterInstantiateCommand {
+        template_id: template_id.clone(),
+        template_revision: template_revision.clone(),
+    };
+    let template = load_exact_template(&provenance).map_err(|failure| match failure {
+        ServiceFailure::Rejected(reason) | ServiceFailure::Failed(reason) => {
+            format!("Character exact-template preflight failed: {reason}")
+        }
+    })?;
+    let command = CharacterInstantiateCommandV2 {
+        template_id,
+        template_revision,
+        template,
+    };
+    command
+        .validate()
+        .map_err(|error| format!("Character instantiate@2 preflight failed: {error}"))?;
+    let schema = character_instantiate_command_schema_key_v2()
+        .map_err(|error| format!("Character command schema construction failed: {error}"))?;
+    let payload_json = serde_json::to_vec(&command)
+        .map_err(|error| format!("Character instantiate command serialization failed: {error}"))?;
+
     let world = world_sessions::create()
         .map_err(|error| format!("Character World creation failed: {error:?}"))?;
     world_sessions::set_active(&world.world_id, true)
         .map_err(|error| format!("Character World activation request failed: {error:?}"))?;
-
-    let schema = character_instantiate_command_schema_key()
-        .map_err(|error| format!("Character command schema construction failed: {error}"))?;
-    let payload_json = serde_json::to_vec(&CharacterInstantiateCommand {
-        template_id,
-        template_revision,
-    })
-    .map_err(|error| format!("Character instantiate command serialization failed: {error}"))?;
     world_commands::submit(&world_commands::Request {
         world_id: world.world_id.clone(),
         schema: schema.to_string(),
@@ -212,6 +283,8 @@ fn load_exact_template(
             }
             user_content::Error::AccessNotActive
             | user_content::Error::PermissionDenied
+            | user_content::Error::QueueFull
+            | user_content::Error::LimitExceeded
             | user_content::Error::MessageTooLarge
             | user_content::Error::Rejected
             | user_content::Error::Unavailable => {

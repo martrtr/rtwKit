@@ -4,8 +4,9 @@
 //! This adapter uses only generic user-content, world-session, world-command,
 //! world-schema, World System service, and Portable UI contracts.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, collections::BTreeSet};
 
+mod import;
 mod materialization;
 
 use rintawa_character_library::{
@@ -14,17 +15,25 @@ use rintawa_character_library::{
     CharacterLibraryGatewayError, CharacterLibraryIntent, build_character_library_snapshot,
     character_library_surface_contribution,
 };
-use rintawa_sdk::ui::{UiActionEvent, UiPlacementHint};
+use rintawa_sdk::ui::{UiActionEvent, UiNodeId, UiPatch, UiPatchBatch, UiPlacementHint};
 
 wit_bindgen::generate!({
     path: "../../../wit",
-    world: "plugin",
+    world: "task-runtime-plugin",
 });
 
 thread_local! {
     static STATE: RefCell<Option<CharacterLibraryController<WitCharacterLibraryGateway>>> =
         const { RefCell::new(None) };
     static REGISTRATION_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+    static PRESENTATION: RefCell<PresentationState> = RefCell::new(PresentationState::default());
+}
+
+#[derive(Debug, Clone, Default)]
+struct PresentationState {
+    mounted: bool,
+    revision: u64,
+    node_ids: BTreeSet<String>,
 }
 
 struct WitCharacterLibraryGateway;
@@ -65,6 +74,9 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
         STATE.with(|slot| {
             *slot.borrow_mut() = None;
         });
+        PRESENTATION.with(|slot| {
+            *slot.borrow_mut() = PresentationState::default();
+        });
         if let Some(error) = REGISTRATION_ERROR.with(|slot| slot.borrow().clone()) {
             log_error(&error);
             return;
@@ -86,8 +98,12 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
     }
 
     fn stop() {
+        import::stop();
         STATE.with(|slot| {
             *slot.borrow_mut() = None;
+        });
+        PRESENTATION.with(|slot| {
+            *slot.borrow_mut() = PresentationState::default();
         });
         // Host deactivation revokes mounted surfaces even if callback host access
         // has already closed, so explicit unmount is best-effort during shutdown.
@@ -122,11 +138,22 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
                 return;
             }
         };
-        if intent != CharacterLibraryIntent::None
-            && let Err(error) = materialization::execute_intent(intent)
-        {
-            log_error(&error);
-            return;
+        match intent {
+            CharacterLibraryIntent::None => {}
+            CharacterLibraryIntent::ImportTavernJson { source } => {
+                if let Err(error) = import::begin(&source) {
+                    if let Err(state_error) = mark_import_failed(&error) {
+                        log_error(&state_error);
+                    }
+                    log_error(&error);
+                }
+            }
+            intent @ CharacterLibraryIntent::InstantiateSelected { .. } => {
+                if let Err(error) = materialization::execute_intent(intent) {
+                    log_error(&error);
+                    return;
+                }
+            }
         }
         if let Err(error) = render_surface() {
             log_error(&error);
@@ -136,6 +163,54 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
     fn handle_service(contract: String, version: u32, payload: Vec<u8>) -> Vec<u8> {
         materialization::handle_world_system_service(&contract, version, &payload)
     }
+}
+
+impl exports::rintawa::engine::task_handler::Guest for CharacterLibraryRuntime {
+    fn on_task(handle: u64) {
+        let terminal = match import::poll(handle) {
+            import::ImportPoll::Ignored | import::ImportPoll::Pending => false,
+            import::ImportPoll::Succeeded(imported_id) => {
+                let result = STATE.with(|slot| {
+                    let mut state = slot.borrow_mut();
+                    let controller = state.as_mut().ok_or_else(|| {
+                        String::from("Character import completed while library runtime is inactive")
+                    })?;
+                    controller.complete_import(&imported_id).map_err(|error| {
+                        format!("Character import catalog reconciliation failed: {error}")
+                    })
+                });
+                if let Err(error) = result {
+                    if let Err(state_error) = mark_import_failed(&error) {
+                        log_error(&state_error);
+                    }
+                    log_error(&error);
+                }
+                true
+            }
+            import::ImportPoll::Failed(error) => {
+                if let Err(state_error) = mark_import_failed(&error) {
+                    log_error(&state_error);
+                }
+                log_error(&error);
+                true
+            }
+        };
+        if terminal && let Err(error) = render_surface() {
+            log_error(&error);
+        }
+    }
+}
+
+fn mark_import_failed(diagnostic: &str) -> Result<(), String> {
+    STATE.with(|slot| {
+        let mut state = slot.borrow_mut();
+        let controller = state.as_mut().ok_or_else(|| {
+            String::from("Character import failed while library runtime is inactive")
+        })?;
+        controller
+            .fail_import(diagnostic)
+            .map_err(|error| format!("Character import failure state update failed: {error}"))
+    })
 }
 
 fn register_runtime() -> Result<(), String> {
@@ -198,14 +273,85 @@ fn register_surface() -> Result<(), String> {
 }
 
 fn render_surface() -> Result<(), String> {
-    let payload = STATE.with(|slot| {
+    let snapshot = STATE.with(|slot| {
         let state = slot.borrow();
         let controller = state
             .as_ref()
             .ok_or_else(|| String::from("Character Library cannot render while inactive"))?;
-        serde_json::to_vec(&build_character_library_snapshot(controller.state()))
-            .map_err(|error| format!("Character Library snapshot serialization failed: {error}"))
+        Ok::<_, String>(build_character_library_snapshot(controller.state()))
     })?;
+    let node_ids = snapshot
+        .nodes
+        .iter()
+        .map(|node| node.id.as_str().to_string())
+        .collect::<BTreeSet<_>>();
+    let previous = PRESENTATION.with(|slot| slot.borrow().clone());
+
+    let result = if previous.mounted {
+        patch_snapshot(&previous, &snapshot, &node_ids)
+    } else {
+        mount_snapshot(&snapshot)
+    };
+    if let Err(error) = result {
+        if !previous.mounted {
+            return Err(error);
+        }
+        let _ = rintawa::engine::portable_ui::unmount_surface(CHARACTER_LIBRARY_SURFACE_ID);
+        mount_snapshot(&snapshot).map_err(|mount_error| {
+            format!("{error}; Character Library recovery mount failed: {mount_error}")
+        })?;
+    }
+
+    PRESENTATION.with(|slot| {
+        *slot.borrow_mut() = PresentationState {
+            mounted: true,
+            revision: snapshot.revision,
+            node_ids,
+        };
+    });
+    Ok(())
+}
+
+fn patch_snapshot(
+    previous: &PresentationState,
+    snapshot: &rintawa_sdk::ui::UiSurfaceSnapshot,
+    node_ids: &BTreeSet<String>,
+) -> Result<(), String> {
+    if previous.revision.checked_add(1) != Some(snapshot.revision) {
+        return Err(format!(
+            "Character Library presentation revision jumped from {} to {}",
+            previous.revision, snapshot.revision
+        ));
+    }
+    let mut patches = snapshot
+        .nodes
+        .iter()
+        .cloned()
+        .map(|node| UiPatch::UpsertNode { node })
+        .collect::<Vec<_>>();
+    patches.extend(
+        previous
+            .node_ids
+            .difference(node_ids)
+            .map(|node_id| UiPatch::RemoveNode {
+                node_id: UiNodeId::new(node_id.clone()),
+            }),
+    );
+    let batch = UiPatchBatch {
+        surface_id: snapshot.surface_id.clone(),
+        base_revision: previous.revision,
+        next_revision: snapshot.revision,
+        patches,
+    };
+    let payload = serde_json::to_vec(&batch)
+        .map_err(|error| format!("Character Library patch serialization failed: {error}"))?;
+    rintawa::engine::portable_ui::patch_surface(&payload)
+        .map_err(|error| format!("Character Library surface patch failed: {error:?}"))
+}
+
+fn mount_snapshot(snapshot: &rintawa_sdk::ui::UiSurfaceSnapshot) -> Result<(), String> {
+    let payload = serde_json::to_vec(snapshot)
+        .map_err(|error| format!("Character Library snapshot serialization failed: {error}"))?;
     rintawa::engine::portable_ui::mount_surface(&payload)
         .map_err(|error| format!("Character Library surface mount failed: {error:?}"))
 }
@@ -231,6 +377,10 @@ fn user_content_error(error: rintawa::engine::user_content::Error) -> CharacterL
             CharacterLibraryGatewayError::InvalidContent
         }
         rintawa::engine::user_content::Error::NotFound => CharacterLibraryGatewayError::NotFound,
+        rintawa::engine::user_content::Error::QueueFull => CharacterLibraryGatewayError::QueueFull,
+        rintawa::engine::user_content::Error::LimitExceeded => {
+            CharacterLibraryGatewayError::LimitExceeded
+        }
         rintawa::engine::user_content::Error::MessageTooLarge => {
             CharacterLibraryGatewayError::MessageTooLarge
         }

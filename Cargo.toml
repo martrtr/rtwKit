@@ -25,6 +25,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 toml = "0.9"
-rintawa-artifacts = { git = "https://github.com/martrtr/rintawa.git", rev = "0fe3d67" }
-rintawa-sdk = { git = "https://github.com/martrtr/rintawa.git", rev = "0fe3d67" }
-rintawa-ui-runtime = { git = "https://github.com/martrtr/rintawa.git", rev = "0fe3d67" }
+rintawa-artifacts = { git = "https://github.com/martrtr/rintawa.git", rev = "79ebcc65758e5f4e41f16b7225e4c43949d59731" }
+rintawa-sdk = { git = "https://github.com/martrtr/rintawa.git", rev = "79ebcc65758e5f4e41f16b7225e4c43949d59731" }
+rintawa-ui-runtime = { git = "https://github.com/martrtr/rintawa.git", rev = "79ebcc65758e5f4e41f16b7225e4c43949d59731" }

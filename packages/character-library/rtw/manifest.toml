@@ -18,4 +18,11 @@ entry = "runtime.wasm"
 required = true
 
 [components.permissions]
-runtime = ["user-content-read", "world-session-write", "world-command-submit", "composition-read"]
+runtime = [
+    "user-content-read",
+    "user-content-write",
+    "background-task",
+    "world-session-write",
+    "world-command-submit",
+    "composition-read",
+]

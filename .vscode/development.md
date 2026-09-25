@@ -60,12 +60,17 @@ deleting the current file.
 5. **Done:** separate Tavern PNG card metadata from sanitized portrait bytes, bind only an
    exact generic `AssetRef`, preserve `identity@1`, and materialize new Characters with the
    optional portrait through versioned `identity@2`.
-6. **Current MVP slice:** finish production user-content ingest/edit transport without package-
-   specific Core APIs, then run the minimal persisted Character import → World materialization
-   end-to-end flow before starting Chat.
-7. Add Chat and AI Provider as independently versioned ordinary packages using the generic
-   Core service contract and component-scoped secret capability.
-8. Add install intents/packs only when their concrete UX is required; they are not
+6. **Done:** persist Tavern V2 JSON through generic deferred `user-content-write`,
+   refresh the real library index, create a World, and materialize the selected exact revision
+   through self-contained `rintawa.character.instantiate@2`. The production RTW/WebSocket smoke
+   test verifies authoritative commit plus Host restart against an isolated persistent home.
+7. **Current MVP slice:** add Chat schemas/commands/branching projections and Portable UI as an
+   ordinary package over the public World contracts. Renderer-neutral binary file picking,
+   PNG ingest, and richer Character replace/edit UX remain follow-up package/UI work and do not
+   block the first persistent Chat vertical slice.
+8. Add the neutral AI inference contract/provider and Narrator only after their required generic
+   async/network primitives are needed by the first real implementation.
+9. Add install intents/packs only when their concrete UX is required; they are not
    prerequisites for the first Chat + AI Provider composition.
 
 ## Dev-mode invariant

@@ -11,7 +11,6 @@ mod catalog;
 mod controller;
 mod instantiate;
 mod model;
-#[cfg(not(target_arch = "wasm32"))]
 mod rtw;
 mod tavern_v2;
 mod ui;
@@ -20,12 +19,13 @@ mod world_materialization;
 pub use catalog::{
     CharacterContentDocument, CharacterContentRecord, CharacterLibraryEntry, CharacterLibraryError,
     CharacterLibraryGateway, CharacterLibraryGatewayError, CharacterLibraryState,
-    MAX_CHARACTER_LIBRARY_ENTRIES, MAX_CHARACTER_LIBRARY_ID_BYTES,
+    MAX_CHARACTER_IMPORT_TEXT_BYTES, MAX_CHARACTER_LIBRARY_ENTRIES, MAX_CHARACTER_LIBRARY_ID_BYTES,
     decode_character_content_document,
 };
 pub use controller::{
-    CHARACTER_LIBRARY_ACTION_INSTANTIATE, CHARACTER_LIBRARY_ACTION_REFRESH,
-    CHARACTER_LIBRARY_ACTION_SELECT, CharacterLibraryController, CharacterLibraryIntent,
+    CHARACTER_LIBRARY_ACTION_IMPORT, CHARACTER_LIBRARY_ACTION_INSTANTIATE,
+    CHARACTER_LIBRARY_ACTION_REFRESH, CHARACTER_LIBRARY_ACTION_SELECT, CharacterLibraryController,
+    CharacterLibraryIntent,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use instantiate::instantiate_character;
@@ -42,8 +42,9 @@ pub use model::{
     validate_character_template_descriptor,
 };
 #[cfg(not(target_arch = "wasm32"))]
+pub use rtw::pack_character_template_rtw;
 pub use rtw::{
-    CHARACTER_TEMPLATE_ENTRY_PATH, CharacterTemplateRtwError, pack_character_template_rtw,
+    CHARACTER_TEMPLATE_ENTRY_PATH, CharacterTemplateRtwError, encode_character_template_rtw,
 };
 pub use tavern_v2::{
     MAX_TAVERN_CARD_BYTES, TavernV2Artwork, TavernV2Error, TavernV2Import, TavernV2Result,
@@ -56,8 +57,10 @@ pub use ui::{
 };
 
 pub use world_materialization::{
-    CHARACTER_INSTANTIATE_COMMAND_SCHEMA, CHARACTER_INSTANTIATED_EVENT_SCHEMA,
-    CharacterInstantiateCommand, CharacterInstantiatedEvent, CharacterWorldMaterializationError,
-    build_character_instantiation_transaction, character_instantiate_command_schema_key,
+    CHARACTER_INSTANTIATE_COMMAND_SCHEMA, CHARACTER_INSTANTIATE_COMMAND_SCHEMA_V2,
+    CHARACTER_INSTANTIATED_EVENT_SCHEMA, CharacterInstantiateCommand,
+    CharacterInstantiateCommandV2, CharacterInstantiatedEvent, CharacterWorldMaterializationError,
+    build_character_instantiation_transaction, build_character_instantiation_transaction_v2,
+    character_instantiate_command_schema_key, character_instantiate_command_schema_key_v2,
     character_instantiated_event_schema_key, character_world_schemas,
 };

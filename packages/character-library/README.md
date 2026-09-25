@@ -9,14 +9,15 @@ Character instantiation plans.
 Rintawa Core remains feature-neutral: it provides generic content, asset, schema,
 world, and service mechanisms but contains no Character-specific implementation.
 The package ships a permissionless Component Model content-handler for
-`rintawa.character-template@1` plus a Portable UI/runtime component built only on
-generic `user-content-read`, `world-session-write`, `world-command-submit`,
-read-only `composition-read`, world schema registration, and the public World System
-service protocol. The Library UI
-browses the real persistent user-content index and can create/open a World and queue
-an exact-revision Character instantiation command. The World-scoped instance of the
-same package resolves that command into ordinary entity/facet/event proposals; Core
-remains authoritative for validation and commit.
+`rintawa.character-template@1` plus a Portable UI/runtime component built only on generic
+`user-content-read`, deferred `user-content-write`, `background-task`,
+`world-session-write`, `world-command-submit`, read-only `composition-read`, world schema
+registration, and the public World System service protocol. The Library UI browses the real
+persistent user-content index and can submit bounded Tavern V2 JSON through the same
+handler-before-CAS publication path used by native imports. Creating a World captures the exact
+validated template into self-contained `rintawa.character.instantiate@2`; the World-scoped
+instance verifies its canonical RTW digest and proposes ordinary entity/facet/event changes.
+Core remains authoritative for validation and commit.
 
 For the standard “Create World” flow, the exact Character Library activation must
 be selected as a `world-default` before the World is created. The runtime verifies
@@ -28,6 +29,7 @@ Tavern PNG import now separates the embedded card metadata from sanitized portra
 The portrait bytes can be published through the generic immutable asset store and are bound only
 when the returned `AssetRef` matches the exact digest, size, and `image/png` media type. New live
 Characters persist that optional reference in `rintawa.character.identity@2`; the original
-`identity@1` schema remains unchanged for existing Worlds. Production file-picker/import/edit UX
-still requires a generic deferred user-content write workflow rather than a Character-specific
-Core shortcut.
+`identity@1` schema remains unchanged for existing Worlds. Generic deferred user-content writes
+are now implemented and the production JSON import path is restart-tested. A renderer-neutral
+binary file/resource picker is still required before the same UI can ingest PNG cards directly;
+richer replace/edit/export UX remains package work rather than a Character-specific Core API.

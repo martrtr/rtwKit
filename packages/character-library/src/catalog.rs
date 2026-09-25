@@ -10,6 +10,8 @@ use crate::{CHARACTER_TEMPLATE_CONTENT_V1, CharacterTemplate};
 pub const MAX_CHARACTER_LIBRARY_ENTRIES: usize = 128;
 /// Maximum byte length accepted for one opaque host-local user-content identity.
 pub const MAX_CHARACTER_LIBRARY_ID_BYTES: usize = 128;
+/// Maximum Tavern V2 JSON text accepted from one Portable UI submit action.
+pub const MAX_CHARACTER_IMPORT_TEXT_BYTES: usize = 256 * 1024;
 
 /// Transport-neutral mirror of one generic user-content list record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +50,9 @@ pub struct CharacterLibraryState {
     pub(crate) entries: Vec<CharacterLibraryEntry>,
     pub(crate) selected_id: Option<String>,
     pub(crate) revision: u64,
+    pub(crate) import_source: String,
+    pub(crate) import_status: Option<String>,
+    pub(crate) import_pending: bool,
 }
 
 impl CharacterLibraryState {
@@ -71,6 +76,21 @@ impl CharacterLibraryState {
     pub const fn revision(&self) -> u64 {
         self.revision
     }
+
+    /// Returns the Tavern V2 JSON retained for the current/past import attempt.
+    pub fn import_source(&self) -> &str {
+        &self.import_source
+    }
+
+    /// Returns the bounded user-facing status for the latest import attempt.
+    pub fn import_status(&self) -> Option<&str> {
+        self.import_status.as_deref()
+    }
+
+    /// Returns whether a deferred Host user-content write is awaiting completion.
+    pub const fn import_pending(&self) -> bool {
+        self.import_pending
+    }
 }
 
 /// Typed failure surfaced by a runtime adapter for generic user-content reads.
@@ -91,6 +111,12 @@ pub enum CharacterLibraryGatewayError {
     /// Requested logical user-content entry no longer exists.
     #[error("user-content entry not found")]
     NotFound,
+    /// Host deferred user-content write queue is full.
+    #[error("user-content write queue is full")]
+    QueueFull,
+    /// Per-callback user-content write budget was exhausted.
+    #[error("user-content write callback budget is exhausted")]
+    LimitExceeded,
     /// Host message bounds were exceeded.
     #[error("user-content message exceeds host bounds")]
     MessageTooLarge,
@@ -161,6 +187,18 @@ pub enum CharacterLibraryError {
     /// UI action carries an unsupported payload shape.
     #[error("Character Library action payload is invalid")]
     InvalidActionPayload,
+    /// Tavern JSON submitted from Portable UI is empty.
+    #[error("Character import source is empty")]
+    EmptyImportSource,
+    /// Tavern JSON submitted from Portable UI exceeds the package UI bound.
+    #[error("Character import source exceeds the package UI bound")]
+    ImportSourceTooLarge,
+    /// A second import was submitted before the previous deferred write completed.
+    #[error("Character import is already pending")]
+    ImportAlreadyPending,
+    /// Host reported import success but the refreshed catalog omitted that logical item.
+    #[error("imported CharacterTemplate is missing from the refreshed catalog")]
+    ImportedEntryMissing,
     /// A known semantic action was emitted from a node that does not own it.
     #[error("Character Library action was emitted from the wrong node")]
     WrongActionNode,

@@ -5,9 +5,9 @@ use flate2::{Compression, write::ZlibEncoder};
 use rintawa_artifacts::{ArtifactDigest, AssetStore, RtwArchive, RtwLimits};
 use rintawa_character_library::{
     CHARACTER_TEMPLATE_CONTENT_V1, CHARACTER_TEMPLATE_ENTRY_PATH, CharacterTemplate, TavernV2Error,
-    character_world_schemas, export_tavern_v2_json, import_tavern_v2,
-    import_tavern_v2_with_artwork, instantiate_character, pack_character_template_rtw,
-    validate_character_template_descriptor,
+    character_world_schemas, encode_character_template_rtw, export_tavern_v2_json,
+    import_tavern_v2, import_tavern_v2_with_artwork, instantiate_character,
+    pack_character_template_rtw, validate_character_template_descriptor,
 };
 use rintawa_sdk::{
     content::{ContentHandlerRequest, ContentHandlerResponse},
@@ -274,6 +274,8 @@ fn test_should_pack_character_template_as_generic_rtw_content() -> anyhow::Resul
     let root = tempfile::TempDir::new()?;
     let output = root.path().join("alice.rtw");
     pack_character_template_rtw(&template, &output)?;
+    let memory = encode_character_template_rtw(&template)?;
+    assert_eq!(memory, std::fs::read(&output)?);
 
     let mut archive = RtwArchive::open(&output, RtwLimits::default())?;
     assert_eq!(
@@ -325,12 +327,13 @@ fn test_should_build_runtime_neutral_identity_plan_without_session_or_narration_
         instantiate_character(&template, "018f0000-0000-7000-8000-000000000001", &revision)?;
 
     let schemas = character_world_schemas()?;
-    assert_eq!(schemas.len(), 5);
+    assert_eq!(schemas.len(), 6);
     assert_eq!(schemas[0].kind(), SchemaKind::Entity);
     assert_eq!(schemas[1].kind(), SchemaKind::Facet);
     assert_eq!(schemas[2].kind(), SchemaKind::Facet);
     assert_eq!(schemas[3].kind(), SchemaKind::Command);
-    assert_eq!(schemas[4].kind(), SchemaKind::Event);
+    assert_eq!(schemas[4].kind(), SchemaKind::Command);
+    assert_eq!(schemas[5].kind(), SchemaKind::Event);
     for schema in &schemas {
         let definition: Value = serde_json::from_str(schema.definition_json())?;
         assert_eq!(definition["type"], "object");
@@ -439,5 +442,40 @@ fn test_should_build_deterministic_authoritative_character_transaction() -> anyh
         character_instantiate_command_schema_key()?.to_string(),
         CHARACTER_INSTANTIATE_COMMAND_SCHEMA
     );
+    Ok(())
+}
+
+#[test]
+fn test_should_bind_self_contained_instantiation_to_exact_rtw_revision() -> anyhow::Result<()> {
+    use rintawa_character_library::{
+        CHARACTER_INSTANTIATE_COMMAND_SCHEMA_V2, CharacterInstantiateCommandV2,
+        CharacterWorldMaterializationError, build_character_instantiation_transaction_v2,
+        character_instantiate_command_schema_key_v2,
+    };
+    use rintawa_sdk::world::CommandId;
+
+    let template = import_tavern_v2(&serde_json::to_vec(&card_json())?)?;
+    let revision = ArtifactDigest::sha256(&encode_character_template_rtw(&template)?);
+    let command = CharacterInstantiateCommandV2 {
+        template_id: String::from("character-template-id"),
+        template_revision: revision.to_string(),
+        template: template.clone(),
+    };
+
+    assert_eq!(command.validate()?, revision);
+    let transaction = build_character_instantiation_transaction_v2(&command, CommandId::new())?;
+    assert_eq!(transaction.mutations.len(), 2);
+    assert_eq!(transaction.events.len(), 1);
+    assert_eq!(
+        character_instantiate_command_schema_key_v2()?.to_string(),
+        CHARACTER_INSTANTIATE_COMMAND_SCHEMA_V2
+    );
+
+    let mut spoofed = command;
+    spoofed.template.name = String::from("Mallory");
+    assert!(matches!(
+        spoofed.validate(),
+        Err(CharacterWorldMaterializationError::TemplateRevisionMismatch)
+    ));
     Ok(())
 }

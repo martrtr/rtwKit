@@ -1,10 +1,13 @@
 //! RTW packaging helpers for `rintawa.character-template@1` content.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::{fs, path::Path};
 
-use rintawa_artifacts::{RtwError, RtwLimits, pack_directory};
+use rintawa_artifacts::{
+    ArtifactPath, ContentType, RTW_FORMAT_VERSION, RtwError, RtwLimits, RtwManifest, RtwPackEntry,
+    pack_entries,
+};
 use rintawa_sdk::content::MAX_CONTENT_HANDLER_ENTRY_BYTES;
-use tempfile::TempDir;
 use thiserror::Error;
 
 use crate::{CHARACTER_TEMPLATE_CONTENT_V1, CharacterTemplate};
@@ -24,44 +27,56 @@ pub enum CharacterTemplateRtwError {
     /// Serialized descriptor exceeds the generic content-handler protocol bound.
     #[error("CharacterTemplate descriptor exceeds the content-handler entry bound")]
     DescriptorTooLarge,
-    /// Temporary source-tree creation failed.
-    #[error("failed to prepare CharacterTemplate RTW source: {0}")]
+    /// Writing an encoded RTW artifact to a native output path failed.
+    #[error("failed to write CharacterTemplate RTW output: {0}")]
     Io(#[from] std::io::Error),
     /// RTW packing or post-pack validation failed.
     #[error(transparent)]
     Rtw(#[from] RtwError),
 }
 
-/// Packs one validated CharacterTemplate into an immutable RTW v1 container.
+/// Encodes one validated CharacterTemplate into deterministic RTW v1 bytes.
 ///
-/// The descriptor is kept within the generic content-handler bound so the same
-/// artifact can be validated through the platform service before entering the
-/// user-content library CAS.
+/// The descriptor is kept within the generic content-handler bound so the returned
+/// artifact can be submitted directly through the deferred user-content write API.
+/// This path is filesystem-free and therefore available to sandboxed WASM runtimes.
 ///
 /// # Errors
 ///
-/// Returns a template, serialization, size, filesystem, or RTW validation error.
-pub fn pack_character_template_rtw(
+/// Returns a template, serialization, size, path/content-type, or RTW validation error.
+pub fn encode_character_template_rtw(
     template: &CharacterTemplate,
-    output: impl AsRef<Path>,
-) -> Result<(), CharacterTemplateRtwError> {
+) -> Result<Vec<u8>, CharacterTemplateRtwError> {
     template.validate()?;
     let descriptor = serde_json::to_vec_pretty(template)?;
     if descriptor.len() > MAX_CONTENT_HANDLER_ENTRY_BYTES {
         return Err(CharacterTemplateRtwError::DescriptorTooLarge);
     }
 
-    let source = TempDir::new()?;
-    fs::write(
-        source.path().join("rtw.toml"),
-        format!(
-            "format = 1\ncontent = \"{CHARACTER_TEMPLATE_CONTENT_V1}\"\nentry = \"{CHARACTER_TEMPLATE_ENTRY_PATH}\"\n"
-        ),
+    let entry = ArtifactPath::parse(CHARACTER_TEMPLATE_ENTRY_PATH)?;
+    let manifest = RtwManifest {
+        format: RTW_FORMAT_VERSION,
+        content: ContentType::parse(CHARACTER_TEMPLATE_CONTENT_V1)?,
+        entry: entry.clone(),
+    };
+    let bytes = pack_entries(
+        &manifest,
+        [RtwPackEntry::new(entry, descriptor)],
+        RtwLimits::default(),
     )?;
-    fs::write(
-        source.path().join(CHARACTER_TEMPLATE_ENTRY_PATH),
-        descriptor,
-    )?;
-    pack_directory(source.path(), output, RtwLimits::default())?;
+    Ok(bytes)
+}
+
+/// Packs one validated CharacterTemplate into an immutable RTW v1 file.
+///
+/// # Errors
+///
+/// Returns an encoding/RTW validation error or a native output write failure.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn pack_character_template_rtw(
+    template: &CharacterTemplate,
+    output: impl AsRef<Path>,
+) -> Result<(), CharacterTemplateRtwError> {
+    fs::write(output, encode_character_template_rtw(template)?)?;
     Ok(())
 }

@@ -118,19 +118,32 @@ function TextControl({
 
   if (isMultiline) {
     return (
-      <textarea
-        {...presentationAttributes}
-        className="rintawa-input rintawa-textarea"
-        value={value}
-        placeholder={data.placeholder ?? undefined}
-        disabled={!data.is_enabled}
-        onChange={(event) => onChange(event.currentTarget.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-            submit();
-          }
-        }}
-      />
+      <>
+        <textarea
+          {...presentationAttributes}
+          className="rintawa-input rintawa-textarea"
+          value={value}
+          placeholder={data.placeholder ?? undefined}
+          disabled={!data.is_enabled}
+          onChange={(event) => onChange(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+              submit();
+            }
+          }}
+        />
+        {data.submit_action ? (
+          <button
+            type="button"
+            className="rintawa-button rintawa-textarea-submit"
+            data-appearance="default"
+            disabled={!data.is_enabled}
+            onClick={submit}
+          >
+            Submit
+          </button>
+        ) : null}
+      </>
     );
   }
 

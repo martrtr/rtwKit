@@ -6,8 +6,9 @@ use rintawa_sdk::ui::{UiActionEvent, UiActionPayload};
 
 use crate::{
     CharacterLibraryError, CharacterLibraryGateway, CharacterLibraryState,
-    MAX_CHARACTER_LIBRARY_ENTRIES, decode_character_content_document,
-    ui::{INSTANTIATE_NODE, REFRESH_NODE},
+    MAX_CHARACTER_IMPORT_TEXT_BYTES, MAX_CHARACTER_LIBRARY_ENTRIES,
+    decode_character_content_document,
+    ui::{IMPORT_SOURCE_NODE, INSTANTIATE_NODE, REFRESH_NODE},
 };
 
 /// Semantic action used by the explicit catalog refresh control.
@@ -16,12 +17,21 @@ pub const CHARACTER_LIBRARY_ACTION_REFRESH: &str = "rintawa.character-library.re
 pub const CHARACTER_LIBRARY_ACTION_SELECT: &str = "rintawa.character-library.select";
 /// Semantic action used to instantiate the exact selected template into a new World.
 pub const CHARACTER_LIBRARY_ACTION_INSTANTIATE: &str = "rintawa.character-library.instantiate";
+/// Semantic action used to submit Tavern V2 JSON from the portable import editor.
+pub const CHARACTER_LIBRARY_ACTION_IMPORT: &str = "rintawa.character-library.import-tavern-v2";
+
+const MAX_IMPORT_STATUS_BYTES: usize = 2 * 1024;
 
 /// Side effect requested by one already validated Character Library action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CharacterLibraryIntent {
     /// No Host-side operation is required after applying the action.
     None,
+    /// Parse, encode, and defer publication of one Tavern V2 JSON document.
+    ImportTavernJson {
+        /// Exact bounded source submitted by the Portable UI field.
+        source: String,
+    },
     /// Create/open a new World and instantiate one exact immutable template revision.
     InstantiateSelected {
         /// Stable logical user-content identity.
@@ -62,7 +72,7 @@ where
     /// Reloads and validates the exact CharacterTemplate catalog.
     ///
     /// Existing state is preserved if any replacement record/document is malformed.
-    /// The previous selection is preserved when that logical entry still exists.
+    /// The previous selection and import presentation state are preserved when valid.
     ///
     /// # Errors
     ///
@@ -103,6 +113,9 @@ where
             entries,
             selected_id,
             revision,
+            import_source: self.state.import_source.clone(),
+            import_status: self.state.import_status.clone(),
+            import_pending: self.state.import_pending,
         };
         Ok(())
     }
@@ -126,6 +139,45 @@ where
         Ok(())
     }
 
+    /// Marks the current deferred import as failed and keeps its source editable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CharacterLibraryError::RevisionOverflow`] before changing state.
+    pub fn fail_import(&mut self, diagnostic: &str) -> Result<(), CharacterLibraryError> {
+        let revision = next_revision(self.state.revision)?;
+        self.state.import_pending = false;
+        self.state.import_status = Some(bounded_status(diagnostic));
+        self.state.revision = revision;
+        Ok(())
+    }
+
+    /// Refreshes the catalog after Host publication and selects the imported item.
+    ///
+    /// The retained source is cleared only after the imported logical item is visible
+    /// in the validated catalog, so failed refreshes never discard user input.
+    ///
+    /// # Errors
+    ///
+    /// Returns refresh/validation errors, revision overflow, or
+    /// [`CharacterLibraryError::ImportedEntryMissing`] when Host success cannot be
+    /// reconciled with the subsequent exact catalog read.
+    pub fn complete_import(&mut self, imported_id: &str) -> Result<(), CharacterLibraryError> {
+        self.refresh()?;
+        let imported = self
+            .state
+            .entries
+            .iter()
+            .find(|entry| entry.id == imported_id)
+            .ok_or(CharacterLibraryError::ImportedEntryMissing)?;
+        let name = imported.template.name.clone();
+        self.state.selected_id = Some(imported.id.clone());
+        self.state.import_source.clear();
+        self.state.import_pending = false;
+        self.state.import_status = Some(bounded_status(&format!("Imported {name}.")));
+        Ok(())
+    }
+
     /// Applies one already UI-runtime-validated semantic action to package state.
     ///
     /// Surface, revision, payload, and node ownership are checked again so alternate
@@ -133,7 +185,8 @@ where
     ///
     /// # Errors
     ///
-    /// Returns action-validation, gateway, catalog-validation, or revision errors.
+    /// Returns action-validation, gateway, catalog-validation, import-bound, or
+    /// revision errors.
     pub fn handle_action(
         &mut self,
         event: &UiActionEvent,
@@ -144,12 +197,10 @@ where
         if event.surface_revision != self.state.revision {
             return Err(CharacterLibraryError::StaleAction);
         }
-        if event.payload != UiActionPayload::None {
-            return Err(CharacterLibraryError::InvalidActionPayload);
-        }
 
         match event.action_id.as_str() {
             CHARACTER_LIBRARY_ACTION_REFRESH => {
+                require_none_payload(event)?;
                 if event.node_id.as_str() != REFRESH_NODE {
                     return Err(CharacterLibraryError::WrongActionNode);
                 }
@@ -157,6 +208,7 @@ where
                 Ok(CharacterLibraryIntent::None)
             }
             CHARACTER_LIBRARY_ACTION_SELECT => {
+                require_none_payload(event)?;
                 let index = self
                     .state
                     .entries
@@ -169,7 +221,33 @@ where
                 self.select_index(index)?;
                 Ok(CharacterLibraryIntent::None)
             }
+            CHARACTER_LIBRARY_ACTION_IMPORT => {
+                if event.node_id.as_str() != IMPORT_SOURCE_NODE {
+                    return Err(CharacterLibraryError::WrongActionNode);
+                }
+                if self.state.import_pending {
+                    return Err(CharacterLibraryError::ImportAlreadyPending);
+                }
+                let UiActionPayload::Text(source) = &event.payload else {
+                    return Err(CharacterLibraryError::InvalidActionPayload);
+                };
+                if source.trim().is_empty() {
+                    return Err(CharacterLibraryError::EmptyImportSource);
+                }
+                if source.len() > MAX_CHARACTER_IMPORT_TEXT_BYTES {
+                    return Err(CharacterLibraryError::ImportSourceTooLarge);
+                }
+                let revision = next_revision(self.state.revision)?;
+                self.state.import_source = source.clone();
+                self.state.import_status = Some(String::from("Importing Tavern V2 JSON…"));
+                self.state.import_pending = true;
+                self.state.revision = revision;
+                Ok(CharacterLibraryIntent::ImportTavernJson {
+                    source: source.clone(),
+                })
+            }
             CHARACTER_LIBRARY_ACTION_INSTANTIATE => {
+                require_none_payload(event)?;
                 if event.node_id.as_str() != INSTANTIATE_NODE {
                     return Err(CharacterLibraryError::WrongActionNode);
                 }
@@ -185,6 +263,25 @@ where
             _ => Err(CharacterLibraryError::UnknownAction),
         }
     }
+}
+
+fn require_none_payload(event: &UiActionEvent) -> Result<(), CharacterLibraryError> {
+    if event.payload == UiActionPayload::None {
+        Ok(())
+    } else {
+        Err(CharacterLibraryError::InvalidActionPayload)
+    }
+}
+
+fn bounded_status(value: &str) -> String {
+    if value.len() <= MAX_IMPORT_STATUS_BYTES {
+        return value.to_string();
+    }
+    let mut end = MAX_IMPORT_STATUS_BYTES;
+    while !value.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    value[..end].to_string()
 }
 
 fn next_revision(revision: u64) -> Result<u64, CharacterLibraryError> {
