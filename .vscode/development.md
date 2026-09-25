@@ -57,12 +57,15 @@ deleting the current file.
    schemas/System service, preflights `world-default`, and creates/opens a World before
    submitting an exact-revision instantiation command through authenticated generic
    `world-commands`. Core remains feature-neutral and authoritative for validation/commit.
-5. **Current MVP slice:** extract imported Character PNG artwork into generic `AssetRef`
-   storage and bind the resulting portrait reference into Character content without
-   broadening Core with Character-specific APIs.
-6. Add Chat and AI Provider as independently versioned ordinary packages using the generic
+5. **Done:** separate Tavern PNG card metadata from sanitized portrait bytes, bind only an
+   exact generic `AssetRef`, preserve `identity@1`, and materialize new Characters with the
+   optional portrait through versioned `identity@2`.
+6. **Current MVP slice:** finish production user-content ingest/edit transport without package-
+   specific Core APIs, then run the minimal persisted Character import → World materialization
+   end-to-end flow before starting Chat.
+7. Add Chat and AI Provider as independently versioned ordinary packages using the generic
    Core service contract and component-scoped secret capability.
-7. Add install intents/packs only when their concrete UX is required; they are not
+8. Add install intents/packs only when their concrete UX is required; they are not
    prerequisites for the first Chat + AI Provider composition.
 
 ## Dev-mode invariant

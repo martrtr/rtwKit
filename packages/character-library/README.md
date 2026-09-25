@@ -20,7 +20,14 @@ remains authoritative for validation and commit.
 
 For the standard “Create World” flow, the exact Character Library activation must
 be selected as a `world-default` before the World is created. The runtime verifies
-this through read-only composition metadata before creating anything. Core then
-copies that exact immutable artifact and its granted component permissions into the new World
-scope. This is composition policy, not hidden package privilege. File-picker
-import/edit flows and PNG artwork extraction into `AssetRef` remain follow-up work.
+this through read-only composition metadata before creating anything. Core then copies that
+exact immutable artifact and its granted component permissions into the new World scope. This is
+composition policy, not hidden package privilege.
+
+Tavern PNG import now separates the embedded card metadata from sanitized portrait PNG bytes.
+The portrait bytes can be published through the generic immutable asset store and are bound only
+when the returned `AssetRef` matches the exact digest, size, and `image/png` media type. New live
+Characters persist that optional reference in `rintawa.character.identity@2`; the original
+`identity@1` schema remains unchanged for existing Worlds. Production file-picker/import/edit UX
+still requires a generic deferred user-content write workflow rather than a Character-specific
+Core shortcut.

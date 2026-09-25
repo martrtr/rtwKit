@@ -26,13 +26,33 @@ const CHARACTER_ENTITY_SCHEMA_JSON: &str = r#"{
   "type": "object",
   "additionalProperties": false
 }"#;
-const CHARACTER_IDENTITY_SCHEMA_JSON: &str = r#"{
+const CHARACTER_IDENTITY_SCHEMA_V1_JSON: &str = r#"{
   "type": "object",
   "required": ["name", "template-id", "template-revision"],
   "properties": {
     "name": { "type": "string", "minLength": 1, "maxLength": 512 },
     "template-id": { "type": "string", "minLength": 1, "maxLength": 128 },
     "template-revision": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  },
+  "additionalProperties": false
+}"#;
+const CHARACTER_IDENTITY_SCHEMA_V2_JSON: &str = r#"{
+  "type": "object",
+  "required": ["name", "template-id", "template-revision"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "template-id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "template-revision": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "portrait": {
+      "type": "object",
+      "required": ["digest", "size", "media_type"],
+      "properties": {
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "size": { "type": "integer", "minimum": 0 },
+        "media_type": { "type": "string", "minLength": 3, "maxLength": 127 }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }"#;
@@ -151,9 +171,14 @@ pub fn character_world_schemas()
             CHARACTER_ENTITY_SCHEMA_JSON,
         ),
         WorldSchemaContribution::new(
+            schema_key("rintawa.character.identity", 1)?,
+            SchemaKind::Facet,
+            CHARACTER_IDENTITY_SCHEMA_V1_JSON,
+        ),
+        WorldSchemaContribution::new(
             character_identity_facet_schema_key()?,
             SchemaKind::Facet,
-            CHARACTER_IDENTITY_SCHEMA_JSON,
+            CHARACTER_IDENTITY_SCHEMA_V2_JSON,
         ),
         WorldSchemaContribution::new(
             character_instantiate_command_schema_key()?,

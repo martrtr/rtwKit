@@ -2,11 +2,12 @@
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use flate2::{Compression, write::ZlibEncoder};
-use rintawa_artifacts::{ArtifactDigest, RtwArchive, RtwLimits};
+use rintawa_artifacts::{ArtifactDigest, AssetStore, RtwArchive, RtwLimits};
 use rintawa_character_library::{
-    CHARACTER_TEMPLATE_CONTENT_V1, CHARACTER_TEMPLATE_ENTRY_PATH, CharacterTemplate,
-    character_world_schemas, export_tavern_v2_json, import_tavern_v2, instantiate_character,
-    pack_character_template_rtw, validate_character_template_descriptor,
+    CHARACTER_TEMPLATE_CONTENT_V1, CHARACTER_TEMPLATE_ENTRY_PATH, CharacterTemplate, TavernV2Error,
+    character_world_schemas, export_tavern_v2_json, import_tavern_v2,
+    import_tavern_v2_with_artwork, instantiate_character, pack_character_template_rtw,
+    validate_character_template_descriptor,
 };
 use rintawa_sdk::{
     content::{ContentHandlerRequest, ContentHandlerResponse},
@@ -94,6 +95,105 @@ fn test_should_import_base64_tavern_v2_from_png_text_chunk() -> anyhow::Result<(
     let template = import_tavern_v2(&png)?;
     assert_eq!(template.name, "Alice");
     assert_eq!(template.session.alternate_greetings.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn test_should_extract_bind_and_materialize_png_portrait_through_asset_store() -> anyhow::Result<()>
+{
+    let json = serde_json::to_vec(&card_json())?;
+    let mut text = b"chara\0".to_vec();
+    text.extend_from_slice(BASE64.encode(json).as_bytes());
+
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&[0, 0x10, 0x20, 0x30, 0xff])?;
+    let image_data = encoder.finish()?;
+
+    let mut png = png_header();
+    push_png_chunk(&mut png, b"IDAT", &image_data);
+    push_png_chunk(&mut png, b"tEXt", b"note\0preserve-me");
+    push_png_chunk(&mut png, b"tEXt", &text);
+    push_png_chunk(&mut png, b"IEND", &[]);
+
+    let imported = import_tavern_v2_with_artwork(&png)?;
+    assert!(imported.template.assets.portrait.is_none());
+    let artwork = imported
+        .portrait
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("PNG import must expose portrait artwork"))?;
+    assert_eq!(artwork.media_type(), "image/png");
+    assert!(
+        artwork
+            .bytes()
+            .windows(b"preserve-me".len())
+            .any(|part| part == b"preserve-me")
+    );
+    assert!(
+        !artwork
+            .bytes()
+            .windows(b"chara\0".len())
+            .any(|part| part == b"chara\0")
+    );
+
+    let root = tempfile::TempDir::new()?;
+    let store = AssetStore::open(root.path().join("assets"), 16 * 1024 * 1024)?;
+    let published = store.import_bytes(artwork.bytes(), artwork.media_type())?;
+    let portrait = published.asset_ref().clone();
+    store.verify(&portrait)?;
+
+    let template = imported.clone().bind_portrait(portrait.clone())?;
+    assert_eq!(template.assets.portrait.as_ref(), Some(&portrait));
+
+    let wrong = store.import_bytes(b"different", "image/png")?;
+    assert!(matches!(
+        imported.bind_portrait(wrong.asset_ref().clone()),
+        Err(TavernV2Error::PortraitAssetMismatch)
+    ));
+
+    let revision = ArtifactDigest::sha256(b"portrait template revision");
+    let plan = instantiate_character(&template, "library-id", &revision)?;
+    assert_eq!(plan.identity.portrait.as_ref(), Some(&portrait));
+    assert_eq!(
+        plan.identity_facet_schema.to_string(),
+        "rintawa.character.identity@2"
+    );
+
+    use rintawa_character_library::{
+        CharacterInstantiateCommand, build_character_instantiation_transaction,
+    };
+    use rintawa_sdk::{world::CommandId, world_system::WorldSystemMutation};
+    let command = CharacterInstantiateCommand {
+        template_id: String::from("library-id"),
+        template_revision: revision.to_string(),
+    };
+    let transaction =
+        build_character_instantiation_transaction(&template, &command, CommandId::new())?;
+    let payload = transaction
+        .mutations
+        .iter()
+        .find_map(|mutation| match mutation {
+            WorldSystemMutation::SetFacet {
+                schema, payload, ..
+            } if schema.to_string() == "rintawa.character.identity@2" => Some(payload),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("identity@2 facet mutation is required"))?;
+    assert_eq!(payload["portrait"]["digest"], portrait.digest.to_string());
+    assert_eq!(payload["portrait"]["size"], portrait.size);
+    assert_eq!(payload["portrait"]["media_type"], "image/png");
+    Ok(())
+}
+
+#[test]
+fn test_should_reject_portrait_binding_for_json_only_import() -> anyhow::Result<()> {
+    let imported = import_tavern_v2_with_artwork(&serde_json::to_vec(&card_json())?)?;
+    let root = tempfile::TempDir::new()?;
+    let store = AssetStore::open(root.path().join("assets"), 1024)?;
+    let portrait = store.import_bytes(b"not-a-png", "image/png")?;
+    assert!(matches!(
+        imported.bind_portrait(portrait.asset_ref().clone()),
+        Err(TavernV2Error::MissingPngArtwork)
+    ));
     Ok(())
 }
 
@@ -225,20 +325,27 @@ fn test_should_build_runtime_neutral_identity_plan_without_session_or_narration_
         instantiate_character(&template, "018f0000-0000-7000-8000-000000000001", &revision)?;
 
     let schemas = character_world_schemas()?;
-    assert_eq!(schemas.len(), 4);
+    assert_eq!(schemas.len(), 5);
     assert_eq!(schemas[0].kind(), SchemaKind::Entity);
     assert_eq!(schemas[1].kind(), SchemaKind::Facet);
-    assert_eq!(schemas[2].kind(), SchemaKind::Command);
-    assert_eq!(schemas[3].kind(), SchemaKind::Event);
+    assert_eq!(schemas[2].kind(), SchemaKind::Facet);
+    assert_eq!(schemas[3].kind(), SchemaKind::Command);
+    assert_eq!(schemas[4].kind(), SchemaKind::Event);
     for schema in &schemas {
         let definition: Value = serde_json::from_str(schema.definition_json())?;
         assert_eq!(definition["type"], "object");
     }
+    assert_eq!(schemas[1].key().to_string(), "rintawa.character.identity@1");
+    assert_eq!(schemas[2].key().to_string(), "rintawa.character.identity@2");
+    let identity_v1: Value = serde_json::from_str(schemas[1].definition_json())?;
+    let identity_v2: Value = serde_json::from_str(schemas[2].definition_json())?;
+    assert!(identity_v1["properties"].get("portrait").is_none());
+    assert!(identity_v2["properties"].get("portrait").is_some());
 
     assert_eq!(instantiation.entity_schema, schemas[0].key().clone());
     assert_eq!(
         instantiation.identity_facet_schema,
-        schemas[1].key().clone()
+        schemas[2].key().clone()
     );
     let identity = serde_json::to_value(&instantiation.identity)?;
     assert_eq!(identity["name"], "Alice");

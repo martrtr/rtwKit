@@ -4,7 +4,7 @@
 //! An ordinary package owns feature semantics; a runtime adapter maps the returned
 //! plan into the public world-System service ABI and Core remains authoritative.
 
-use rintawa_artifacts::ArtifactDigest;
+use rintawa_artifacts::{ArtifactDigest, AssetRef};
 use rintawa_sdk::world::{EntityId, SchemaId, SchemaKey, SchemaVersion};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -13,8 +13,10 @@ use crate::CharacterTemplate;
 
 /// Versioned schema identity of a live Character entity.
 pub const CHARACTER_ENTITY_SCHEMA: &str = "rintawa.character.entity@1";
-/// Versioned schema identity of the minimal live Character identity facet.
-pub const CHARACTER_IDENTITY_FACET_SCHEMA: &str = "rintawa.character.identity@1";
+/// Previous live Character identity facet retained for persisted World compatibility.
+pub const CHARACTER_IDENTITY_FACET_SCHEMA_V1: &str = "rintawa.character.identity@1";
+/// Current live Character identity facet including optional immutable portrait provenance.
+pub const CHARACTER_IDENTITY_FACET_SCHEMA: &str = "rintawa.character.identity@2";
 
 /// Minimal live identity copied from reusable content when a Character is instantiated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +28,9 @@ pub struct CharacterIdentityFacet {
     pub template_id: String,
     /// Exact immutable RTW revision used for this instantiation.
     pub template_revision: String,
+    /// Optional immutable portrait copied from reusable Character content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portrait: Option<AssetRef>,
 }
 
 /// Runtime-neutral plan for instantiating one reusable CharacterTemplate revision.
@@ -77,7 +82,7 @@ pub fn character_entity_schema_key() -> Result<SchemaKey, CharacterInstantiation
 /// Returns [`CharacterInstantiationError::InvalidSchemaKey`] only if the package's
 /// compile-time schema constant is malformed.
 pub fn character_identity_facet_schema_key() -> Result<SchemaKey, CharacterInstantiationError> {
-    schema_key("rintawa.character.identity", 1)
+    schema_key("rintawa.character.identity", 2)
 }
 
 /// Builds a runtime-neutral instantiation plan using an authoritative entity identity.
@@ -110,6 +115,7 @@ pub fn instantiate_character_with_id(
             name: template.name.clone(),
             template_id,
             template_revision: template_revision.to_string(),
+            portrait: template.assets.portrait.clone(),
         },
     })
 }

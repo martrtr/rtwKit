@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, io::Read};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use flate2::read::ZlibDecoder;
+use rintawa_artifacts::{AssetDigest, AssetRef};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
@@ -17,6 +18,7 @@ pub const MAX_TAVERN_CARD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PNG_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PNG_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+const TAVERN_PNG_MEDIA_TYPE: &str = "image/png";
 
 /// Tavern V2 import/export failure.
 #[derive(Debug, Error)]
@@ -33,6 +35,12 @@ pub enum TavernV2Error {
     /// Metadata payload is neither supported base64/raw JSON nor bounded zlib data.
     #[error("invalid Tavern card metadata payload")]
     InvalidMetadataPayload,
+    /// A portrait reference does not identify the exact extracted artwork bytes.
+    #[error("portrait AssetRef does not match the extracted Tavern PNG artwork")]
+    PortraitAssetMismatch,
+    /// A portrait binding was requested for a source without PNG artwork.
+    #[error("Tavern source does not contain PNG artwork")]
+    MissingPngArtwork,
     /// JSON syntax is invalid.
     #[error("invalid Tavern V2 JSON: {0}")]
     InvalidJson(#[from] serde_json::Error),
@@ -58,6 +66,92 @@ pub enum TavernV2Error {
 /// Result type used by Tavern V2 compatibility operations.
 pub type TavernV2Result<T> = Result<T, TavernV2Error>;
 
+/// Sanitized portrait artwork extracted from a Tavern PNG card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TavernV2Artwork {
+    bytes: Vec<u8>,
+}
+
+impl TavernV2Artwork {
+    /// Returns the exact sanitized PNG bytes to publish through the generic asset store.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Returns the canonical media type expected for the extracted portrait.
+    pub const fn media_type(&self) -> &'static str {
+        TAVERN_PNG_MEDIA_TYPE
+    }
+
+    fn matches_reference(&self, reference: &AssetRef) -> bool {
+        let Ok(size) = u64::try_from(self.bytes.len()) else {
+            return false;
+        };
+        reference.digest == AssetDigest::sha256(&self.bytes)
+            && reference.size == size
+            && reference.media_type.as_str() == TAVERN_PNG_MEDIA_TYPE
+    }
+}
+
+/// Normalized Tavern import plus optional PNG artwork awaiting generic asset publication.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TavernV2Import {
+    /// Normalized reusable Character content with no fabricated asset references.
+    pub template: CharacterTemplate,
+    /// Sanitized portrait bytes when the source was a PNG Character Card.
+    pub portrait: Option<TavernV2Artwork>,
+}
+
+impl TavernV2Import {
+    /// Returns the normalized template without binding a portrait asset.
+    pub fn into_template(self) -> CharacterTemplate {
+        self.template
+    }
+
+    /// Binds a Host-issued immutable asset reference to the extracted portrait.
+    ///
+    /// The reference must identify the exact sanitized PNG bytes returned in
+    /// [`Self::portrait`], including digest, size, and canonical media type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TavernV2Error::MissingPngArtwork`] for JSON-only imports or
+    /// [`TavernV2Error::PortraitAssetMismatch`] for a mismatched asset reference.
+    pub fn bind_portrait(mut self, reference: AssetRef) -> TavernV2Result<CharacterTemplate> {
+        let artwork = self
+            .portrait
+            .as_ref()
+            .ok_or(TavernV2Error::MissingPngArtwork)?;
+        if !artwork.matches_reference(&reference) {
+            return Err(TavernV2Error::PortraitAssetMismatch);
+        }
+        self.template.assets.portrait = Some(reference);
+        self.template.validate()?;
+        Ok(self.template)
+    }
+}
+
+/// Imports Tavern V2 content and preserves PNG artwork for generic asset publication.
+///
+/// PNG `chara` metadata is removed from the returned artwork bytes so the immutable
+/// portrait asset contains image data and unrelated PNG metadata, not a stale embedded
+/// copy of the Character card. Every scanned chunk is CRC-validated first.
+///
+/// # Errors
+///
+/// Returns [`TavernV2Error`] for malformed/oversized transport, unsupported card
+/// spec/version, typed-field mismatch, or invalid normalized template state.
+pub fn import_tavern_v2_with_artwork(bytes: &[u8]) -> TavernV2Result<TavernV2Import> {
+    let (json, portrait) = if bytes.starts_with(PNG_SIGNATURE) {
+        let (json, artwork) = extract_png_chara_and_artwork(bytes)?;
+        (json, Some(TavernV2Artwork { bytes: artwork }))
+    } else {
+        (bounded_json(bytes)?, None)
+    };
+    let template = import_tavern_v2_json(&json)?;
+    Ok(TavernV2Import { template, portrait })
+}
+
 /// Imports either a raw Character Card V2 JSON document or a PNG carrying `chara` metadata.
 ///
 /// PNG reads are bounded and verify every scanned chunk CRC. `tEXt`, `zTXt`, and
@@ -69,12 +163,7 @@ pub type TavernV2Result<T> = Result<T, TavernV2Error>;
 /// Returns [`TavernV2Error`] for malformed/oversized transport, unsupported card
 /// spec/version, typed-field mismatch, or invalid normalized template state.
 pub fn import_tavern_v2(bytes: &[u8]) -> TavernV2Result<CharacterTemplate> {
-    let json = if bytes.starts_with(PNG_SIGNATURE) {
-        extract_png_chara(bytes)?
-    } else {
-        bounded_json(bytes)?
-    };
-    import_tavern_v2_json(&json)
+    Ok(import_tavern_v2_with_artwork(bytes)?.into_template())
 }
 
 /// Exports a normalized template back to Character Card V2 JSON while preserving escrow fields.
@@ -280,7 +369,7 @@ fn import_tavern_v2_json(json: &[u8]) -> TavernV2Result<CharacterTemplate> {
     Ok(template)
 }
 
-fn extract_png_chara(bytes: &[u8]) -> TavernV2Result<Vec<u8>> {
+fn extract_png_chara_and_artwork(bytes: &[u8]) -> TavernV2Result<(Vec<u8>, Vec<u8>)> {
     if bytes.len() > MAX_PNG_BYTES {
         return Err(TavernV2Error::InputTooLarge);
     }
@@ -292,7 +381,9 @@ fn extract_png_chara(bytes: &[u8]) -> TavernV2Result<Vec<u8>> {
     let mut chunk_index = 0_usize;
     let mut card_payload = None;
     let mut saw_iend = false;
+    let mut artwork = PNG_SIGNATURE.to_vec();
     while cursor < bytes.len() {
+        let chunk_start = cursor;
         if bytes.len().saturating_sub(cursor) < 12 {
             return Err(TavernV2Error::InvalidPng("truncated PNG chunk"));
         }
@@ -324,12 +415,15 @@ fn extract_png_chara(bytes: &[u8]) -> TavernV2Result<Vec<u8>> {
                 "first PNG chunk must be a 13-byte IHDR",
             ));
         }
-        if let Some(payload) = text_chunk_payload(chunk_type, data)?
-            && card_payload.replace(payload).is_some()
-        {
-            return Err(TavernV2Error::InvalidPng(
-                "multiple Tavern `chara` metadata chunks are ambiguous",
-            ));
+        let card_chunk = text_chunk_payload(chunk_type, data)?;
+        if let Some(payload) = card_chunk {
+            if card_payload.replace(payload).is_some() {
+                return Err(TavernV2Error::InvalidPng(
+                    "multiple Tavern `chara` metadata chunks are ambiguous",
+                ));
+            }
+        } else {
+            artwork.extend_from_slice(&bytes[chunk_start..crc_end]);
         }
 
         cursor = crc_end;
@@ -348,7 +442,7 @@ fn extract_png_chara(bytes: &[u8]) -> TavernV2Result<Vec<u8>> {
         return Err(TavernV2Error::InvalidPng("PNG is missing IEND"));
     }
     let payload = card_payload.ok_or(TavernV2Error::MissingPngCardPayload)?;
-    decode_metadata_payload(&payload)
+    Ok((decode_metadata_payload(&payload)?, artwork))
 }
 
 fn text_chunk_payload(chunk_type: &[u8], data: &[u8]) -> TavernV2Result<Option<Vec<u8>>> {

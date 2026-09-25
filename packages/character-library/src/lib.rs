@@ -30,9 +30,10 @@ pub use controller::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use instantiate::instantiate_character;
 pub use instantiate::{
-    CHARACTER_ENTITY_SCHEMA, CHARACTER_IDENTITY_FACET_SCHEMA, CharacterIdentityFacet,
-    CharacterInstantiationError, CharacterInstantiationPlan, character_entity_schema_key,
-    character_identity_facet_schema_key, instantiate_character_with_id,
+    CHARACTER_ENTITY_SCHEMA, CHARACTER_IDENTITY_FACET_SCHEMA, CHARACTER_IDENTITY_FACET_SCHEMA_V1,
+    CharacterIdentityFacet, CharacterInstantiationError, CharacterInstantiationPlan,
+    character_entity_schema_key, character_identity_facet_schema_key,
+    instantiate_character_with_id,
 };
 pub use model::{
     CHARACTER_TEMPLATE_CONTENT_V1, CharacterAssets, CharacterMetadata, CharacterTemplate,
@@ -45,7 +46,8 @@ pub use rtw::{
     CHARACTER_TEMPLATE_ENTRY_PATH, CharacterTemplateRtwError, pack_character_template_rtw,
 };
 pub use tavern_v2::{
-    MAX_TAVERN_CARD_BYTES, TavernV2Error, TavernV2Result, export_tavern_v2_json, import_tavern_v2,
+    MAX_TAVERN_CARD_BYTES, TavernV2Artwork, TavernV2Error, TavernV2Import, TavernV2Result,
+    export_tavern_v2_json, import_tavern_v2, import_tavern_v2_with_artwork,
 };
 
 pub use ui::{
