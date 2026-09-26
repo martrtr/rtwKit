@@ -325,7 +325,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 [[package]]
 name = "rintawa-artifacts"
 version = "0.0.1"
-source = "git+https://github.com/martrtr/rintawa.git?rev=79ebcc65758e5f4e41f16b7225e4c43949d59731#79ebcc65758e5f4e41f16b7225e4c43949d59731"
+source = "git+https://github.com/martrtr/rintawa.git?rev=613ae7de25b5d7f58fd5ca62109488aed2704647#613ae7de25b5d7f58fd5ca62109488aed2704647"
 dependencies = [
  "serde",
  "sha2",
@@ -371,6 +371,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "rintawa-chat"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "rintawa-artifacts",
+ "rintawa-sdk",
+ "rintawa-ui-runtime",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
+name = "rintawa-chat-runtime"
+version = "0.0.1"
+dependencies = [
+ "rintawa-chat",
+ "rintawa-sdk",
+ "serde",
+ "serde_json",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "rintawa-package-manager"
 version = "0.0.2"
 dependencies = [
@@ -385,7 +410,7 @@ dependencies = [
 [[package]]
 name = "rintawa-sdk"
 version = "0.0.1"
-source = "git+https://github.com/martrtr/rintawa.git?rev=79ebcc65758e5f4e41f16b7225e4c43949d59731#79ebcc65758e5f4e41f16b7225e4c43949d59731"
+source = "git+https://github.com/martrtr/rintawa.git?rev=613ae7de25b5d7f58fd5ca62109488aed2704647#613ae7de25b5d7f58fd5ca62109488aed2704647"
 dependencies = [
  "secrecy",
  "serde",
@@ -397,7 +422,7 @@ dependencies = [
 [[package]]
 name = "rintawa-ui-runtime"
 version = "0.0.1"
-source = "git+https://github.com/martrtr/rintawa.git?rev=79ebcc65758e5f4e41f16b7225e4c43949d59731#79ebcc65758e5f4e41f16b7225e4c43949d59731"
+source = "git+https://github.com/martrtr/rintawa.git?rev=613ae7de25b5d7f58fd5ca62109488aed2704647#613ae7de25b5d7f58fd5ca62109488aed2704647"
 dependencies = [
  "rintawa-sdk",
  "serde",

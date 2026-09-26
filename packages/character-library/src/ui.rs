@@ -100,7 +100,9 @@ pub fn build_character_library_snapshot(state: &CharacterLibraryState) -> UiSurf
         UiNode::new(
             IMPORT_SOURCE_NODE,
             UiNodeKind::TextArea(UiTextAreaNode {
-                value: state.import_source().to_string(),
+                // Import text is renderer-local ephemeral input. Echoing a large Tavern document
+                // into the global Portable UI snapshot makes every renderer/state bridge carry it.
+                value: String::new(),
                 placeholder: Some(String::from("Paste Tavern V2 JSON here")),
                 change_action: None,
                 submit_action: Some(UiActionId::new(CHARACTER_LIBRARY_ACTION_IMPORT)),

@@ -139,7 +139,10 @@ where
         Ok(())
     }
 
-    /// Marks the current deferred import as failed and keeps its source editable.
+    /// Marks the current deferred import as failed while retaining the source internally.
+    ///
+    /// Portable UI intentionally does not mirror the potentially large source back into
+    /// presentation state; a renderer may accept a fresh retry payload instead.
     ///
     /// # Errors
     ///

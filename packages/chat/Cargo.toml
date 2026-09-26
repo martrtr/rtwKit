@@ -1,0 +1,20 @@
+[package]
+name = "rintawa-chat"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Standard persistent Chat domain package for Rintawa"
+
+[dependencies]
+rintawa-artifacts.workspace = true
+rintawa-sdk.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror = "2"
+
+[dev-dependencies]
+anyhow.workspace = true
+rintawa-ui-runtime.workspace = true

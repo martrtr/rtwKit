@@ -4,9 +4,9 @@
 //! World Manager domain crate remains `#![forbid(unsafe_code)]`; no handwritten
 //! unsafe code or Core implementation detail is exposed through this boundary.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, collections::BTreeSet};
 
-use rintawa_sdk::ui::{UiActionEvent, UiPlacementHint};
+use rintawa_sdk::ui::{UiActionEvent, UiNodeId, UiPatch, UiPatchBatch, UiPlacementHint};
 use rintawa_world_manager::{
     WorldManagerController, WorldSessionGateway, WorldSessionGatewayError, WorldSessionRecord,
     build_world_manager_snapshot, world_manager_surface_contribution,
@@ -20,6 +20,14 @@ wit_bindgen::generate!({
 thread_local! {
     static STATE: RefCell<Option<WorldManagerController<WitWorldSessionGateway>>> = const { RefCell::new(None) };
     static REGISTRATION_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+    static PRESENTATION: RefCell<PresentationState> = RefCell::new(PresentationState::default());
+}
+
+#[derive(Debug, Clone, Default)]
+struct PresentationState {
+    mounted: bool,
+    revision: u64,
+    node_ids: BTreeSet<String>,
 }
 
 struct WitWorldSessionGateway;
@@ -56,6 +64,9 @@ impl exports::rintawa::engine::guest::Guest for WorldManagerRuntime {
         STATE.with(|slot| {
             *slot.borrow_mut() = None;
         });
+        PRESENTATION.with(|slot| {
+            *slot.borrow_mut() = PresentationState::default();
+        });
 
         if let Some(error) = REGISTRATION_ERROR.with(|slot| slot.borrow().clone()) {
             log_error(&error);
@@ -80,6 +91,9 @@ impl exports::rintawa::engine::guest::Guest for WorldManagerRuntime {
     fn stop() {
         STATE.with(|slot| {
             *slot.borrow_mut() = None;
+        });
+        PRESENTATION.with(|slot| {
+            *slot.borrow_mut() = PresentationState::default();
         });
         // Host deactivation revokes mounted surfaces even if callback host access
         // has already closed, so explicit unmount is best-effort during shutdown.
@@ -179,15 +193,95 @@ fn register_surface() -> Result<(), String> {
 }
 
 fn render_surface() -> Result<(), String> {
-    let payload = STATE.with(|slot| {
+    let snapshot = STATE.with(|slot| {
         let state = slot.borrow();
         let controller = state
             .as_ref()
             .ok_or_else(|| String::from("World Manager cannot render while inactive"))?;
-        serde_json::to_vec(&build_world_manager_snapshot(controller.state()))
-            .map_err(|error| format!("World Manager snapshot serialization failed: {error}"))
+        Ok::<_, String>(build_world_manager_snapshot(controller.state()))
     })?;
+    let node_ids = snapshot
+        .nodes
+        .iter()
+        .map(|node| node.id.as_str().to_string())
+        .collect::<BTreeSet<_>>();
+    let previous = PRESENTATION.with(|slot| slot.borrow().clone());
 
+    let result = if previous.mounted {
+        patch_snapshot(&previous, &snapshot, &node_ids)
+    } else {
+        mount_snapshot(&snapshot)
+    };
+    if let Err(error) = result {
+        if !previous.mounted {
+            return Err(error);
+        }
+        let _ = rintawa::engine::portable_ui::unmount_surface(
+            rintawa_world_manager::WORLD_MANAGER_SURFACE_ID,
+        );
+        mount_snapshot(&snapshot).map_err(|mount_error| {
+            format!("{error}; World Manager recovery mount failed: {mount_error}")
+        })?;
+    }
+
+    PRESENTATION.with(|slot| {
+        *slot.borrow_mut() = PresentationState {
+            mounted: true,
+            revision: snapshot.revision,
+            node_ids,
+        };
+    });
+    Ok(())
+}
+
+fn patch_snapshot(
+    previous: &PresentationState,
+    snapshot: &rintawa_sdk::ui::UiSurfaceSnapshot,
+    node_ids: &BTreeSet<String>,
+) -> Result<(), String> {
+    let batch = build_patch_batch(previous, snapshot, node_ids)?;
+    let payload = serde_json::to_vec(&batch)
+        .map_err(|error| format!("World Manager patch serialization failed: {error}"))?;
+    rintawa::engine::portable_ui::patch_surface(&payload)
+        .map_err(|error| format!("World Manager surface patch failed: {error:?}"))
+}
+
+fn build_patch_batch(
+    previous: &PresentationState,
+    snapshot: &rintawa_sdk::ui::UiSurfaceSnapshot,
+    node_ids: &BTreeSet<String>,
+) -> Result<UiPatchBatch, String> {
+    if previous.revision.checked_add(1) != Some(snapshot.revision) {
+        return Err(format!(
+            "World Manager presentation revision jumped from {} to {}",
+            previous.revision, snapshot.revision
+        ));
+    }
+    let mut patches = snapshot
+        .nodes
+        .iter()
+        .cloned()
+        .map(|node| UiPatch::UpsertNode { node })
+        .collect::<Vec<_>>();
+    patches.extend(
+        previous
+            .node_ids
+            .difference(node_ids)
+            .map(|node_id| UiPatch::RemoveNode {
+                node_id: UiNodeId::new(node_id.clone()),
+            }),
+    );
+    Ok(UiPatchBatch {
+        surface_id: snapshot.surface_id.clone(),
+        base_revision: previous.revision,
+        next_revision: snapshot.revision,
+        patches,
+    })
+}
+
+fn mount_snapshot(snapshot: &rintawa_sdk::ui::UiSurfaceSnapshot) -> Result<(), String> {
+    let payload = serde_json::to_vec(snapshot)
+        .map_err(|error| format!("World Manager snapshot serialization failed: {error}"))?;
     rintawa::engine::portable_ui::mount_surface(&payload)
         .map_err(|error| format!("World Manager surface mount failed: {error:?}"))
 }
@@ -230,6 +324,75 @@ fn world_session_error(error: rintawa::engine::world_sessions::Error) -> WorldSe
 
 fn log_error(message: &str) {
     rintawa::engine::host::log(rintawa::engine::host::LogLevel::Error, message);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rintawa_sdk::ui::{UiNode, UiNodeKind, UiSurfaceId, UiSurfaceSnapshot, UiTextNode};
+
+    #[test]
+    fn test_should_patch_mounted_world_manager_surface_on_next_revision() {
+        let previous = PresentationState {
+            mounted: true,
+            revision: 1,
+            node_ids: BTreeSet::from([String::from("root"), String::from("removed")]),
+        };
+        let snapshot = UiSurfaceSnapshot {
+            surface_id: UiSurfaceId::new(rintawa_world_manager::WORLD_MANAGER_SURFACE_ID),
+            revision: 2,
+            root: UiNodeId::new("root"),
+            nodes: vec![UiNode::new(
+                "root",
+                UiNodeKind::Text(UiTextNode {
+                    text: String::from("Worlds"),
+                }),
+            )],
+        };
+        let current = BTreeSet::from([String::from("root")]);
+
+        let batch = build_patch_batch(&previous, &snapshot, &current).expect("valid patch batch");
+
+        assert_eq!(batch.base_revision, 1);
+        assert_eq!(batch.next_revision, 2);
+        assert!(batch.patches.iter().any(|patch| matches!(
+            patch,
+            UiPatch::UpsertNode { node } if node.id.as_str() == "root"
+        )));
+        assert!(batch.patches.iter().any(|patch| matches!(
+            patch,
+            UiPatch::RemoveNode { node_id } if node_id.as_str() == "removed"
+        )));
+    }
+
+    #[test]
+    fn test_should_reject_world_manager_revision_jump() {
+        let previous = PresentationState {
+            mounted: true,
+            revision: 1,
+            node_ids: BTreeSet::new(),
+        };
+        let snapshot = UiSurfaceSnapshot {
+            surface_id: UiSurfaceId::new(rintawa_world_manager::WORLD_MANAGER_SURFACE_ID),
+            revision: 3,
+            root: UiNodeId::new("root"),
+            nodes: vec![UiNode::new(
+                "root",
+                UiNodeKind::Text(UiTextNode {
+                    text: String::from("Worlds"),
+                }),
+            )],
+        };
+
+        assert!(
+            build_patch_batch(
+                &previous,
+                &snapshot,
+                &BTreeSet::from([String::from("root")])
+            )
+            .is_err()
+        );
+    }
 }
 
 export!(WorldManagerRuntime);

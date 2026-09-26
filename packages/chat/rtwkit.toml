@@ -1,0 +1,14 @@
+schema = 1
+
+[package]
+id = "rintawa.chat"
+name = "Chat"
+version = "0.0.1"
+description = "Standard persistent branching Chat domain and Portable UI for Rintawa"
+license = "GPL-3.0-only"
+authors = ["martrtr"]
+readme = "README.md"
+
+[build]
+artifact-root = "build/rtw"
+command = ["bash", "build.sh"]

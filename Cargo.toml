@@ -8,6 +8,8 @@ members = [
     "packages/character-library",
     "packages/character-library/content-handler",
     "packages/character-library/runtime",
+    "packages/chat",
+    "packages/chat/runtime",
     "packages/world-manager",
     "packages/world-manager/runtime",
 ]
@@ -25,6 +27,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 toml = "0.9"
-rintawa-artifacts = { git = "https://github.com/martrtr/rintawa.git", rev = "79ebcc65758e5f4e41f16b7225e4c43949d59731" }
-rintawa-sdk = { git = "https://github.com/martrtr/rintawa.git", rev = "79ebcc65758e5f4e41f16b7225e4c43949d59731" }
-rintawa-ui-runtime = { git = "https://github.com/martrtr/rintawa.git", rev = "79ebcc65758e5f4e41f16b7225e4c43949d59731" }
+rintawa-artifacts = { git = "https://github.com/martrtr/rintawa.git", rev = "613ae7de25b5d7f58fd5ca62109488aed2704647" }
+rintawa-sdk = { git = "https://github.com/martrtr/rintawa.git", rev = "613ae7de25b5d7f58fd5ca62109488aed2704647" }
+rintawa-ui-runtime = { git = "https://github.com/martrtr/rintawa.git", rev = "613ae7de25b5d7f58fd5ca62109488aed2704647" }

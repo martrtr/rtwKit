@@ -257,6 +257,15 @@ fn test_should_validate_and_reconcile_tavern_json_import_actions() -> anyhow::Re
     );
     assert!(controller.state().import_pending());
     assert_eq!(controller.state().import_source(), source);
+    let pending_snapshot = build_character_library_snapshot(controller.state());
+    assert!(matches!(
+        pending_snapshot
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == "import.source")
+            .map(|node| &node.kind),
+        Some(UiNodeKind::TextArea(area)) if !area.is_enabled && area.value.is_empty()
+    ));
 
     assert_eq!(
         controller.handle_action(&action(
@@ -279,7 +288,7 @@ fn test_should_validate_and_reconcile_tavern_json_import_actions() -> anyhow::Re
             .iter()
             .find(|node| node.id.as_str() == "import.source")
             .map(|node| &node.kind),
-        Some(UiNodeKind::TextArea(area)) if area.is_enabled && area.value == source
+        Some(UiNodeKind::TextArea(area)) if area.is_enabled && area.value.is_empty()
     ));
 
     assert_eq!(
