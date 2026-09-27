@@ -550,8 +550,8 @@ interface composition {
     /// Changes persisted enabled state. Changes take effect on a later bootstrap.
     set-enabled: func(subject: string, enabled: bool) -> result<_, error>;
 
-    /// Marks whether this baseline selection is copied into newly created worlds.
-    /// Existing world overlays remain pinned and are not rewritten.
+    /// Compatibility helper that adds or removes this exact baseline selection from
+    /// the independent default-World recipe. Existing Worlds remain pinned.
     set-world-default: func(subject: string, world-default: bool) -> result<_, error>;
 
     /// Removes a persisted baseline selection and related policy references.
@@ -577,6 +577,24 @@ interface scoped-composition {
         subject: string,
         enabled: bool,
     ) -> result<_, error>;
+
+    /// Selects one provider component for a versioned contract in this exact scope.
+    /// The host validates that the provider instance belongs to the same scope.
+    set-preferred-provider: func(
+        scope-id: string,
+        contract-id: string,
+        contract-version: u32,
+        provider-instance-id: string,
+        provider-component-id: string,
+    ) -> result<_, error>;
+
+    /// Clears one explicit provider choice in this exact scope.
+    clear-preferred-provider: func(
+        scope-id: string,
+        contract-id: string,
+        contract-version: u32,
+    ) -> result<_, error>;
+
     remove-activation: func(scope-id: string, subject: string) -> result<_, error>;
 }
 
@@ -705,7 +723,7 @@ interface secrets {
 }
 
 
-/// Generic unary service transport available while guest code is executing.
+/// Generic service transport available while guest code is executing.
 interface services {
     /// Transport-level routing failure.
     variant error {
@@ -720,10 +738,25 @@ interface services {
         response-too-large,
     }
 
-    /// Calls the provider selected for a versioned contract.
+    /// Opaque caller-bound selection of one provider for a `multiple` service contract.
+    type provider-handle = u64;
+
+    /// Calls the provider selected for a versioned `single` service contract.
     call: func(
         contract: string,
         version: u32,
+        payload: list<u8>,
+    ) -> result<list<u8>, error>;
+
+    /// Lists eligible providers for a versioned `multiple` service contract.
+    list-providers: func(
+        contract: string,
+        version: u32,
+    ) -> result<list<provider-handle>, error>;
+
+    /// Calls one provider previously returned by `list-providers`.
+    call-provider: func(
+        provider: provider-handle,
         payload: list<u8>,
     ) -> result<list<u8>, error>;
 }
@@ -747,6 +780,7 @@ interface portable-ui {
         registration-not-active,
         duplicate-surface,
         duplicate-layer,
+        duplicate-world-presentation,
         invalid-payload,
         message-too-large,
         unsupported-capability(string),
@@ -780,6 +814,15 @@ interface portable-ui {
         capabilities: list<string>,
     ) -> result<_, error>;
 
+    /// Registers the initial portable surface for this component when selected as a
+    /// World presentation provider. Optional semantic intent is a versioned contract key;
+    /// both intent fields must be present together or absent together.
+    register-world-presentation: func(
+        entry-surface-id: string,
+        intent-contract: option<string>,
+        intent-version: option<u32>,
+    ) -> result<_, error>;
+
     /// Mounts a serialized `UiSurfaceSnapshot` during active guest execution.
     mount-surface: func(snapshot-json: list<u8>) -> result<_, error>;
 
@@ -798,12 +841,24 @@ interface ui-layer {
         not-active-layer,
         invalid-payload,
         message-too-large,
+        queue-full,
         unavailable,
         rejected,
     }
 
     /// Returns the current visible presentation as serialized JSON.
     presentation-surfaces: func() -> result<list<u8>, error>;
+
+    /// Returns renderer-session World focus state as serialized JSON.
+    presentation-state: func() -> result<list<u8>, error>;
+
+    /// Queues one World as the desired focus of this exact UI Layer session.
+    /// The Host resolves lifecycle/composition only after the current callback unwinds.
+    request-world-focus: func(world-id: string) -> result<_, error>;
+
+    /// Clears the focused-World scope of this exact UI Layer session.
+    /// World lifecycle state is not changed.
+    clear-world-focus: func() -> result<_, error>;
 
     /// Queues one serialized `UiActionEvent` for Engine validation and dispatch.
     dispatch-action: func(action-json: list<u8>) -> result<_, error>;
