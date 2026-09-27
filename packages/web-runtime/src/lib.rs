@@ -38,8 +38,33 @@ struct WebLayerConfig {
     entry: String,
     listen_port: u16,
     #[serde(default)]
+    contracts: Vec<ContractDefinitionConfig>,
+    #[serde(default)]
     provides: Vec<ProvidedContractConfig>,
     ui_layer: Option<UiLayerConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum ContractResolutionConfig {
+    Single,
+    Multiple,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum ContractProtocolConfig {
+    Binding,
+    Service,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+struct ContractDefinitionConfig {
+    id: String,
+    version: u32,
+    resolution: ContractResolutionConfig,
+    protocol: ContractProtocolConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -229,12 +254,38 @@ impl exports::rintawa::engine::target_provider::Guest for WebRuntime {
         let registration = STATE.with(|state| {
             state.borrow().components.get(&handle).map(|component| {
                 (
+                    component.config.contracts.clone(),
                     component.config.provides.clone(),
                     component.config.ui_layer.clone(),
                 )
             })
         });
-        let (providers, layer) = registration.ok_or(TargetError::UnknownComponent)?;
+        let (contracts, providers, layer) = registration.ok_or(TargetError::UnknownComponent)?;
+        for contract in contracts {
+            let resolution = match contract.resolution {
+                ContractResolutionConfig::Single => {
+                    rintawa::engine::registration::ResolutionPolicy::Single
+                }
+                ContractResolutionConfig::Multiple => {
+                    rintawa::engine::registration::ResolutionPolicy::Multiple
+                }
+            };
+            let protocol = match contract.protocol {
+                ContractProtocolConfig::Binding => {
+                    rintawa::engine::registration::ContractProtocol::Binding
+                }
+                ContractProtocolConfig::Service => {
+                    rintawa::engine::registration::ContractProtocol::Service
+                }
+            };
+            rintawa::engine::registration::define_contract(
+                &contract.id,
+                contract.version,
+                resolution,
+                protocol,
+            )
+            .map_err(|_| TargetError::Rejected)?;
+        }
         for provider in providers {
             rintawa::engine::registration::provide_contract(
                 &provider.id,
@@ -397,11 +448,23 @@ fn validate_config(config: &WebLayerConfig) -> Result<(), TargetError> {
         return Err(TargetError::InvalidDescriptor);
     }
 
-    let mut contracts = BTreeSet::new();
+    let mut definitions = BTreeSet::new();
+    for contract in &config.contracts {
+        if contract.id.is_empty()
+            || contract.id.trim() != contract.id
+            || contract.version == 0
+            || !definitions.insert((contract.id.as_str(), contract.version))
+        {
+            return Err(TargetError::InvalidDescriptor);
+        }
+    }
+
+    let mut providers = BTreeSet::new();
     for provider in &config.provides {
         if provider.id.is_empty()
             || provider.id.trim() != provider.id
-            || !contracts.insert((provider.id.as_str(), provider.version))
+            || provider.version == 0
+            || !providers.insert((provider.id.as_str(), provider.version))
         {
             return Err(TargetError::InvalidDescriptor);
         }
@@ -1548,6 +1611,7 @@ mod config_tests {
             bridge_protocol_major: WEB_BRIDGE_PROTOCOL_MAJOR,
             entry: String::from("web/index.html"),
             listen_port: 44719,
+            contracts: Vec::new(),
             provides: Vec::new(),
             ui_layer: None,
         }
@@ -1567,6 +1631,30 @@ mod config_tests {
             required_secret_read: Vec::new(),
         };
         config.provides = vec![role.clone(), role];
+        assert!(matches!(
+            validate_config(&config),
+            Err(TargetError::InvalidDescriptor)
+        ));
+    }
+
+    #[test]
+    fn test_should_validate_extension_owned_contract_definitions() {
+        let mut config = base_config();
+        let contract = ContractDefinitionConfig {
+            id: String::from("example.navigation"),
+            version: 1,
+            resolution: ContractResolutionConfig::Single,
+            protocol: ContractProtocolConfig::Service,
+        };
+        config.contracts.push(contract.clone());
+        config.provides.push(ProvidedContractConfig {
+            id: contract.id.clone(),
+            version: contract.version,
+            required_secret_read: Vec::new(),
+        });
+        assert!(validate_config(&config).is_ok());
+
+        config.contracts.push(contract);
         assert!(matches!(
             validate_config(&config),
             Err(TargetError::InvalidDescriptor)
