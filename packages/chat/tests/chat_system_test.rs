@@ -9,7 +9,7 @@ use rintawa_chat::{
     ParticipantBindingRequest, ParticipantIdentity, SendMessageCommand,
     chat_add_participant_command_schema_key, chat_all_world_schemas,
     chat_create_conversation_command_schema_key, chat_edit_message_command_schema_key,
-    chat_send_message_command_schema_key, evaluate_chat_world_system,
+    chat_send_message_command_schema_key, chat_surface_contribution, evaluate_chat_world_system,
 };
 use rintawa_sdk::{
     world::{CommandId, CorrelationId, EntityId, PrincipalId, SchemaKey, WorldId},
@@ -20,6 +20,13 @@ use rintawa_sdk::{
         WorldSystemTransaction,
     },
 };
+
+#[test]
+fn test_should_keep_chat_surface_out_of_global_activity_navigation() {
+    let contribution = chat_surface_contribution();
+    assert!(contribution.activity.is_none());
+    assert_eq!(contribution.id.as_str(), "rintawa.chat.main");
+}
 
 fn request(
     schema: SchemaKey,

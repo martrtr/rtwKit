@@ -18,6 +18,7 @@ use rintawa_chat::{
     evaluate_chat_world_system, message_select_branch_node_id,
 };
 use rintawa_sdk::{
+    contracts::world_presentation_contract_key,
     ui::{UiActionEvent, UiActionPayload, UiNodeId, UiPatch, UiPatchBatch, UiPlacementHint},
     world::{CommandId, EntityId, SchemaKey, SchemaKind},
     world_projection::{
@@ -48,7 +49,7 @@ thread_local! {
 #[derive(Debug, Clone, Default)]
 struct RuntimeState {
     task_handle: Option<u64>,
-    active_world_id: Option<String>,
+    world_id: Option<String>,
     selected_conversation_id: Option<EntityId>,
     view: Option<ChatConversationView>,
     projection_operation_id: Option<String>,
@@ -88,6 +89,23 @@ impl exports::rintawa::engine::guest::Guest for ChatRuntime {
             return;
         }
 
+        let context = match rintawa::engine::runtime_context::current() {
+            Ok(context) => context,
+            Err(error) => {
+                log_error(&format!("Chat runtime context read failed: {error:?}"));
+                return;
+            }
+        };
+        let Some(world_id) = context.world_id else {
+            log_error("Chat runtime requires an exact World scope");
+            return;
+        };
+        STATE.with(|slot| {
+            let mut state = slot.borrow_mut();
+            state.world_id = Some(world_id);
+            state.refresh_needed = true;
+        });
+
         let task_handle =
             match rintawa::engine::runtime_tasks::spawn_periodic(CHAT_POLL_INTERVAL_MS) {
                 Ok(handle) => handle,
@@ -99,7 +117,6 @@ impl exports::rintawa::engine::guest::Guest for ChatRuntime {
         STATE.with(|slot| {
             let mut state = slot.borrow_mut();
             state.task_handle = Some(task_handle);
-            state.refresh_needed = true;
         });
 
         if let Err(error) = render_surface() {
@@ -161,7 +178,20 @@ impl exports::rintawa::engine::task_handler::Guest for ChatRuntime {
 
 fn register_runtime() -> Result<(), String> {
     register_world_contracts()?;
-    register_surface()
+    register_surface()?;
+    register_world_presentation()
+}
+
+fn register_world_presentation() -> Result<(), String> {
+    let contract = world_presentation_contract_key();
+    rintawa::engine::registration::provide_contract(
+        &contract.id.to_string(),
+        contract.version.major(),
+        &[],
+    )
+    .map_err(|error| format!("Chat World presentation registration failed: {error:?}"))?;
+    rintawa::engine::portable_ui::register_world_presentation(CHAT_SURFACE_ID, None, None)
+        .map_err(|error| format!("Chat World presentation descriptor failed: {error:?}"))
 }
 
 fn register_world_contracts() -> Result<(), String> {
@@ -255,20 +285,13 @@ fn register_surface() -> Result<(), String> {
 }
 
 fn tick() -> Result<(), String> {
-    let world_changed = sync_active_world()?;
-    if world_changed {
-        render_surface()?;
-    }
-
     if poll_projection()? {
         render_surface()?;
     }
 
     let should_request = STATE.with(|slot| {
         let state = slot.borrow();
-        state.refresh_needed
-            && state.projection_operation_id.is_none()
-            && state.active_world_id.is_some()
+        state.refresh_needed && state.projection_operation_id.is_none() && state.world_id.is_some()
     });
     if should_request {
         request_projection()?;
@@ -277,43 +300,12 @@ fn tick() -> Result<(), String> {
     Ok(())
 }
 
-fn sync_active_world() -> Result<bool, String> {
-    let worlds = rintawa::engine::world_sessions::list_worlds()
-        .map_err(|error| format!("Chat world catalog read failed: {error:?}"))?;
-    let active_world_id = worlds
-        .into_iter()
-        .rev()
-        .find(|world| world.active)
-        .map(|world| world.world_id);
-
-    Ok(STATE.with(|slot| {
-        let mut state = slot.borrow_mut();
-        if state.active_world_id == active_world_id {
-            return false;
-        }
-        state.active_world_id = active_world_id;
-        state.selected_conversation_id = None;
-        state.view = None;
-        state.projection_operation_id = None;
-        state.projection_polls = 0;
-        state.refresh_needed = state.active_world_id.is_some();
-        state.status = state
-            .active_world_id
-            .is_none()
-            .then(|| String::from("Open a World to use Chat."));
-        true
-    }))
-}
-
 fn request_projection() -> Result<(), String> {
     let (world_id, selected_conversation_id) = STATE.with(|slot| {
         let state = slot.borrow();
-        (
-            state.active_world_id.clone(),
-            state.selected_conversation_id,
-        )
+        (state.world_id.clone(), state.selected_conversation_id)
     });
-    let world_id = world_id.ok_or_else(|| String::from("Chat has no active World"))?;
+    let world_id = world_id.ok_or_else(|| String::from("Chat has no bound World"))?;
     let schema = chat_conversation_projection_schema_key()
         .map_err(|error| format!("Chat projection schema construction failed: {error}"))?;
     let input_json = serde_json::to_vec(&ChatProjectionInput {
@@ -361,7 +353,7 @@ fn poll_projection() -> Result<bool, String> {
         Ok(rintawa::engine::world_projections::ReadState::Succeeded(view)) => {
             let expected_schema = chat_conversation_projection_schema_key()
                 .map_err(|error| format!("Chat projection schema construction failed: {error}"))?;
-            let active_world = STATE.with(|slot| slot.borrow().active_world_id.clone());
+            let active_world = STATE.with(|slot| slot.borrow().world_id.clone());
             if active_world.as_deref() != Some(view.world_id.as_str())
                 || view.schema != expected_schema.to_string()
             {
@@ -573,8 +565,8 @@ fn submit_command<T: Serialize>(
     payload: &T,
 ) -> Result<rintawa::engine::world_commands::Accepted, String> {
     let world_id = STATE
-        .with(|slot| slot.borrow().active_world_id.clone())
-        .ok_or_else(|| String::from("Chat has no active World"))?;
+        .with(|slot| slot.borrow().world_id.clone())
+        .ok_or_else(|| String::from("Chat has no bound World"))?;
     let payload_json = serde_json::to_vec(payload)
         .map_err(|error| format!("Chat command serialization failed: {error}"))?;
     rintawa::engine::world_commands::submit(&rintawa::engine::world_commands::Request {
@@ -733,7 +725,7 @@ fn render_surface() -> Result<(), String> {
             .ok_or_else(|| String::from("Chat UI revision overflow"))?;
         Ok::<_, String>((
             state.ui_revision,
-            state.active_world_id.clone(),
+            state.world_id.clone(),
             state.view.clone(),
             state.status.clone(),
         ))

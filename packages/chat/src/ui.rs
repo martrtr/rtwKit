@@ -5,9 +5,9 @@ use rintawa_sdk::{
     ui::{
         UI_CAPABILITY_BUTTON, UI_CAPABILITY_COLUMN, UI_CAPABILITY_LIST, UI_CAPABILITY_MARKDOWN,
         UI_CAPABILITY_ROW, UI_CAPABILITY_TEXT, UI_CAPABILITY_TEXT_AREA, UiActionId,
-        UiActivityContribution, UiButtonAppearance, UiButtonNode, UiContainerNode, UiMarkdownNode,
-        UiNode, UiNodeId, UiNodeKind, UiPlacementHint, UiSurfaceContribution, UiSurfaceId,
-        UiSurfaceSnapshot, UiTextAreaNode, UiTextNode,
+        UiButtonAppearance, UiButtonNode, UiContainerNode, UiMarkdownNode, UiNode, UiNodeId,
+        UiNodeKind, UiPlacementHint, UiSurfaceContribution, UiSurfaceId, UiSurfaceSnapshot,
+        UiTextAreaNode, UiTextNode,
     },
 };
 
@@ -15,8 +15,6 @@ use crate::{ChatConversationView, ContentBlock};
 
 /// Stable Portable UI surface identity owned by Chat.
 pub const CHAT_SURFACE_ID: &str = "rintawa.chat.main";
-/// Renderer-neutral shell activity identity for Chat.
-pub const CHAT_ACTIVITY_ID: &str = "rintawa.chat";
 /// Semantic action requesting an authoritative projection refresh.
 pub const CHAT_ACTION_REFRESH: &str = "rintawa.chat.refresh";
 /// Semantic action creating a default persistent conversation and local-user participant.
@@ -47,7 +45,6 @@ const MAX_PRESENTATION_TEXT_BYTES: usize = 16 * 1024;
 pub fn chat_surface_contribution() -> UiSurfaceContribution {
     UiSurfaceContribution::new(CHAT_SURFACE_ID, UiPlacementHint::Primary)
         .with_semantic(semantic("rintawa.chat.conversation"))
-        .with_activity(UiActivityContribution::new(CHAT_ACTIVITY_ID, "Chat"))
         .requiring_capability(UI_CAPABILITY_COLUMN)
         .requiring_capability(UI_CAPABILITY_ROW)
         .requiring_capability(UI_CAPABILITY_LIST)
@@ -93,7 +90,7 @@ pub fn build_chat_snapshot(
             WORLD_NODE,
             world_id
                 .map(|id| format!("World {id}"))
-                .unwrap_or_else(|| String::from("No active World")),
+                .unwrap_or_else(|| String::from("No bound World")),
         ),
         button_node(
             REFRESH_NODE,
