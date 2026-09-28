@@ -114,17 +114,21 @@ export function deriveGlobalActivities(
   );
 }
 
-function deriveFocusedWorldActivities(
+export function deriveFocusedWorldActivities(
   surfaces: readonly UiPresentationSurface[],
   pack: WebExperiencePack,
 ): DerivedActivity[] {
   return deriveActivities(
-    surfaces.filter((surface) => surface.context?.kind === "focused-world"),
+    surfaces.filter(
+      (surface) =>
+        surface.context?.kind === "focused-world" &&
+        surface.contribution.activity !== null,
+    ),
     pack,
   );
 }
 
-function focusedWorldEntryActivity(
+export function focusedWorldEntryActivity(
   surfaces: readonly UiPresentationSurface[],
   activities: readonly DerivedActivity[],
   presentation: UiLayerPresentationState,
