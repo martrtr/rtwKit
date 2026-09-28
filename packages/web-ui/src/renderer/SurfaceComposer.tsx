@@ -1,7 +1,11 @@
 import { useMemo } from "react";
 import type { CSSProperties, ReactNode } from "react";
 
-import type { UiActionEvent, UiPresentationSurface } from "../bridge";
+import type {
+  UiActionEvent,
+  UiLayerPresentationState,
+  UiPresentationSurface,
+} from "../bridge";
 import {
   STANDARD_EXPERIENCE_PACK,
   regionForSurface,
@@ -105,12 +109,14 @@ function renderLayoutNode(
 
 interface SurfaceComposerProps {
   surfaces: readonly UiPresentationSurface[];
+  presentation?: UiLayerPresentationState;
   onAction: (event: UiActionEvent) => void;
   experiencePack?: WebExperiencePack;
 }
 
 export function SurfaceComposer({
   surfaces,
+  presentation = { focused_world: null, pending_world_id: null, last_focus_error: null },
   onAction,
   experiencePack = STANDARD_EXPERIENCE_PACK,
 }: SurfaceComposerProps) {
@@ -129,6 +135,7 @@ export function SurfaceComposer({
     return (
       <WorkbenchComposer
         surfaces={surfaces}
+        presentation={presentation}
         onAction={onAction}
         experiencePack={experiencePack}
       />

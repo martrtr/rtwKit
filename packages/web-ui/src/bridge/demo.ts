@@ -14,6 +14,7 @@ import type {
 function demoSurface(): UiPresentationSurface {
   return {
     owner: { instance_id: "demo.feature", component_id: "runtime" },
+    context: null,
     contribution: {
       id: "demo.main",
       placement: "primary",
@@ -128,6 +129,11 @@ export class DemoUiTransport implements UiTransport {
       type: "state",
       protocol_major: WEB_UI_BRIDGE_PROTOCOL_MAJOR,
       surfaces: [structuredClone(this.surface)],
+      presentation: {
+        focused_world: null,
+        pending_world_id: null,
+        last_focus_error: null,
+      },
     };
     queueMicrotask(() => this.onMessage?.(message));
   }

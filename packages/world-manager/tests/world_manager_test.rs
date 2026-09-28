@@ -8,10 +8,11 @@ use rintawa_sdk::{
 };
 use rintawa_ui_runtime::{OwnedUiSurfaceContribution, UiRuntime};
 use rintawa_world_manager::{
-    MAX_WORLD_CATALOG_ENTRIES, WORLD_MANAGER_ACTION_CREATE, WORLD_MANAGER_ACTION_TOGGLE_ACTIVE,
-    WORLD_MANAGER_SURFACE_ID, WorldManagerController, WorldManagerError, WorldSessionGateway,
-    WorldSessionGatewayError, WorldSessionRecord, build_world_manager_snapshot,
-    world_manager_surface_contribution, world_toggle_node_id,
+    MAX_WORLD_CATALOG_ENTRIES, WORLD_MANAGER_ACTION_CREATE, WORLD_MANAGER_ACTION_OPEN,
+    WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_SURFACE_ID, WorldManagerActionOutcome,
+    WorldManagerController, WorldManagerError, WorldSessionGateway, WorldSessionGatewayError,
+    WorldSessionRecord, build_world_manager_snapshot, world_manager_surface_contribution,
+    world_open_node_id, world_toggle_node_id,
 };
 
 #[derive(Default)]
@@ -161,6 +162,90 @@ fn test_should_create_and_queue_toggle_without_misreporting_deferred_state() -> 
         controller.gateway().active_writes.as_slice(),
         &[(created.to_string(), true)]
     );
+    Ok(())
+}
+
+#[test]
+fn test_should_open_world_without_conflating_focus_and_lifecycle() -> anyhow::Result<()> {
+    let inactive = WorldId::new();
+    let active = WorldId::new();
+    let gateway = RecordingGateway {
+        worlds: vec![record(inactive, false), record(active, true)],
+        ..RecordingGateway::default()
+    };
+    let mut controller = WorldManagerController::new(gateway);
+    controller.refresh()?;
+
+    let open_inactive = action(
+        controller.state().revision(),
+        world_open_node_id(inactive),
+        WORLD_MANAGER_ACTION_OPEN,
+        UiActionPayload::None,
+    );
+    assert_eq!(
+        controller.handle_action(&open_inactive)?,
+        WorldManagerActionOutcome::OpenWorld(inactive)
+    );
+    assert_eq!(
+        controller.gateway().active_writes.as_slice(),
+        &[(inactive.to_string(), true)]
+    );
+    let inactive_state = controller
+        .state()
+        .worlds()
+        .iter()
+        .find(|world| world.world_id == inactive)
+        .expect("inactive World should remain in the catalog");
+    assert_eq!(inactive_state.pending_active, Some(true));
+
+    let open_pending = action(
+        controller.state().revision(),
+        world_open_node_id(inactive),
+        WORLD_MANAGER_ACTION_OPEN,
+        UiActionPayload::None,
+    );
+    assert_eq!(
+        controller.handle_action(&open_pending)?,
+        WorldManagerActionOutcome::OpenWorld(inactive)
+    );
+    assert_eq!(controller.gateway().active_writes.len(), 1);
+
+    let open_active = action(
+        controller.state().revision(),
+        world_open_node_id(active),
+        WORLD_MANAGER_ACTION_OPEN,
+        UiActionPayload::None,
+    );
+    assert_eq!(
+        controller.handle_action(&open_active)?,
+        WorldManagerActionOutcome::OpenWorld(active)
+    );
+    assert_eq!(controller.gateway().active_writes.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn test_should_reject_open_while_world_is_stopping() -> anyhow::Result<()> {
+    let world_id = WorldId::new();
+    let mut stopping = record(world_id, true);
+    stopping.pending_active = Some(false);
+    let gateway = RecordingGateway {
+        worlds: vec![stopping],
+        ..RecordingGateway::default()
+    };
+    let mut controller = WorldManagerController::new(gateway);
+    controller.refresh()?;
+    let open = action(
+        controller.state().revision(),
+        world_open_node_id(world_id),
+        WORLD_MANAGER_ACTION_OPEN,
+        UiActionPayload::None,
+    );
+    assert_eq!(
+        controller.handle_action(&open),
+        Err(WorldManagerError::LifecyclePending)
+    );
+    assert!(controller.gateway().active_writes.is_empty());
     Ok(())
 }
 

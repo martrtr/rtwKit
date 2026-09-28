@@ -10,6 +10,7 @@ function dataGridSurface(selectedRows: number[]): UiPresentationSurface {
       instance_id: "demo.grid",
       component_id: "runtime",
     },
+    context: null,
     contribution: {
       id: "grid",
       placement: "primary",
@@ -66,6 +67,7 @@ function textAreaSurface(submitAction: string | null): UiPresentationSurface {
       instance_id: "demo.text-area",
       component_id: "runtime",
     },
+    context: null,
     contribution: {
       id: "notes",
       placement: "primary",

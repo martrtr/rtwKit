@@ -7,9 +7,14 @@
 use std::{cell::RefCell, collections::BTreeSet};
 
 use rintawa_sdk::ui::{UiActionEvent, UiNodeId, UiPatch, UiPatchBatch, UiPlacementHint};
+use rintawa_shell_contracts::{
+    SHELL_NAVIGATION_CONTRACT_ID, SHELL_NAVIGATION_CONTRACT_VERSION, ShellNavigationRequest,
+    ShellNavigationResponse, decode_response, encode_request,
+};
 use rintawa_world_manager::{
-    WorldManagerController, WorldSessionGateway, WorldSessionGatewayError, WorldSessionRecord,
-    build_world_manager_snapshot, world_manager_surface_contribution,
+    WorldManagerActionOutcome, WorldManagerController, WorldSessionGateway,
+    WorldSessionGatewayError, WorldSessionRecord, build_world_manager_snapshot,
+    world_manager_surface_contribution,
 };
 
 wit_bindgen::generate!({
@@ -54,7 +59,7 @@ struct WorldManagerRuntime;
 
 impl exports::rintawa::engine::guest::Guest for WorldManagerRuntime {
     fn register() {
-        let error = register_surface().err();
+        let error = register_contributions().err();
         REGISTRATION_ERROR.with(|slot| {
             *slot.borrow_mut() = error;
         });
@@ -115,7 +120,7 @@ impl exports::rintawa::engine::guest::Guest for WorldManagerRuntime {
             }
         };
 
-        let result = STATE.with(|slot| {
+        let outcome = STATE.with(|slot| {
             let mut state = slot.borrow_mut();
             let controller = state
                 .as_mut()
@@ -124,17 +129,59 @@ impl exports::rintawa::engine::guest::Guest for WorldManagerRuntime {
                 .handle_action(&event)
                 .map_err(|error| format!("World Manager action failed: {error}"))
         });
-        if let Err(error) = result {
-            log_error(&error);
-            return;
-        }
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                log_error(&error);
+                return;
+            }
+        };
         if let Err(error) = render_surface() {
             log_error(&error);
+        }
+        if let WorldManagerActionOutcome::OpenWorld(world_id) = outcome
+            && let Err(error) = request_shell_world_focus(world_id)
+        {
+            log_error(&format!(
+                "World Manager foreground navigation failed: {error}"
+            ));
         }
     }
 
     fn handle_service(_contract: String, _version: u32, _payload: Vec<u8>) -> Vec<u8> {
         Vec::new()
+    }
+}
+
+fn register_contributions() -> Result<(), String> {
+    rintawa::engine::registration::consume_contract(
+        SHELL_NAVIGATION_CONTRACT_ID,
+        SHELL_NAVIGATION_CONTRACT_VERSION,
+        true,
+        &[],
+    )
+    .map_err(|error| format!("World Manager shell navigation registration failed: {error:?}"))?;
+    register_surface()
+}
+
+fn request_shell_world_focus(world_id: rintawa_sdk::world::WorldId) -> Result<(), String> {
+    let request = encode_request(&ShellNavigationRequest::FocusWorld {
+        world_id: world_id.to_string(),
+    })
+    .map_err(|error| format!("could not encode shell navigation request: {error}"))?;
+    let response = rintawa::engine::services::call(
+        SHELL_NAVIGATION_CONTRACT_ID,
+        SHELL_NAVIGATION_CONTRACT_VERSION,
+        &request,
+    )
+    .map_err(|error| format!("shell navigation service failed: {error:?}"))?;
+    match decode_response(&response)
+        .map_err(|error| format!("shell navigation returned an invalid response: {error}"))?
+    {
+        ShellNavigationResponse::Accepted => Ok(()),
+        ShellNavigationResponse::Rejected { reason } => {
+            Err(format!("shell navigation rejected World focus: {reason:?}"))
+        }
     }
 }
 

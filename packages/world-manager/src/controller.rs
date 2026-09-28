@@ -8,11 +8,11 @@ use thiserror::Error;
 
 use crate::{
     MAX_WORLD_CATALOG_ENTRIES, MAX_WORLD_SESSION_DIAGNOSTIC_BYTES, WORLD_MANAGER_ACTION_CREATE,
-    WORLD_MANAGER_ACTION_REFRESH, WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_SURFACE_ID,
-    WorldCatalogEntry, WorldManagerState, WorldSessionGateway, WorldSessionGatewayError,
-    WorldSessionRecord,
+    WORLD_MANAGER_ACTION_OPEN, WORLD_MANAGER_ACTION_REFRESH, WORLD_MANAGER_ACTION_TOGGLE_ACTIVE,
+    WORLD_MANAGER_SURFACE_ID, WorldCatalogEntry, WorldManagerState, WorldSessionGateway,
+    WorldSessionGatewayError, WorldSessionRecord,
     ui::{CREATE_NODE, REFRESH_NODE},
-    world_toggle_node_id,
+    world_open_node_id, world_toggle_node_id,
 };
 
 /// World Manager domain/controller failure.
@@ -69,6 +69,15 @@ pub enum WorldManagerError {
 
 /// Result type used by World Manager controller operations.
 pub type WorldManagerResult<T> = Result<T, WorldManagerError>;
+
+/// Semantic side effect requested by one validated World Manager action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorldManagerActionOutcome {
+    /// No shell-level navigation is required.
+    None,
+    /// Bring this World into the caller's foreground presentation session.
+    OpenWorld(WorldId),
+}
 
 /// Stateful World Manager controller parameterized by a runtime adapter.
 pub struct WorldManagerController<G> {
@@ -181,7 +190,10 @@ where
     /// # Errors
     ///
     /// Returns action-validation, gateway, catalog-validation, or lifecycle errors.
-    pub fn handle_action(&mut self, event: &UiActionEvent) -> WorldManagerResult<()> {
+    pub fn handle_action(
+        &mut self,
+        event: &UiActionEvent,
+    ) -> WorldManagerResult<WorldManagerActionOutcome> {
         if event.surface_id.as_str() != WORLD_MANAGER_SURFACE_ID {
             return Err(WorldManagerError::WrongSurface);
         }
@@ -200,13 +212,31 @@ where
                 if event.node_id.as_str() != REFRESH_NODE {
                     return Err(WorldManagerError::WrongActionNode);
                 }
-                self.refresh()
+                self.refresh()?;
+                Ok(WorldManagerActionOutcome::None)
             }
             WORLD_MANAGER_ACTION_CREATE => {
                 if event.node_id.as_str() != CREATE_NODE {
                     return Err(WorldManagerError::WrongActionNode);
                 }
-                self.create_world().map(|_| ())
+                self.create_world()?;
+                Ok(WorldManagerActionOutcome::None)
+            }
+            WORLD_MANAGER_ACTION_OPEN => {
+                let world = self
+                    .state
+                    .worlds
+                    .iter()
+                    .find(|world| world_open_node_id(world.world_id) == event.node_id)
+                    .ok_or(WorldManagerError::UnknownWorldAction)?;
+                if world.pending_active == Some(false) {
+                    return Err(WorldManagerError::LifecyclePending);
+                }
+                let world_id = world.world_id;
+                if !world.active && world.pending_active.is_none() {
+                    self.request_active(world_id, true)?;
+                }
+                Ok(WorldManagerActionOutcome::OpenWorld(world_id))
             }
             WORLD_MANAGER_ACTION_TOGGLE_ACTIVE => {
                 let world = self
@@ -220,7 +250,8 @@ where
                 }
                 let world_id = world.world_id;
                 let desired_active = !world.active;
-                self.request_active(world_id, desired_active)
+                self.request_active(world_id, desired_active)?;
+                Ok(WorldManagerActionOutcome::None)
             }
             action => Err(WorldManagerError::UnknownAction(action.to_string())),
         }

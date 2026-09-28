@@ -30,6 +30,26 @@ export interface ContractKey {
   version: number;
 }
 
+export type UiPresentationContext =
+  | { kind: "layer-local" }
+  | { kind: "focused-world"; world_id: string };
+
+export interface WorldPresentationDescriptor {
+  entry_surface_id: string;
+  presentation_intent: ContractKey | null;
+}
+
+export interface UiFocusedWorldPresentation {
+  world_id: string;
+  descriptor: WorldPresentationDescriptor;
+}
+
+export interface UiLayerPresentationState {
+  focused_world: UiFocusedWorldPresentation | null;
+  pending_world_id: string | null;
+  last_focus_error: string | null;
+}
+
 export type UiPlacementHint =
   | "primary"
   | "secondary"
@@ -172,6 +192,7 @@ export interface UiSurfaceSnapshot {
 
 export interface UiPresentationSurface {
   owner: ComponentRef;
+  context: UiPresentationContext | null;
   contribution: UiSurfaceContribution;
   snapshot: UiSurfaceSnapshot;
 }
@@ -209,6 +230,7 @@ export interface HostStateMessage {
   type: "state";
   protocol_major: typeof WEB_UI_BRIDGE_PROTOCOL_MAJOR;
   surfaces: UiPresentationSurface[];
+  presentation: UiLayerPresentationState;
 }
 
 export interface HostErrorMessage {

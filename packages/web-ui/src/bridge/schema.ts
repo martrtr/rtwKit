@@ -20,6 +20,27 @@ const contractKey = z.object({
   version: z.number().int().min(0).max(4_294_967_295),
 });
 
+const presentationContext = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("layer-local") }),
+  z.object({ kind: z.literal("focused-world"), world_id: identifier }),
+]);
+
+const worldPresentationDescriptor = z.object({
+  entry_surface_id: identifier,
+  presentation_intent: contractKey.nullable(),
+});
+
+const presentationState = z.object({
+  focused_world: z
+    .object({
+      world_id: identifier,
+      descriptor: worldPresentationDescriptor,
+    })
+    .nullable(),
+  pending_world_id: identifier.nullable(),
+  last_focus_error: z.string().nullable(),
+});
+
 const activity = z.object({
   id: identifier,
   label: z.string(),
@@ -206,6 +227,7 @@ const nodeKind = z.discriminatedUnion("type", [
 
 const surface = z.object({
   owner: componentRef,
+  context: presentationContext.nullable().default(null),
   contribution,
   snapshot: z.object({
     surface_id: identifier,
@@ -227,6 +249,11 @@ const hostMessage = z.discriminatedUnion("type", [
     type: z.literal("state"),
     protocol_major: z.literal(WEB_UI_BRIDGE_PROTOCOL_MAJOR),
     surfaces: z.array(surface),
+    presentation: presentationState.default({
+      focused_world: null,
+      pending_world_id: null,
+      last_focus_error: null,
+    }),
   }),
   z.object({
     type: z.literal("error"),

@@ -6,7 +6,11 @@ import {
   WEB_UI_BRIDGE_PROTOCOL_MAJOR,
   createDefaultTransport,
 } from "./bridge";
-import type { UiActionEvent, UiPresentationSurface } from "./bridge";
+import type {
+  UiActionEvent,
+  UiLayerPresentationState,
+  UiPresentationSurface,
+} from "./bridge";
 import { SurfaceComposer } from "./renderer/SurfaceComposer";
 import { experiencePackStyle, selectedExperiencePack } from "./experience/runtime";
 import { InterfaceIconProvider } from "./icons/InterfaceIcon";
@@ -16,6 +20,11 @@ export default function App() {
   const experiencePack = useMemo(selectedExperiencePack, []);
   const experienceStyle = useMemo(() => experiencePackStyle(experiencePack), [experiencePack]);
   const [surfaces, setSurfaces] = useState<UiPresentationSurface[]>([]);
+  const [presentation, setPresentation] = useState<UiLayerPresentationState>({
+    focused_world: null,
+    pending_world_id: null,
+    last_focus_error: null,
+  });
   const [hasReceivedState, setHasReceivedState] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,6 +43,7 @@ export default function App() {
           if (isDisposed) return;
           if (message.type === "state") {
             setSurfaces(message.surfaces);
+            setPresentation(message.presentation);
             setHasReceivedState(true);
             setError(null);
           } else {
@@ -92,6 +102,9 @@ export default function App() {
         data-experience-pack={experiencePack.id}
       >
         {error ? <div className="rintawa-error">{error}</div> : null}
+        {presentation.last_focus_error ? (
+          <div className="rintawa-error">World focus failed: {presentation.last_focus_error}</div>
+        ) : null}
 
         {!hasReceivedState ? (
           <div className="rintawa-empty">Connecting to Rintawa…</div>
@@ -100,6 +113,7 @@ export default function App() {
         ) : (
           <SurfaceComposer
             surfaces={surfaces}
+            presentation={presentation}
             onAction={dispatchAction}
             experiencePack={experiencePack}
           />

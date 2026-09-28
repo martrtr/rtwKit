@@ -18,7 +18,9 @@ pub const WORLD_MANAGER_ACTIVITY_ID: &str = "rintawa.world-manager";
 pub const WORLD_MANAGER_ACTION_CREATE: &str = "rintawa.world-manager.create";
 /// Semantic action used by the explicit catalog refresh control.
 pub const WORLD_MANAGER_ACTION_REFRESH: &str = "rintawa.world-manager.refresh";
-/// Semantic action shared by per-world Open/Close controls.
+/// Semantic action used to bring one World into the foreground shell session.
+pub const WORLD_MANAGER_ACTION_OPEN: &str = "rintawa.world-manager.open";
+/// Semantic action shared by per-world Start/Stop lifecycle controls.
 pub const WORLD_MANAGER_ACTION_TOGGLE_ACTIVE: &str = "rintawa.world-manager.toggle-active";
 
 const ROOT_NODE: &str = "root";
@@ -43,7 +45,12 @@ pub fn world_manager_surface_contribution() -> UiSurfaceContribution {
         .requiring_capability(UI_CAPABILITY_BUTTON)
 }
 
-/// Returns the stable toggle button node identity for one world row.
+/// Returns the stable foreground-open button node identity for one world row.
+pub fn world_open_node_id(world_id: WorldId) -> UiNodeId {
+    UiNodeId::new(format!("world.{world_id}.open"))
+}
+
+/// Returns the stable lifecycle toggle button node identity for one world row.
 pub fn world_toggle_node_id(world_id: WorldId) -> UiNodeId {
     UiNodeId::new(format!("world.{world_id}.toggle"))
 }
@@ -109,12 +116,14 @@ fn append_world_row(nodes: &mut Vec<UiNode>, row_id: UiNodeId, world: &WorldCata
     let status_node = world_node_id(world.world_id, "status");
     let position_node = world_node_id(world.world_id, "position");
     let error_node = world_node_id(world.world_id, "error");
+    let open_node = world_open_node_id(world.world_id);
     let toggle_node = world_toggle_node_id(world.world_id);
 
     let mut children = vec![id_node.clone(), status_node.clone(), position_node.clone()];
     if world.last_error.is_some() {
         children.push(error_node.clone());
     }
+    children.push(open_node.clone());
     children.push(toggle_node.clone());
 
     nodes.push(UiNode::new(
@@ -131,28 +140,41 @@ fn append_world_row(nodes: &mut Vec<UiNode>, row_id: UiNodeId, world: &WorldCata
         nodes.push(text_node(error_node, format!("Last error: {error}")));
     }
 
-    let pending = world.pending_active.is_some();
-    let label = match world.pending_active {
-        Some(true) => "Opening…",
-        Some(false) => "Closing…",
-        None if world.active => "Close",
-        None => "Open",
+    let is_stopping = world.pending_active == Some(false);
+    nodes.push(button_node(
+        open_node,
+        if world.pending_active == Some(true) {
+            "Open when ready"
+        } else {
+            "Open"
+        },
+        WORLD_MANAGER_ACTION_OPEN,
+        !is_stopping,
+        UiButtonAppearance::Primary,
+    ));
+
+    let is_pending = world.pending_active.is_some();
+    let lifecycle_label = match world.pending_active {
+        Some(true) => "Starting…",
+        Some(false) => "Stopping…",
+        None if world.active => "Stop",
+        None => "Start",
     };
     nodes.push(button_node(
         toggle_node,
-        label,
+        lifecycle_label,
         WORLD_MANAGER_ACTION_TOGGLE_ACTIVE,
-        !pending,
+        !is_pending,
         UiButtonAppearance::Default,
     ));
 }
 
 fn world_status(world: &WorldCatalogEntry) -> &'static str {
     match world.pending_active {
-        Some(true) => "Opening…",
-        Some(false) => "Closing…",
-        None if world.active => "Open",
-        None => "Closed",
+        Some(true) => "Starting…",
+        Some(false) => "Stopping…",
+        None if world.active => "Running",
+        None => "Stopped",
     }
 }
 

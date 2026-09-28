@@ -1,11 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
 } from "react";
 
-import type { UiActionEvent, UiPresentationSurface } from "../bridge";
+import type {
+  UiActionEvent,
+  UiLayerPresentationState,
+  UiPresentationSurface,
+} from "../bridge";
 import { regionForSurface } from "../experience";
 import type {
   ShellLayoutNode,
@@ -94,6 +98,67 @@ export function deriveActivities(
   }
 
   return [...activities.values()];
+}
+
+export function deriveGlobalActivities(
+  surfaces: readonly UiPresentationSurface[],
+  pack: WebExperiencePack,
+): DerivedActivity[] {
+  return deriveActivities(
+    surfaces.filter(
+      (surface) =>
+        surface.context?.kind !== "focused-world" &&
+        surface.contribution.activity !== null,
+    ),
+    pack,
+  );
+}
+
+function deriveFocusedWorldActivities(
+  surfaces: readonly UiPresentationSurface[],
+  pack: WebExperiencePack,
+): DerivedActivity[] {
+  return deriveActivities(
+    surfaces.filter((surface) => surface.context?.kind === "focused-world"),
+    pack,
+  );
+}
+
+function focusedWorldEntryActivity(
+  surfaces: readonly UiPresentationSurface[],
+  activities: readonly DerivedActivity[],
+  presentation: UiLayerPresentationState,
+  pack: WebExperiencePack,
+): DerivedActivity | null {
+  const focused = presentation.focused_world;
+  if (!focused) return null;
+  const entry = surfaces.find(
+    (surface) =>
+      surface.context?.kind === "focused-world" &&
+      surface.context.world_id === focused.world_id &&
+      surface.contribution.id === focused.descriptor.entry_surface_id,
+  );
+  if (!entry) return null;
+  const entryWorkspaceActivity = activities.find((activity) =>
+    activity.surfaces.some(
+      (surface) =>
+        surface.owner.instance_id === entry.owner.instance_id &&
+        surface.contribution.id === entry.contribution.id,
+    ),
+  );
+  if (entryWorkspaceActivity) return entryWorkspaceActivity;
+
+  const routedRegion = regionForSurface(pack, entry);
+  if (pack.shell.layers.some((layer) => layer.region === routedRegion)) return null;
+  const destinations = new Set(activityDestinations(pack).map((item) => item.region));
+  return {
+    key: `world-entry:${focused.world_id}:${entry.owner.instance_id}:${entry.contribution.id}`,
+    id: `world-entry:${focused.world_id}`,
+    label: humanizeSurface(entry),
+    iconSlot: null,
+    surfaces: [entry],
+    defaultRegion: destinations.has(routedRegion) ? routedRegion : pack.shell.fallback_region,
+  };
 }
 
 function layerSurfaces(
@@ -390,19 +455,48 @@ function renderWorkbenchLayout(
 
 interface WorkbenchComposerProps {
   surfaces: readonly UiPresentationSurface[];
+  presentation: UiLayerPresentationState;
   onAction: (event: UiActionEvent) => void;
   experiencePack: WebExperiencePack;
 }
 
 export function WorkbenchComposer({
   surfaces,
+  presentation,
   onAction,
   experiencePack,
 }: WorkbenchComposerProps) {
-  const activities = useMemo(
-    () => deriveActivities(surfaces, experiencePack),
+  const layerLocalActivities = useMemo(
+    () => deriveActivities(
+      surfaces.filter((surface) => surface.context?.kind !== "focused-world"),
+      experiencePack,
+    ),
     [surfaces, experiencePack],
   );
+  const globalActivities = useMemo(
+    () => deriveGlobalActivities(surfaces, experiencePack),
+    [surfaces, experiencePack],
+  );
+  const focusedWorldActivities = useMemo(
+    () => deriveFocusedWorldActivities(surfaces, experiencePack),
+    [surfaces, experiencePack],
+  );
+  const entryActivity = useMemo(
+    () =>
+      focusedWorldEntryActivity(
+        surfaces,
+        focusedWorldActivities,
+        presentation,
+        experiencePack,
+      ),
+    [surfaces, focusedWorldActivities, presentation, experiencePack],
+  );
+  const activities = useMemo(() => {
+    if (!entryActivity || focusedWorldActivities.some((activity) => activity.key === entryActivity.key)) {
+      return [...layerLocalActivities, ...focusedWorldActivities];
+    }
+    return [...layerLocalActivities, ...focusedWorldActivities, entryActivity];
+  }, [layerLocalActivities, focusedWorldActivities, entryActivity]);
   const destinations = useMemo(
     () => activityDestinations(experiencePack),
     [experiencePack],
@@ -419,6 +513,7 @@ export function WorkbenchComposer({
     left: number;
     top: number;
   } | null>(null);
+  const lastAutoFocusedWorldEntry = useRef<string | null>(null);
 
   useEffect(() => {
     setPreferences(readWorkspacePreferences(experiencePack));
@@ -428,6 +523,29 @@ export function WorkbenchComposer({
   useEffect(() => {
     writeWorkspacePreferences(experiencePack, preferences);
   }, [experiencePack, preferences]);
+
+  useEffect(() => {
+    const focused = presentation.focused_world;
+    if (!focused || !entryActivity) {
+      lastAutoFocusedWorldEntry.current = null;
+      return;
+    }
+    const identity = `${focused.world_id}:${focused.descriptor.entry_surface_id}`;
+    if (lastAutoFocusedWorldEntry.current === identity) return;
+    lastAutoFocusedWorldEntry.current = identity;
+    setPreferences((current) => {
+      const requested = current.placements[entryActivity.key];
+      const region =
+        requested && destinationIds.has(requested)
+          ? requested
+          : entryActivity.defaultRegion;
+      return {
+        ...current,
+        activeByRegion: { ...current.activeByRegion, [region]: entryActivity.key },
+        collapsed: { ...current.collapsed, [region]: false },
+      };
+    });
+  }, [presentation.focused_world, entryActivity, destinationIds]);
 
   const assigned = useMemo(() => {
     const regions = new Map<string, DerivedActivity[]>();
@@ -552,7 +670,7 @@ export function WorkbenchComposer({
           }
           aria-label="Activities"
         >
-          {activities.map((activity) => {
+          {globalActivities.map((activity) => {
             const override = preferences.placements[activity.key];
             const region =
               override && destinationIds.has(override)

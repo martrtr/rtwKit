@@ -1,0 +1,13 @@
+[package]
+name = "rintawa-shell-contracts"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Versioned semantic contracts shared by standard Rintawa shell packages"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2"

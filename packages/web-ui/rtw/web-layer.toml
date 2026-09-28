@@ -3,6 +3,16 @@ bridge-protocol-major = 1
 entry = "web/index.html"
 listen-port = 44719
 
+[[contracts]]
+id = "rintawa.shell.navigation"
+version = 1
+resolution = "single"
+protocol = "service"
+
+[[provides]]
+id = "rintawa.shell.navigation"
+version = 1
+
 [[provides]]
 id = "rintawa.ui.layer"
 version = 1

@@ -11,13 +11,16 @@ mod controller;
 mod model;
 mod ui;
 
-pub use controller::{WorldManagerController, WorldManagerError, WorldManagerResult};
+pub use controller::{
+    WorldManagerActionOutcome, WorldManagerController, WorldManagerError, WorldManagerResult,
+};
 pub use model::{
     MAX_WORLD_CATALOG_ENTRIES, MAX_WORLD_SESSION_DIAGNOSTIC_BYTES, WorldCatalogEntry,
     WorldManagerState, WorldSessionGateway, WorldSessionGatewayError, WorldSessionRecord,
 };
 pub use ui::{
-    WORLD_MANAGER_ACTION_CREATE, WORLD_MANAGER_ACTION_REFRESH, WORLD_MANAGER_ACTION_TOGGLE_ACTIVE,
-    WORLD_MANAGER_ACTIVITY_ID, WORLD_MANAGER_SURFACE_ID, build_world_manager_snapshot,
-    world_manager_surface_contribution, world_toggle_node_id,
+    WORLD_MANAGER_ACTION_CREATE, WORLD_MANAGER_ACTION_OPEN, WORLD_MANAGER_ACTION_REFRESH,
+    WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_ACTIVITY_ID, WORLD_MANAGER_SURFACE_ID,
+    build_world_manager_snapshot, world_manager_surface_contribution, world_open_node_id,
+    world_toggle_node_id,
 };

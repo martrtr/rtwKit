@@ -20,6 +20,7 @@ function surface(
     instanceId?: string;
     activity?: { id: string; label: string; icon_slot: string | null } | null;
     traits?: string[];
+    context?: UiPresentationSurface["context"];
   } = {},
 ): UiPresentationSurface {
   const semanticParts = semantic?.match(/^(.+)@([0-9]+)$/);
@@ -28,6 +29,7 @@ function surface(
       instance_id: options.instanceId ?? `demo.${id}`,
       component_id: "runtime",
     },
+    context: options.context ?? null,
     contribution: {
       id,
       placement,

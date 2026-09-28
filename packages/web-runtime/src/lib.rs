@@ -10,6 +10,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
+use rintawa_shell_contracts::{
+    SHELL_NAVIGATION_CONTRACT_ID, SHELL_NAVIGATION_CONTRACT_VERSION, ShellNavigationRejection,
+    ShellNavigationRequest, ShellNavigationResponse, decode_request, encode_response,
+};
+
 wit_bindgen::generate!({
     path: "../../wit",
     world: "runtime-provider-task-plugin",
@@ -406,15 +411,21 @@ impl exports::rintawa::engine::target_provider::Guest for WebRuntime {
 
     fn handle_service(
         handle: u64,
-        _contract: String,
-        _version: u32,
-        _payload: Vec<u8>,
+        contract: String,
+        version: u32,
+        payload: Vec<u8>,
     ) -> Result<Vec<u8>, TargetError> {
-        if component_exists(handle) {
-            Ok(Vec::new())
-        } else {
-            Err(TargetError::UnknownComponent)
+        if !component_exists(handle) {
+            return Err(TargetError::UnknownComponent);
         }
+        if contract != SHELL_NAVIGATION_CONTRACT_ID || version != SHELL_NAVIGATION_CONTRACT_VERSION
+        {
+            return Err(TargetError::Unavailable);
+        }
+        let response = shell_navigation_response(&payload, |world_id| {
+            rintawa::engine::ui_layer::request_world_focus(world_id).is_ok()
+        });
+        encode_response(&response).map_err(|_| TargetError::Rejected)
     }
 }
 
@@ -432,6 +443,26 @@ impl exports::rintawa::engine::task_handler::Guest for WebRuntime {
         if let Some(component_handle) = component_handle {
             pump_component(component_handle);
         }
+    }
+}
+
+fn shell_navigation_response<F>(payload: &[u8], mut request_focus: F) -> ShellNavigationResponse
+where
+    F: FnMut(&str) -> bool,
+{
+    match decode_request(payload) {
+        Ok(ShellNavigationRequest::FocusWorld { world_id }) => {
+            if request_focus(&world_id) {
+                ShellNavigationResponse::Accepted
+            } else {
+                ShellNavigationResponse::Rejected {
+                    reason: ShellNavigationRejection::Unavailable,
+                }
+            }
+        }
+        Err(_) => ShellNavigationResponse::Rejected {
+            reason: ShellNavigationRejection::InvalidRequest,
+        },
     }
 }
 
@@ -1391,7 +1422,7 @@ fn state_digest(message: &[u8]) -> [u8; 20] {
 }
 
 fn current_state_message() -> Option<Vec<u8>> {
-    let raw = match rintawa::engine::ui_layer::presentation_surfaces() {
+    let raw_surfaces = match rintawa::engine::ui_layer::presentation_surfaces() {
         Ok(raw) => raw,
         Err(error) => {
             rintawa::engine::host::log(
@@ -1401,12 +1432,24 @@ fn current_state_message() -> Option<Vec<u8>> {
             return None;
         }
     };
-    let mut surfaces: Value = serde_json::from_slice(&raw).ok()?;
+    let raw_presentation = match rintawa::engine::ui_layer::presentation_state() {
+        Ok(raw) => raw,
+        Err(error) => {
+            rintawa::engine::host::log(
+                rintawa::engine::host::LogLevel::Error,
+                &format!("Web UI could not read presentation state: {error:?}"),
+            );
+            return None;
+        }
+    };
+    let mut surfaces: Value = serde_json::from_slice(&raw_surfaces).ok()?;
+    let presentation: Value = serde_json::from_slice(&raw_presentation).ok()?;
     convert_surface_revisions_to_strings(&mut surfaces)?;
     serde_json::to_vec(&json!({
         "type": "state",
         "protocol_major": WEB_BRIDGE_PROTOCOL_MAJOR,
         "surfaces": surfaces,
+        "presentation": presentation,
     }))
     .ok()
 }
@@ -1554,6 +1597,50 @@ mod tests {
         assert_eq!(
             action["surface_revision"].as_u64(),
             Some(18_446_744_073_709_551_615_u64)
+        );
+    }
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::*;
+    use rintawa_shell_contracts::encode_request;
+
+    #[test]
+    fn test_should_translate_shell_navigation_into_world_focus_request() {
+        let payload = encode_request(&ShellNavigationRequest::FocusWorld {
+            world_id: String::from("018f8f4e-6fd0-7ac1-a7bd-ef27b34c389a"),
+        })
+        .expect("navigation request should encode");
+        let mut requested = None;
+        let response = shell_navigation_response(&payload, |world_id| {
+            requested = Some(world_id.to_string());
+            true
+        });
+        assert_eq!(response, ShellNavigationResponse::Accepted);
+        assert_eq!(
+            requested.as_deref(),
+            Some("018f8f4e-6fd0-7ac1-a7bd-ef27b34c389a")
+        );
+    }
+
+    #[test]
+    fn test_should_reject_invalid_or_unavailable_shell_navigation() {
+        assert_eq!(
+            shell_navigation_response(b"not-json", |_| true),
+            ShellNavigationResponse::Rejected {
+                reason: ShellNavigationRejection::InvalidRequest,
+            }
+        );
+        let payload = encode_request(&ShellNavigationRequest::FocusWorld {
+            world_id: String::from("018f8f4e-6fd0-7ac1-a7bd-ef27b34c389a"),
+        })
+        .expect("navigation request should encode");
+        assert_eq!(
+            shell_navigation_response(&payload, |_| false),
+            ShellNavigationResponse::Rejected {
+                reason: ShellNavigationRejection::Unavailable,
+            }
         );
     }
 }

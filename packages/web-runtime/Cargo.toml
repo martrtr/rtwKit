@@ -10,6 +10,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+rintawa-shell-contracts.workspace = true
 base64 = "0.22"
 httparse = "1"
 serde.workspace = true

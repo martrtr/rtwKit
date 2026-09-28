@@ -4,6 +4,7 @@ members = [
     "tools/registry-tool",
     "tools/componentize",
     "packages/web-runtime",
+    "crates/shell-contracts",
     "packages/package-manager",
     "packages/character-library",
     "packages/character-library/content-handler",
@@ -26,6 +27,7 @@ semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+rintawa-shell-contracts = { path = "crates/shell-contracts" }
 toml = "0.9"
 rintawa-artifacts = { git = "https://github.com/martrtr/rintawa.git", rev = "d1deb830ec48097df4382a8fb0fb43f87ca3f0da" }
 rintawa-sdk = { git = "https://github.com/martrtr/rintawa.git", rev = "d1deb830ec48097df4382a8fb0fb43f87ca3f0da" }

@@ -420,6 +420,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rintawa-shell-contracts"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "rintawa-ui-runtime"
 version = "0.0.1"
 source = "git+https://github.com/martrtr/rintawa.git?rev=d1deb830ec48097df4382a8fb0fb43f87ca3f0da#d1deb830ec48097df4382a8fb0fb43f87ca3f0da"
@@ -434,6 +443,7 @@ version = "0.0.2"
 dependencies = [
  "base64",
  "httparse",
+ "rintawa-shell-contracts",
  "serde",
  "serde_json",
  "sha1",
@@ -456,6 +466,7 @@ name = "rintawa-world-manager-runtime"
 version = "0.0.1"
 dependencies = [
  "rintawa-sdk",
+ "rintawa-shell-contracts",
  "rintawa-world-manager",
  "serde_json",
  "wit-bindgen",
