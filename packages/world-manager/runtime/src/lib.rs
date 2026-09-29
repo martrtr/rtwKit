@@ -12,7 +12,7 @@ use rintawa_shell_contracts::{
     ShellNavigationResponse, decode_response, encode_request,
 };
 use rintawa_world_manager::{
-    WorldManagerActionOutcome, WorldManagerController, WorldSessionGateway,
+    WorldCatalogAssetRef, WorldManagerActionOutcome, WorldManagerController, WorldSessionGateway,
     WorldSessionGatewayError, WorldSessionRecord, build_world_manager_snapshot,
     world_manager_surface_contribution,
 };
@@ -46,6 +46,22 @@ impl WorldSessionGateway for WitWorldSessionGateway {
 
     fn create_world(&mut self) -> Result<WorldSessionRecord, WorldSessionGatewayError> {
         rintawa::engine::world_sessions::create()
+            .map(world_record)
+            .map_err(world_session_error)
+    }
+
+    fn set_metadata(
+        &mut self,
+        world_id: &str,
+        title: &str,
+        cover: Option<WorldCatalogAssetRef>,
+    ) -> Result<WorldSessionRecord, WorldSessionGatewayError> {
+        let cover = cover.map(|reference| rintawa::engine::asset_store::AssetRef {
+            digest: reference.digest,
+            size: reference.size,
+            media_type: reference.media_type,
+        });
+        rintawa::engine::world_sessions::set_metadata(world_id, title, cover.as_ref())
             .map(world_record)
             .map_err(world_session_error)
     }
@@ -336,6 +352,12 @@ fn mount_snapshot(snapshot: &rintawa_sdk::ui::UiSurfaceSnapshot) -> Result<(), S
 fn world_record(summary: rintawa::engine::world_sessions::Summary) -> WorldSessionRecord {
     WorldSessionRecord {
         world_id: summary.world_id,
+        title: summary.title,
+        cover: summary.cover.map(|reference| WorldCatalogAssetRef {
+            digest: reference.digest,
+            size: reference.size,
+            media_type: reference.media_type,
+        }),
         commit_position: summary.commit_position,
         active: summary.active,
         pending_active: summary.pending_active,

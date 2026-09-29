@@ -3,16 +3,20 @@
 use rintawa_sdk::{
     contracts::ComponentRef,
     types::{ExtensionInstanceId, RuntimeScopeId},
-    ui::{UiActionEvent, UiActionId, UiActionPayload, UiNodeId, UiSurfaceId},
+    ui::{
+        UiActionEvent, UiActionId, UiActionPayload, UiNodeId, UiNodeKind, UiSplitAxis, UiSurfaceId,
+    },
     world::WorldId,
 };
 use rintawa_ui_runtime::{OwnedUiSurfaceContribution, UiRuntime};
 use rintawa_world_manager::{
     MAX_WORLD_CATALOG_ENTRIES, WORLD_MANAGER_ACTION_CREATE, WORLD_MANAGER_ACTION_OPEN,
-    WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_SURFACE_ID, WorldManagerActionOutcome,
-    WorldManagerController, WorldManagerError, WorldSessionGateway, WorldSessionGatewayError,
-    WorldSessionRecord, build_world_manager_snapshot, world_manager_surface_contribution,
-    world_open_node_id, world_toggle_node_id,
+    WORLD_MANAGER_ACTION_RENAME, WORLD_MANAGER_ACTION_RENAME_DRAFT, WORLD_MANAGER_ACTION_SELECT,
+    WORLD_MANAGER_ACTION_SORT, WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_SURFACE_ID,
+    WorldCatalogAssetRef, WorldManagerActionOutcome, WorldManagerController, WorldManagerError,
+    WorldSessionGateway, WorldSessionGatewayError, WorldSessionRecord,
+    build_world_manager_snapshot, world_manager_surface_contribution, world_open_node_id,
+    world_toggle_node_id,
 };
 
 #[derive(Default)]
@@ -23,6 +27,7 @@ struct RecordingGateway {
     create_result: Option<WorldSessionRecord>,
     create_calls: usize,
     active_writes: Vec<(String, bool)>,
+    metadata_writes: Vec<(String, String)>,
 }
 
 impl WorldSessionGateway for RecordingGateway {
@@ -43,6 +48,24 @@ impl WorldSessionGateway for RecordingGateway {
             .ok_or(WorldSessionGatewayError::Rejected)
     }
 
+    fn set_metadata(
+        &mut self,
+        world_id: &str,
+        title: &str,
+        cover: Option<WorldCatalogAssetRef>,
+    ) -> Result<WorldSessionRecord, WorldSessionGatewayError> {
+        let world = self
+            .worlds
+            .iter_mut()
+            .find(|world| world.world_id == world_id)
+            .ok_or(WorldSessionGatewayError::NotFound)?;
+        world.title = title.to_string();
+        world.cover = cover;
+        self.metadata_writes
+            .push((world_id.to_string(), title.to_string()));
+        Ok(world.clone())
+    }
+
     fn set_active(&mut self, world_id: &str, active: bool) -> Result<(), WorldSessionGatewayError> {
         self.active_writes.push((world_id.to_string(), active));
         Ok(())
@@ -52,6 +75,8 @@ impl WorldSessionGateway for RecordingGateway {
 fn record(world_id: WorldId, active: bool) -> WorldSessionRecord {
     WorldSessionRecord {
         world_id: world_id.to_string(),
+        title: String::from("World"),
+        cover: None,
         commit_position: 0,
         active,
         pending_active: None,
@@ -75,13 +100,29 @@ fn action(
     }
 }
 
+fn select_world(
+    controller: &mut WorldManagerController<RecordingGateway>,
+    world_id: WorldId,
+) -> anyhow::Result<()> {
+    let select = action(
+        controller.state().revision(),
+        UiNodeId::new("catalog.grid"),
+        WORLD_MANAGER_ACTION_SELECT,
+        UiActionPayload::Text(world_id.to_string()),
+    );
+    controller.handle_action(&select)?;
+    Ok(())
+}
+
 #[test]
 fn test_should_normalize_catalog_and_mount_valid_portable_ui_snapshot() -> anyhow::Result<()> {
     let first = WorldId::new();
     let second = WorldId::new();
     let mut first_record = record(first, true);
+    first_record.title = String::from("Tavern Night");
     first_record.commit_position = 7;
     let mut second_record = record(second, false);
+    second_record.title = String::from("Castle Morning");
     second_record.pending_active = Some(true);
     second_record.last_error = Some(String::from("previous start failed"));
 
@@ -92,12 +133,53 @@ fn test_should_normalize_catalog_and_mount_valid_portable_ui_snapshot() -> anyho
     let mut controller = WorldManagerController::new(gateway);
     controller.refresh()?;
     assert_eq!(controller.state().worlds().len(), 2);
-    assert!(
-        controller.state().worlds()[0].world_id < controller.state().worlds()[1].world_id,
-        "catalog must be deterministic by WorldId"
+    assert_eq!(
+        controller
+            .state()
+            .worlds()
+            .iter()
+            .map(|world| world.title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Castle Morning", "Tavern Night"]
     );
 
     let snapshot = build_world_manager_snapshot(controller.state());
+    let grid = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "catalog.grid")
+        .expect("world launcher should expose one data grid");
+    let UiNodeKind::DataGrid(grid) = &grid.kind else {
+        panic!("world catalog must render as a data grid");
+    };
+    assert_eq!(
+        grid.columns
+            .iter()
+            .map(|column| column.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["World", "Status", "Last issue"]
+    );
+    assert_eq!(grid.row_keys.len(), 2);
+    assert_eq!(grid.selected_rows.len(), 1);
+    assert!(
+        grid.columns
+            .iter()
+            .all(|column| column.sort_action.is_some())
+    );
+    assert_eq!(
+        grid.row_action.as_ref().map(UiActionId::as_str),
+        Some(WORLD_MANAGER_ACTION_SELECT)
+    );
+    let workspace = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "workspace")
+        .expect("world launcher should expose a workspace split");
+    let UiNodeKind::Split(workspace) = &workspace.kind else {
+        panic!("world launcher workspace must be a split");
+    };
+    assert_eq!(workspace.axis, UiSplitAxis::Horizontal);
+    assert_eq!(workspace.weights, vec![100, 27]);
     let ui = UiRuntime::new();
     let instance_id = ExtensionInstanceId::new("world-manager");
     let owner = ComponentRef::new(instance_id.clone(), "ui");
@@ -175,6 +257,7 @@ fn test_should_open_world_without_conflating_focus_and_lifecycle() -> anyhow::Re
     };
     let mut controller = WorldManagerController::new(gateway);
     controller.refresh()?;
+    select_world(&mut controller, inactive)?;
 
     let open_inactive = action(
         controller.state().revision(),
@@ -210,6 +293,8 @@ fn test_should_open_world_without_conflating_focus_and_lifecycle() -> anyhow::Re
     );
     assert_eq!(controller.gateway().active_writes.len(), 1);
 
+    select_world(&mut controller, active)?;
+    let revision_before_open = controller.state().revision();
     let open_active = action(
         controller.state().revision(),
         world_open_node_id(active),
@@ -221,6 +306,7 @@ fn test_should_open_world_without_conflating_focus_and_lifecycle() -> anyhow::Re
         WorldManagerActionOutcome::OpenWorld(active)
     );
     assert_eq!(controller.gateway().active_writes.len(), 1);
+    assert_eq!(controller.state().revision(), revision_before_open + 1);
     Ok(())
 }
 
@@ -293,6 +379,147 @@ fn test_should_fail_closed_for_stale_or_pending_actions() -> anyhow::Result<()> 
 }
 
 #[test]
+fn test_should_edit_and_persist_selected_world_title() -> anyhow::Result<()> {
+    let world_id = WorldId::new();
+    let mut initial = record(world_id, false);
+    initial.title = String::from("Old Name");
+    let gateway = RecordingGateway {
+        worlds: vec![initial],
+        ..RecordingGateway::default()
+    };
+    let mut controller = WorldManagerController::new(gateway);
+    controller.refresh()?;
+
+    let draft = action(
+        controller.state().revision(),
+        UiNodeId::new("selection.rename-input"),
+        WORLD_MANAGER_ACTION_RENAME_DRAFT,
+        UiActionPayload::Text(String::from("New Name")),
+    );
+    controller.handle_action(&draft)?;
+    assert_eq!(controller.state().rename_draft(), "New Name");
+
+    let rename = action(
+        controller.state().revision(),
+        UiNodeId::new("selection.rename-save"),
+        WORLD_MANAGER_ACTION_RENAME,
+        UiActionPayload::None,
+    );
+    controller.handle_action(&rename)?;
+    assert_eq!(
+        controller.state().selected_world().unwrap().title,
+        "New Name"
+    );
+    assert_eq!(
+        controller.gateway().metadata_writes,
+        vec![(world_id.to_string(), String::from("New Name"))]
+    );
+    Ok(())
+}
+
+#[test]
+fn test_should_allow_empty_rename_draft_but_reject_empty_commit() -> anyhow::Result<()> {
+    let world_id = WorldId::new();
+    let gateway = RecordingGateway {
+        worlds: vec![record(world_id, false)],
+        ..RecordingGateway::default()
+    };
+    let mut controller = WorldManagerController::new(gateway);
+    controller.refresh()?;
+
+    let draft = action(
+        controller.state().revision(),
+        UiNodeId::new("selection.rename-input"),
+        WORLD_MANAGER_ACTION_RENAME_DRAFT,
+        UiActionPayload::Text(String::new()),
+    );
+    controller.handle_action(&draft)?;
+    assert_eq!(controller.state().rename_draft(), "");
+    assert!(controller.gateway().metadata_writes.is_empty());
+
+    let save = action(
+        controller.state().revision(),
+        UiNodeId::new("selection.rename-save"),
+        WORLD_MANAGER_ACTION_RENAME,
+        UiActionPayload::None,
+    );
+    assert_eq!(
+        controller.handle_action(&save),
+        Err(WorldManagerError::InvalidTitle)
+    );
+    assert!(controller.gateway().metadata_writes.is_empty());
+    Ok(())
+}
+
+#[test]
+fn test_should_reject_blank_rename_before_host_mutation() -> anyhow::Result<()> {
+    let world_id = WorldId::new();
+    let gateway = RecordingGateway {
+        worlds: vec![record(world_id, false)],
+        ..RecordingGateway::default()
+    };
+    let mut controller = WorldManagerController::new(gateway);
+    controller.refresh()?;
+    let rename = action(
+        controller.state().revision(),
+        UiNodeId::new("selection.rename-input"),
+        WORLD_MANAGER_ACTION_RENAME,
+        UiActionPayload::Text(String::from("   ")),
+    );
+    assert_eq!(
+        controller.handle_action(&rename),
+        Err(WorldManagerError::InvalidTitle)
+    );
+    assert!(controller.gateway().metadata_writes.is_empty());
+    Ok(())
+}
+
+#[test]
+fn test_should_select_world_for_contextual_actions_and_reject_unselected_spoof()
+-> anyhow::Result<()> {
+    let first = WorldId::new();
+    let second = WorldId::new();
+    let gateway = RecordingGateway {
+        worlds: vec![record(first, false), record(second, true)],
+        ..RecordingGateway::default()
+    };
+    let mut controller = WorldManagerController::new(gateway);
+    controller.refresh()?;
+    select_world(&mut controller, second)?;
+    assert_eq!(controller.state().selected_world_id(), Some(second));
+
+    let spoofed = action(
+        controller.state().revision(),
+        world_open_node_id(first),
+        WORLD_MANAGER_ACTION_OPEN,
+        UiActionPayload::None,
+    );
+    assert_eq!(
+        controller.handle_action(&spoofed),
+        Err(WorldManagerError::UnknownWorldAction)
+    );
+    assert!(controller.gateway().active_writes.is_empty());
+    Ok(())
+}
+
+#[test]
+fn test_should_preserve_selection_across_refresh_and_fallback_when_removed() -> anyhow::Result<()> {
+    let first = WorldId::new();
+    let second = WorldId::new();
+    let gateway = RecordingGateway {
+        worlds: vec![record(first, false), record(second, false)],
+        subsequent_worlds: Some(vec![record(first, true)]),
+        ..RecordingGateway::default()
+    };
+    let mut controller = WorldManagerController::new(gateway);
+    controller.refresh()?;
+    select_world(&mut controller, second)?;
+    controller.refresh()?;
+    assert_eq!(controller.state().selected_world_id(), Some(first));
+    Ok(())
+}
+
+#[test]
 fn test_should_preserve_previous_state_when_refresh_catalog_is_invalid() -> anyhow::Result<()> {
     let world_id = WorldId::new();
     let gateway = RecordingGateway {
@@ -319,6 +546,8 @@ fn test_should_reject_noncanonical_world_id_text() {
     let gateway = RecordingGateway {
         worlds: vec![WorldSessionRecord {
             world_id: noncanonical.clone(),
+            title: String::from("World"),
+            cover: None,
             commit_position: 0,
             active: false,
             pending_active: None,
@@ -355,6 +584,78 @@ fn test_should_reject_spoofed_action_node_without_mutation() -> anyhow::Result<(
         Err(WorldManagerError::WrongActionNode)
     );
     assert_eq!(controller.gateway().create_calls, 0);
+    Ok(())
+}
+
+#[test]
+fn test_should_sort_world_catalog_from_data_grid_actions() -> anyhow::Result<()> {
+    let alpha = WorldId::new();
+    let zulu = WorldId::new();
+    let mut alpha_record = record(alpha, false);
+    alpha_record.title = String::from("Alpha");
+    let mut zulu_record = record(zulu, true);
+    zulu_record.title = String::from("Zulu");
+    zulu_record.last_error = Some(String::from("z issue"));
+
+    let gateway = RecordingGateway {
+        worlds: vec![zulu_record, alpha_record],
+        ..RecordingGateway::default()
+    };
+    let mut controller = WorldManagerController::new(gateway);
+    controller.refresh()?;
+    assert_eq!(
+        controller
+            .state()
+            .worlds()
+            .iter()
+            .map(|world| world.title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Alpha", "Zulu"]
+    );
+
+    let sort_title = action(
+        controller.state().revision(),
+        UiNodeId::new("catalog.grid"),
+        WORLD_MANAGER_ACTION_SORT,
+        UiActionPayload::Text(String::from("world")),
+    );
+    controller.handle_action(&sort_title)?;
+    assert_eq!(
+        controller
+            .state()
+            .worlds()
+            .iter()
+            .map(|world| world.title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Zulu", "Alpha"]
+    );
+
+    let sort_status = action(
+        controller.state().revision(),
+        UiNodeId::new("catalog.grid"),
+        WORLD_MANAGER_ACTION_SORT,
+        UiActionPayload::Text(String::from("status")),
+    );
+    controller.handle_action(&sort_status)?;
+    assert_eq!(controller.state().worlds()[0].world_id, alpha);
+    assert_eq!(controller.state().worlds()[1].world_id, zulu);
+
+    let snapshot = build_world_manager_snapshot(controller.state());
+    let grid = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "catalog.grid")
+        .expect("world catalog grid should exist");
+    let UiNodeKind::DataGrid(grid) = &grid.kind else {
+        panic!("world catalog must render as a data grid");
+    };
+    assert_eq!(
+        grid.columns
+            .iter()
+            .filter_map(|column| column.sort_direction)
+            .count(),
+        1
+    );
     Ok(())
 }
 
@@ -405,6 +706,8 @@ fn test_should_report_accepted_create_with_invalid_summary_distinctly() -> anyho
     let gateway = RecordingGateway {
         create_result: Some(WorldSessionRecord {
             world_id: String::from("not-a-world-id"),
+            title: String::from("World"),
+            cover: None,
             commit_position: 0,
             active: false,
             pending_active: None,

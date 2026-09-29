@@ -10,6 +10,19 @@ use thiserror::Error;
 pub const MAX_WORLD_CATALOG_ENTRIES: usize = 512;
 /// Maximum lifecycle diagnostic retained in one package catalog row.
 pub const MAX_WORLD_SESSION_DIAGNOSTIC_BYTES: usize = 2 * 1024;
+/// Maximum UTF-8 byte length accepted for one human-facing World title.
+pub const MAX_WORLD_TITLE_BYTES: usize = 256;
+
+/// Transport-neutral immutable asset reference attached to World catalog metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorldCatalogAssetRef {
+    /// Canonical SHA-256 digest.
+    pub digest: String,
+    /// Exact asset byte length.
+    pub size: u64,
+    /// Canonical media type.
+    pub media_type: String,
+}
 
 /// Transport-neutral mirror of one generic `world-sessions` catalog record.
 ///
@@ -19,6 +32,10 @@ pub const MAX_WORLD_SESSION_DIAGNOSTIC_BYTES: usize = 2 * 1024;
 pub struct WorldSessionRecord {
     /// Canonical textual WorldId returned by the host capability.
     pub world_id: String,
+    /// Human-facing host-owned title.
+    pub title: String,
+    /// Optional immutable cover reference.
+    pub cover: Option<WorldCatalogAssetRef>,
     /// Last committed authoritative position.
     pub commit_position: u64,
     /// Whether an authoritative runtime is currently active.
@@ -34,6 +51,10 @@ pub struct WorldSessionRecord {
 pub struct WorldCatalogEntry {
     /// Stable authoritative world identity.
     pub world_id: WorldId,
+    /// Human-facing host-owned title.
+    pub title: String,
+    /// Optional immutable cover reference.
+    pub cover: Option<WorldCatalogAssetRef>,
     /// Last committed authoritative position.
     pub commit_position: u64,
     /// Whether the world currently owns a running runtime.
@@ -44,10 +65,67 @@ pub struct WorldCatalogEntry {
     pub last_error: Option<String>,
 }
 
+/// Column currently owning World catalog ordering.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WorldSortColumn {
+    /// Human-facing World title.
+    #[default]
+    Title,
+    /// Effective runtime lifecycle status.
+    Status,
+    /// Last lifecycle diagnostic text.
+    Diagnostic,
+}
+
+impl WorldSortColumn {
+    /// Stable renderer-neutral data-grid column key.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Title => "world",
+            Self::Status => "status",
+            Self::Diagnostic => "diagnostic",
+        }
+    }
+
+    /// Parses one stable data-grid column key.
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "world" => Some(Self::Title),
+            "status" => Some(Self::Status),
+            "diagnostic" => Some(Self::Diagnostic),
+            _ => None,
+        }
+    }
+}
+
+/// Direction used by World catalog ordering.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WorldSortDirection {
+    /// Earlier values are presented first.
+    #[default]
+    Ascending,
+    /// Later values are presented first.
+    Descending,
+}
+
+impl WorldSortDirection {
+    /// Returns the opposite ordering direction.
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Ascending => Self::Descending,
+            Self::Descending => Self::Ascending,
+        }
+    }
+}
+
 /// Current World Manager presentation/domain state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorldManagerState {
     pub(crate) worlds: Vec<WorldCatalogEntry>,
+    pub(crate) selected_world_id: Option<WorldId>,
+    pub(crate) rename_draft: String,
+    pub(crate) sort_column: WorldSortColumn,
+    pub(crate) sort_direction: WorldSortDirection,
     pub(crate) revision: u64,
 }
 
@@ -55,6 +133,32 @@ impl WorldManagerState {
     /// Returns worlds in deterministic WorldId order.
     pub fn worlds(&self) -> &[WorldCatalogEntry] {
         &self.worlds
+    }
+
+    /// Returns the World currently selected in the launcher catalog.
+    pub const fn selected_world_id(&self) -> Option<WorldId> {
+        self.selected_world_id
+    }
+
+    /// Returns the selected catalog entry when it still exists.
+    pub fn selected_world(&self) -> Option<&WorldCatalogEntry> {
+        let selected = self.selected_world_id?;
+        self.worlds.iter().find(|world| world.world_id == selected)
+    }
+
+    /// Returns the current launcher-local rename draft for the selected World.
+    pub fn rename_draft(&self) -> &str {
+        &self.rename_draft
+    }
+
+    /// Returns the column currently owning catalog ordering.
+    pub const fn sort_column(&self) -> WorldSortColumn {
+        self.sort_column
+    }
+
+    /// Returns current catalog ordering direction.
+    pub const fn sort_direction(&self) -> WorldSortDirection {
+        self.sort_direction
     }
 
     /// Returns the monotonic package presentation revision.
@@ -102,6 +206,14 @@ pub trait WorldSessionGateway {
 
     /// Creates one empty persistent world and returns its host summary.
     fn create_world(&mut self) -> Result<WorldSessionRecord, WorldSessionGatewayError>;
+
+    /// Replaces host-owned human-facing catalog metadata.
+    fn set_metadata(
+        &mut self,
+        world_id: &str,
+        title: &str,
+        cover: Option<WorldCatalogAssetRef>,
+    ) -> Result<WorldSessionRecord, WorldSessionGatewayError>;
 
     /// Requests active/inactive state; application is deferred to the host pump.
     fn set_active(&mut self, world_id: &str, active: bool) -> Result<(), WorldSessionGatewayError>;
