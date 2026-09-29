@@ -246,7 +246,9 @@ fn create_world_with_character(
     })
     .map_err(|error| {
         // The world already exists at this point. Reversing the pending activation
-        // is best-effort cleanup because the generic lifecycle API has no delete.
+        // is best-effort cleanup before the host pump can start it. Immediate delete
+        // is intentionally rejected while lifecycle state is pending; reclaiming the
+        // stopped orphan requires a later lifecycle-aware cleanup pass.
         let _ = world_sessions::set_active(&world.world_id, false);
         format!("Character instantiation command submission failed: {error:?}")
     })?;

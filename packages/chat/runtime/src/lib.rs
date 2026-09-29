@@ -7,15 +7,16 @@ use std::{cell::RefCell, collections::BTreeSet};
 
 use rintawa_chat::{
     AddParticipantCommand, CHAT_ACTION_CREATE_CONVERSATION, CHAT_ACTION_REFRESH,
-    CHAT_ACTION_SELECT_BRANCH, CHAT_ACTION_SELECT_CONVERSATION, CHAT_ACTION_SEND, CHAT_SURFACE_ID,
-    ChatConversationView, ChatProjectionInput, ContentBlock, CreateConversationCommand,
-    ParticipantBindingRequest, SelectBranchCommand, SendMessageCommand, build_chat_snapshot,
-    chat_add_participant_command_schema_key, chat_all_world_schemas,
-    chat_conversation_projection_schema_key, chat_create_conversation_command_schema_key,
-    chat_edit_message_command_schema_key, chat_request_alternative_command_schema_key,
-    chat_select_branch_command_schema_key, chat_send_message_command_schema_key,
-    chat_surface_contribution, conversation_select_node_id, evaluate_chat_projection,
-    evaluate_chat_world_system, message_select_branch_node_id,
+    CHAT_ACTION_SELECT_BRANCH, CHAT_ACTION_SELECT_CONVERSATION, CHAT_ACTION_SEND,
+    CHAT_ACTION_SHOW_CONVERSATIONS, CHAT_SURFACE_ID, ChatConversationView, ChatProjectionInput,
+    ContentBlock, CreateConversationCommand, ParticipantBindingRequest, SelectBranchCommand,
+    SendMessageCommand, build_chat_snapshot, chat_add_participant_command_schema_key,
+    chat_all_world_schemas, chat_conversation_projection_schema_key,
+    chat_create_conversation_command_schema_key, chat_edit_message_command_schema_key,
+    chat_request_alternative_command_schema_key, chat_select_branch_command_schema_key,
+    chat_send_message_command_schema_key, chat_surface_contribution, conversation_select_node_id,
+    evaluate_chat_projection, evaluate_chat_world_system, message_select_branch_node_id,
+    show_conversations_node_id,
 };
 use rintawa_sdk::{
     contracts::world_presentation_contract_key,
@@ -424,6 +425,10 @@ fn handle_ui_action(event: &UiActionEvent) -> Result<(), String> {
             require_no_payload(event)?;
             select_conversation(event)
         }
+        CHAT_ACTION_SHOW_CONVERSATIONS => {
+            require_no_payload(event)?;
+            show_conversations(event)
+        }
         CHAT_ACTION_SELECT_BRANCH => {
             require_no_payload(event)?;
             select_branch(event)
@@ -464,6 +469,40 @@ fn create_conversation() -> Result<(), String> {
         state.status = Some(String::from("Creating conversation…"));
     });
     Ok(())
+}
+
+fn show_conversations(event: &UiActionEvent) -> Result<(), String> {
+    if event.node_id != show_conversations_node_id() {
+        return Err(String::from(
+            "Chat conversation-browser action is stale or spoofed",
+        ));
+    }
+    STATE.with(|slot| {
+        let mut state = slot.borrow_mut();
+        let has_multiple = state
+            .view
+            .as_ref()
+            .ok_or_else(|| String::from("Chat has no loaded conversation catalog"))?
+            .conversations
+            .len()
+            > 1;
+        if !has_multiple {
+            return Err(String::from(
+                "Chat conversation browser requires multiple conversations",
+            ));
+        }
+        state.selected_conversation_id = None;
+        state.status = None;
+        let view = state
+            .view
+            .as_mut()
+            .ok_or_else(|| String::from("Chat has no loaded conversation catalog"))?;
+        view.selected_conversation_id = None;
+        view.selected_leaf = None;
+        view.participants.clear();
+        view.messages.clear();
+        Ok(())
+    })
 }
 
 fn select_conversation(event: &UiActionEvent) -> Result<(), String> {

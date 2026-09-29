@@ -14,6 +14,19 @@ describe("web experience packs", () => {
     expect(STANDARD_EXPERIENCE_PACK.id).toBe("rintawa.web.standard");
     expect(STANDARD_EXPERIENCE_PACK.shell.fallback_region).toBe("main");
     expect(STANDARD_EXPERIENCE_PACK.shell.activity_bar?.presentation).toBe("vertical-start");
+    expect(STANDARD_EXPERIENCE_PACK.shell.workspace).toEqual({
+      type: "region",
+      region: "main",
+      weight: 1,
+    });
+    expect(STANDARD_EXPERIENCE_PACK.shell.region_presentations?.map((item) => item.region)).toEqual([
+      "main",
+    ]);
+    expect(
+      STANDARD_EXPERIENCE_PACK.shell.rules.every(
+        (rule) => !["left-dock", "right-dock"].includes(rule.region),
+      ),
+    ).toBe(true);
     expect(STANDARD_EXPERIENCE_PACK.theme.icons?.["activity.worlds"]).toBe("world");
     expect(STANDARD_EXPERIENCE_PACK.theme.icons?.["activity.management"]).toBe("tool");
   });

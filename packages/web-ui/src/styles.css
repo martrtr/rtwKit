@@ -638,6 +638,11 @@ textarea {
   background: transparent;
 }
 
+.rintawa-activity-section-content
+  > .rintawa-surface:has(> .rintawa-column > .rintawa-split) {
+  padding: 0;
+}
+
 .rintawa-activity-section-content > .rintawa-surface > .rintawa-column {
   height: 100%;
   min-height: 0;
@@ -661,6 +666,11 @@ textarea {
   border: 0;
   border-radius: 0;
   background: transparent;
+}
+
+.rintawa-workbench-region-content
+  > .rintawa-surface:has(> .rintawa-column > .rintawa-split) {
+  padding: 0;
 }
 
 .rintawa-workbench-region-content > .rintawa-surface > .rintawa-column {
@@ -927,6 +937,25 @@ textarea {
   padding: var(--rintawa-ui-spacing-normal);
 }
 
+/* Structural workspace splits own tile geometry, never content spacing. */
+.rintawa-split[data-ui-traits~="workspace-layout"] > .rintawa-split-pane {
+  padding: 0;
+}
+
+.rintawa-split[data-ui-traits~="workspace-layout"]
+  > .rintawa-split-pane
+  > :not(.rintawa-split[data-ui-traits~="workspace-layout"]):not([data-ui-traits~="inspector"]) {
+  padding: var(--rintawa-ui-spacing-normal);
+}
+
+.rintawa-split[data-ui-traits~="workspace-layout"]
+  > .rintawa-split-pane
+  > .rintawa-split[data-ui-traits~="workspace-layout"] {
+  width: 100%;
+  height: 100%;
+  flex: 1 1 auto;
+}
+
 .rintawa-split-resize-handle {
   position: relative;
   z-index: 3;
@@ -1009,6 +1038,187 @@ textarea {
 .rintawa-list > .rintawa-button {
   width: 100%;
   text-align: left;
+}
+
+/* Chat extension presentation traits, inspired by continuous character-chat layouts. */
+.rintawa-column[data-ui-traits~="chat-root"] {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rintawa-column[data-ui-traits~="chat-body"],
+.rintawa-column[data-ui-traits~="chat-conversation"] {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.rintawa-column[data-ui-traits~="chat-browser-shell"] {
+  min-height: 0;
+  flex: 1 1 auto;
+  align-items: stretch;
+  gap: 0.75rem;
+  padding: clamp(0.75rem, 2vw, 1.5rem);
+  overflow: auto;
+}
+
+.rintawa-list[data-ui-traits~="conversation-browser"] {
+  width: min(54rem, 100%);
+  margin: 0 auto;
+  gap: 0.45rem;
+  overflow: visible;
+}
+
+.rintawa-list[data-ui-traits~="conversation-browser"] > .rintawa-button[data-ui-traits~="conversation-card"] {
+  width: 100%;
+  min-height: 4.2rem;
+  justify-content: flex-start;
+  padding: 0.8rem 1rem;
+  border-color: var(--rintawa-web-color-border);
+  background: var(--rintawa-ui-color-surface-primary);
+  font-size: 0.92rem;
+  font-weight: 600;
+  text-align: left;
+}
+
+.rintawa-button[data-ui-traits~="chat-create-action"] {
+  align-self: center;
+  min-width: min(16rem, 100%);
+}
+
+.rintawa-row[data-ui-traits~="chat-participants"] {
+  flex: 0 0 auto;
+  min-height: 2.2rem;
+  gap: 0.45rem;
+  padding: 0.4rem clamp(0.75rem, 5vw, 4.5rem);
+  border-bottom: 1px solid var(--rintawa-web-color-border);
+  color: var(--rintawa-ui-color-text-muted);
+  font-size: 0.75rem;
+}
+
+.rintawa-list[data-ui-traits~="chat-timeline"] {
+  min-height: 0;
+  flex: 1 1 auto;
+  gap: 0;
+  padding: 0 clamp(0.75rem, 6vw, 5.5rem);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.rintawa-list[data-ui-traits~="chat-timeline"] > .rintawa-column[data-ui-traits~="chat-message"] {
+  gap: 0.38rem;
+  padding: 0.9rem 0.8rem 1rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--rintawa-web-color-border) 78%, transparent);
+}
+
+.rintawa-list[data-ui-traits~="chat-timeline"] > .rintawa-column[data-ui-traits~="chat-message-local"] {
+  background: color-mix(in srgb, var(--rintawa-ui-color-accent) 5%, transparent);
+}
+
+.rintawa-text[data-ui-traits~="chat-message-author"] {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.rintawa-textarea[data-ui-traits~="chat-composer"] {
+  width: auto;
+  min-height: 4.4rem;
+  max-height: 12rem;
+  flex: 0 0 auto;
+  margin: 0.7rem clamp(0.75rem, 6vw, 5.5rem) 0.35rem;
+  resize: vertical;
+}
+
+.rintawa-column[data-ui-traits~="chat-conversation"] > .rintawa-textarea-submit {
+  min-width: 6.5rem;
+  flex: 0 0 auto;
+  align-self: flex-end;
+  margin: 0 clamp(0.75rem, 6vw, 5.5rem) 0.85rem;
+}
+
+.rintawa-text[data-ui-traits~="chat-status"] {
+  flex: 0 0 auto;
+  min-height: 1.4rem;
+  padding: 0.15rem 0.75rem 0.25rem;
+  border-top: 1px solid var(--rintawa-web-color-border);
+  background: var(--rintawa-ui-color-surface-primary);
+  font-size: 0.68rem;
+}
+
+/* Generic rich media collection. Packages opt in through renderer-neutral semantic traits. */
+.rintawa-data-grid[data-ui-traits~="media-collection"] {
+  border-radius: 0;
+  border-right: 0;
+  border-left: 0;
+  background: transparent;
+}
+
+.rintawa-data-grid[data-ui-traits~="media-collection"] .rintawa-data-grid-header {
+  min-height: 2.15rem;
+  background: var(--rintawa-ui-color-surface-secondary);
+}
+
+.rintawa-data-grid[data-ui-traits~="media-collection"] .rintawa-data-grid-row {
+  min-height: var(--rintawa-web-media-row-min-height);
+  background: transparent;
+}
+
+.rintawa-data-grid[data-ui-traits~="media-collection"] .rintawa-data-grid-cell {
+  padding: 0.6rem 0.75rem;
+  border-right: 0;
+}
+
+.rintawa-row[data-ui-traits~="media-item"] {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--rintawa-web-media-row-min-height);
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.rintawa-icon-node[data-ui-traits~="media-thumbnail"] {
+  display: grid;
+  width: var(--rintawa-web-media-thumbnail-size);
+  height: var(--rintawa-web-media-thumbnail-size);
+  flex: 0 0 var(--rintawa-web-media-thumbnail-size);
+  place-items: center;
+  border: 1px solid var(--rintawa-web-color-border);
+  border-radius: var(--rintawa-ui-radius-control);
+  background: var(--rintawa-ui-color-surface-secondary);
+  overflow: hidden;
+}
+
+.rintawa-column[data-ui-traits~="media-details"] {
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 0.22rem;
+}
+
+.rintawa-text[data-ui-traits~="media-title"] {
+  overflow: hidden;
+  font-size: 0.98rem;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rintawa-text[data-ui-traits~="media-description"] {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.35;
+}
+
+.rintawa-text[data-ui-traits~="media-status"] {
+  color: var(--rintawa-ui-color-text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .rintawa-data-grid {
@@ -1285,6 +1495,15 @@ textarea {
 
   .rintawa-data-grid-cell > .rintawa-text {
     white-space: normal;
+  }
+
+  .rintawa-data-grid[data-ui-traits~="media-collection"] .rintawa-data-grid-cell {
+    display: block;
+    padding: 0.55rem 0.65rem;
+  }
+
+  .rintawa-data-grid[data-ui-traits~="media-collection"] .rintawa-data-grid-cell::before {
+    display: none;
   }
 }
 

@@ -140,7 +140,7 @@ function TextControl({
             disabled={!data.is_enabled}
             onClick={submit}
           >
-            Submit
+            {data.submit_label ?? "Submit"}
           </button>
         ) : null}
       </>

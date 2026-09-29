@@ -33,7 +33,7 @@ const DIAGNOSTIC_SCHEMA: &str = "Chat projection schema construction failed";
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct ChatProjectionInput {
-    /// Exact conversation to project, or `None` to select the newest conversation.
+    /// Exact conversation to project. `None` auto-selects only when exactly one exists.
     pub conversation_id: Option<EntityId>,
 }
 
@@ -140,11 +140,8 @@ fn evaluate(
     world_index
         .validate()
         .map_err(|_| ProjectionError::Rejected(DIAGNOSTIC_MISSING_STATE))?;
-    let selected_conversation_id = match input.conversation_id {
-        Some(id) if world_index.conversations.contains(&id) => Some(id),
-        Some(_) => return Err(ProjectionError::Rejected(DIAGNOSTIC_MISSING_STATE)),
-        None => world_index.conversations.last().copied(),
-    };
+    let selected_conversation_id =
+        resolve_conversation_selection(input.conversation_id, &world_index.conversations)?;
 
     let conversation_state_schema = conversation_state_schema_key().map_err(schema_error)?;
     let conversation_reads = missing_facet_reads(
@@ -450,4 +447,44 @@ fn schema_error(_error: crate::schemas::ChatSchemaError) -> ProjectionError {
 enum ProjectionError {
     Rejected(&'static str),
     Failed(&'static str),
+}
+
+fn resolve_conversation_selection(
+    requested: Option<EntityId>,
+    conversations: &[EntityId],
+) -> Result<Option<EntityId>, ProjectionError> {
+    match requested {
+        Some(id) if conversations.contains(&id) => Ok(Some(id)),
+        Some(_) => Err(ProjectionError::Rejected(DIAGNOSTIC_MISSING_STATE)),
+        None if conversations.len() == 1 => Ok(conversations.first().copied()),
+        None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn test_should_auto_select_only_single_conversation() {
+        let first = EntityId::new();
+        let second = EntityId::new();
+        assert_eq!(resolve_conversation_selection(None, &[]).unwrap(), None);
+        assert_eq!(
+            resolve_conversation_selection(None, &[first]).unwrap(),
+            Some(first)
+        );
+        assert_eq!(
+            resolve_conversation_selection(None, &[first, second]).unwrap(),
+            None
+        );
+        assert_eq!(
+            resolve_conversation_selection(Some(second), &[first, second]).unwrap(),
+            Some(second)
+        );
+        assert!(matches!(
+            resolve_conversation_selection(Some(EntityId::new()), &[first, second]),
+            Err(ProjectionError::Rejected(DIAGNOSTIC_MISSING_STATE))
+        ));
+    }
 }

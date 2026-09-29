@@ -110,6 +110,7 @@ const textInput = z.object({
   placeholder: z.string().nullable(),
   change_action: identifier.nullable(),
   submit_action: identifier.nullable(),
+  submit_label: z.string().max(256).nullable().optional(),
   is_enabled: z.boolean(),
 });
 

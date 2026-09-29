@@ -129,6 +129,7 @@ export interface UiTextInputNode {
   placeholder: string | null;
   change_action: string | null;
   submit_action: string | null;
+  submit_label?: string | null;
   is_enabled: boolean;
 }
 

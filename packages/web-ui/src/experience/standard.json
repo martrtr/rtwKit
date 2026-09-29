@@ -33,7 +33,9 @@
       "web.motion.fast": "120ms",
       "web.motion.normal": "180ms",
       "web.motion.easing": "cubic-bezier(0.2, 0, 0, 1)",
-      "web.color-scheme": "dark"
+      "web.color-scheme": "dark",
+      "web.collection.media-row-min-height": "5.25rem",
+      "web.collection.thumbnail-size": "4rem"
     },
     "icons": {
       "activity.extensions": "packages",
@@ -50,67 +52,127 @@
       "repository.generic": "database",
       "fallback.package": "package",
       "fallback.generic": "box",
-      "activity.worlds": "world"
+      "activity.worlds": "world",
+      "world.thumbnail": "world"
     }
   },
   "shell": {
     "workspace": {
-      "type": "split",
-      "axis": "horizontal",
-      "children": [
-        { "type": "region", "region": "left-dock", "weight": 0.28 },
-        { "type": "region", "region": "main", "weight": 1 },
-        { "type": "region", "region": "right-dock", "weight": 0.28 }
-      ]
+      "type": "region",
+      "region": "main",
+      "weight": 1
     },
     "layers": [
-      { "region": "status", "presentation": "status" },
-      { "region": "dialog", "presentation": "dialog" },
-      { "region": "overlay", "presentation": "overlay" }
+      {
+        "region": "status",
+        "presentation": "status"
+      },
+      {
+        "region": "dialog",
+        "presentation": "dialog"
+      },
+      {
+        "region": "overlay",
+        "presentation": "overlay"
+      }
     ],
     "region_presentations": [
-      {
-        "region": "left-dock",
-        "label": "Left Dock",
-        "mode": "activity-tabs",
-        "accepts_activities": true,
-        "collapsible": true,
-        "resize": { "edge": "end", "min_size": 180, "max_size": 720 }
-      },
       {
         "region": "main",
         "label": "Main",
         "mode": "activity-tabs",
         "accepts_activities": true,
         "collapsible": false
-      },
-      {
-        "region": "right-dock",
-        "label": "Right Dock",
-        "mode": "activity-tabs",
-        "accepts_activities": true,
-        "collapsible": true,
-        "resize": { "edge": "start", "min_size": 180, "max_size": 720 }
       }
     ],
     "activity_bar": {
       "presentation": "vertical-start"
     },
     "rules": [
-      { "match": { "semantic": "management.extensions@1" }, "region": "main" },
-      { "match": { "trait": "navigation" }, "region": "left-dock" },
-      { "match": { "trait": "inspector" }, "region": "right-dock" },
-      { "match": { "trait": "workspace-tool" }, "region": "main" },
-      { "match": { "trait": "settings" }, "region": "main" },
-      { "match": { "trait": "scene-primary" }, "region": "main" },
-      { "match": { "trait": "scene-secondary" }, "region": "right-dock" },
-      { "match": { "placement": "primary" }, "region": "main" },
-      { "match": { "placement": "secondary" }, "region": "main" },
-      { "match": { "placement": "settings" }, "region": "main" },
-      { "match": { "placement": "sidebar" }, "region": "left-dock" },
-      { "match": { "placement": "status" }, "region": "status" },
-      { "match": { "placement": "dialog" }, "region": "dialog" },
-      { "match": { "placement": "overlay" }, "region": "overlay" }
+      {
+        "match": {
+          "semantic": "management.extensions@1"
+        },
+        "region": "main"
+      },
+      {
+        "match": {
+          "trait": "navigation"
+        },
+        "region": "main"
+      },
+      {
+        "match": {
+          "trait": "inspector"
+        },
+        "region": "main"
+      },
+      {
+        "match": {
+          "trait": "workspace-tool"
+        },
+        "region": "main"
+      },
+      {
+        "match": {
+          "trait": "settings"
+        },
+        "region": "main"
+      },
+      {
+        "match": {
+          "trait": "scene-primary"
+        },
+        "region": "main"
+      },
+      {
+        "match": {
+          "trait": "scene-secondary"
+        },
+        "region": "main"
+      },
+      {
+        "match": {
+          "placement": "primary"
+        },
+        "region": "main"
+      },
+      {
+        "match": {
+          "placement": "secondary"
+        },
+        "region": "main"
+      },
+      {
+        "match": {
+          "placement": "settings"
+        },
+        "region": "main"
+      },
+      {
+        "match": {
+          "placement": "sidebar"
+        },
+        "region": "main"
+      },
+      {
+        "match": {
+          "placement": "status"
+        },
+        "region": "status"
+      },
+      {
+        "match": {
+          "placement": "dialog"
+        },
+        "region": "dialog"
+      },
+      {
+        "match": {
+          "placement": "overlay"
+        },
+        "region": "overlay"
+      }
     ],
     "fallback_region": "main"
   }

@@ -29,6 +29,6 @@ serde_json = "1"
 sha2 = "0.10"
 rintawa-shell-contracts = { path = "crates/shell-contracts" }
 toml = "0.9"
-rintawa-artifacts = { git = "https://github.com/martrtr/rintawa.git", rev = "49c5f4d4f59b6dc92cd008d85038e9c6935e5966" }
-rintawa-sdk = { git = "https://github.com/martrtr/rintawa.git", rev = "49c5f4d4f59b6dc92cd008d85038e9c6935e5966" }
-rintawa-ui-runtime = { git = "https://github.com/martrtr/rintawa.git", rev = "49c5f4d4f59b6dc92cd008d85038e9c6935e5966" }
+rintawa-artifacts = { git = "https://github.com/martrtr/rintawa.git", rev = "c5174606103a920842d6df83d3e32d62e883ce08" }
+rintawa-sdk = { git = "https://github.com/martrtr/rintawa.git", rev = "c5174606103a920842d6df83d3e32d62e883ce08" }
+rintawa-ui-runtime = { git = "https://github.com/martrtr/rintawa.git", rev = "c5174606103a920842d6df83d3e32d62e883ce08" }

@@ -7,14 +7,15 @@ use rintawa_sdk::world::WorldId;
 use thiserror::Error;
 
 use crate::{
-    MAX_WORLD_CATALOG_ENTRIES, MAX_WORLD_SESSION_DIAGNOSTIC_BYTES, MAX_WORLD_TITLE_BYTES,
-    WORLD_MANAGER_ACTION_CREATE, WORLD_MANAGER_ACTION_OPEN, WORLD_MANAGER_ACTION_REFRESH,
-    WORLD_MANAGER_ACTION_RENAME, WORLD_MANAGER_ACTION_RENAME_DRAFT, WORLD_MANAGER_ACTION_SELECT,
-    WORLD_MANAGER_ACTION_SORT, WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_SURFACE_ID,
-    WorldCatalogEntry, WorldManagerState, WorldSessionGateway, WorldSessionGatewayError,
-    WorldSessionRecord, WorldSortColumn, WorldSortDirection,
+    MAX_WORLD_CATALOG_ENTRIES, MAX_WORLD_DESCRIPTION_BYTES, MAX_WORLD_SESSION_DIAGNOSTIC_BYTES,
+    MAX_WORLD_TITLE_BYTES, WORLD_MANAGER_ACTION_CREATE, WORLD_MANAGER_ACTION_DELETE,
+    WORLD_MANAGER_ACTION_OPEN, WORLD_MANAGER_ACTION_REFRESH, WORLD_MANAGER_ACTION_RENAME,
+    WORLD_MANAGER_ACTION_RENAME_DRAFT, WORLD_MANAGER_ACTION_SELECT, WORLD_MANAGER_ACTION_SORT,
+    WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_SURFACE_ID, WorldCatalogEntry,
+    WorldManagerState, WorldSessionGateway, WorldSessionGatewayError, WorldSessionRecord,
+    WorldSortColumn, WorldSortDirection,
     ui::{CATALOG_GRID_NODE, CREATE_NODE, REFRESH_NODE, RENAME_INPUT_NODE, RENAME_SAVE_NODE},
-    world_open_node_id, world_toggle_node_id,
+    world_delete_node_id, world_open_node_id, world_toggle_node_id,
 };
 
 /// World Manager domain/controller failure.
@@ -38,6 +39,9 @@ pub enum WorldManagerError {
     /// Human-facing World title is blank or above the package/protocol bound.
     #[error("world title must contain 1..={MAX_WORLD_TITLE_BYTES} UTF-8 bytes")]
     InvalidTitle,
+    /// Human-facing World description is above the package/protocol bound.
+    #[error("world description must contain at most {MAX_WORLD_DESCRIPTION_BYTES} UTF-8 bytes")]
+    InvalidDescription,
     /// Local presentation revision cannot advance safely.
     #[error("world-manager presentation revision overflow")]
     RevisionOverflow,
@@ -73,6 +77,9 @@ pub enum WorldManagerError {
     /// A lifecycle action was requested while an earlier transition is pending.
     #[error("world lifecycle transition is already pending")]
     LifecyclePending,
+    /// Destructive deletion was requested while the World is active or transitioning.
+    #[error("world must be stopped before it can be deleted")]
+    DeleteRequiresStopped,
 }
 
 /// Result type used by World Manager controller operations.
@@ -308,9 +315,12 @@ where
             .find(|world| world.world_id == world_id)
             .ok_or(WorldManagerError::UnknownWorldAction)?;
         let revision = next_revision(self.state.revision)?;
-        let returned =
-            self.gateway
-                .set_metadata(&world_id.to_string(), &title, current.cover.clone())?;
+        let returned = self.gateway.set_metadata(
+            &world_id.to_string(),
+            &title,
+            current.description.as_deref(),
+            current.cover.clone(),
+        )?;
         let entry = validate_record(returned)
             .map_err(|_| WorldManagerError::MetadataAcceptedButInvalidSummary)?;
         if entry.world_id != world_id {
@@ -331,6 +341,48 @@ where
             worlds,
             selected_world_id: Some(world_id),
             rename_draft: title,
+            sort_column: self.state.sort_column,
+            sort_direction: self.state.sort_direction,
+            revision,
+        };
+        Ok(())
+    }
+
+    /// Deletes the selected stopped World and moves selection to a deterministic fallback.
+    pub fn delete_selected_world(&mut self) -> WorldManagerResult<()> {
+        let world_id = self
+            .state
+            .selected_world_id
+            .ok_or(WorldManagerError::UnknownWorldAction)?;
+        let index = self
+            .state
+            .worlds
+            .iter()
+            .position(|world| world.world_id == world_id)
+            .ok_or(WorldManagerError::UnknownWorldAction)?;
+        let world = &self.state.worlds[index];
+        if world.active || world.pending_active.is_some() {
+            return Err(WorldManagerError::DeleteRequiresStopped);
+        }
+        let revision = next_revision(self.state.revision)?;
+        self.gateway.delete_world(&world_id.to_string())?;
+        let mut worlds = self.state.worlds.clone();
+        worlds.remove(index);
+        let selected_world_id = if worlds.is_empty() {
+            None
+        } else {
+            worlds
+                .get(index.min(worlds.len() - 1))
+                .map(|world| world.world_id)
+        };
+        let rename_draft = selected_world_id
+            .and_then(|selected| worlds.iter().find(|world| world.world_id == selected))
+            .map(|world| world.title.clone())
+            .unwrap_or_default();
+        self.state = WorldManagerState {
+            worlds,
+            selected_world_id,
+            rename_draft,
             sort_column: self.state.sort_column,
             sort_direction: self.state.sort_direction,
             revision,
@@ -435,6 +487,18 @@ where
                     _ => return Err(WorldManagerError::WrongActionNode),
                 };
                 self.rename_selected_world(title)?;
+                Ok(WorldManagerActionOutcome::None)
+            }
+            WORLD_MANAGER_ACTION_DELETE => {
+                require_no_payload(event)?;
+                let world = self
+                    .state
+                    .selected_world()
+                    .ok_or(WorldManagerError::UnknownWorldAction)?;
+                if world_delete_node_id(world.world_id) != event.node_id {
+                    return Err(WorldManagerError::WrongActionNode);
+                }
+                self.delete_selected_world()?;
                 Ok(WorldManagerActionOutcome::None)
             }
             WORLD_MANAGER_ACTION_OPEN => {
@@ -557,6 +621,7 @@ fn validate_record(record: WorldSessionRecord) -> WorldManagerResult<WorldCatalo
         return Err(WorldManagerError::InvalidWorldId(world_id_text));
     }
     let title = validate_title(&record.title)?.to_string();
+    let description = validate_description(record.description)?;
     if record
         .last_error
         .as_ref()
@@ -567,12 +632,27 @@ fn validate_record(record: WorldSessionRecord) -> WorldManagerResult<WorldCatalo
     Ok(WorldCatalogEntry {
         world_id,
         title,
+        description,
         cover: record.cover,
         commit_position: record.commit_position,
         active: record.active,
         pending_active: record.pending_active,
         last_error: record.last_error,
     })
+}
+
+fn validate_description(description: Option<String>) -> WorldManagerResult<Option<String>> {
+    let Some(description) = description else {
+        return Ok(None);
+    };
+    let description = description.trim().to_string();
+    if description.is_empty() {
+        return Ok(None);
+    }
+    if description.len() > MAX_WORLD_DESCRIPTION_BYTES {
+        return Err(WorldManagerError::InvalidDescription);
+    }
+    Ok(Some(description))
 }
 
 fn validate_title(title: &str) -> WorldManagerResult<&str> {

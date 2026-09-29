@@ -53,6 +53,7 @@ const STANDARD_SLOT_MAP: Record<string, string> = {
   "activity.management": "tool",
   "activity.extension": "puzzle",
   "activity.worlds": "world",
+  "world.thumbnail": "world",
   "action.download": "download",
   "action.update": "upload",
   "action.remove": "trash",

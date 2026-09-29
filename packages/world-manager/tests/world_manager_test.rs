@@ -10,12 +10,13 @@ use rintawa_sdk::{
 };
 use rintawa_ui_runtime::{OwnedUiSurfaceContribution, UiRuntime};
 use rintawa_world_manager::{
-    MAX_WORLD_CATALOG_ENTRIES, WORLD_MANAGER_ACTION_CREATE, WORLD_MANAGER_ACTION_OPEN,
-    WORLD_MANAGER_ACTION_RENAME, WORLD_MANAGER_ACTION_RENAME_DRAFT, WORLD_MANAGER_ACTION_SELECT,
-    WORLD_MANAGER_ACTION_SORT, WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_SURFACE_ID,
-    WorldCatalogAssetRef, WorldManagerActionOutcome, WorldManagerController, WorldManagerError,
-    WorldSessionGateway, WorldSessionGatewayError, WorldSessionRecord,
-    build_world_manager_snapshot, world_manager_surface_contribution, world_open_node_id,
+    MAX_WORLD_CATALOG_ENTRIES, MAX_WORLD_DESCRIPTION_BYTES, WORLD_MANAGER_ACTION_CREATE,
+    WORLD_MANAGER_ACTION_DELETE, WORLD_MANAGER_ACTION_OPEN, WORLD_MANAGER_ACTION_RENAME,
+    WORLD_MANAGER_ACTION_RENAME_DRAFT, WORLD_MANAGER_ACTION_SELECT, WORLD_MANAGER_ACTION_SORT,
+    WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_SURFACE_ID, WorldCatalogAssetRef,
+    WorldManagerActionOutcome, WorldManagerController, WorldManagerError, WorldSessionGateway,
+    WorldSessionGatewayError, WorldSessionRecord, build_world_manager_snapshot,
+    world_delete_node_id, world_manager_surface_contribution, world_open_node_id,
     world_toggle_node_id,
 };
 
@@ -27,7 +28,8 @@ struct RecordingGateway {
     create_result: Option<WorldSessionRecord>,
     create_calls: usize,
     active_writes: Vec<(String, bool)>,
-    metadata_writes: Vec<(String, String)>,
+    metadata_writes: Vec<(String, String, Option<String>)>,
+    deleted_worlds: Vec<String>,
 }
 
 impl WorldSessionGateway for RecordingGateway {
@@ -52,6 +54,7 @@ impl WorldSessionGateway for RecordingGateway {
         &mut self,
         world_id: &str,
         title: &str,
+        description: Option<&str>,
         cover: Option<WorldCatalogAssetRef>,
     ) -> Result<WorldSessionRecord, WorldSessionGatewayError> {
         let world = self
@@ -60,10 +63,25 @@ impl WorldSessionGateway for RecordingGateway {
             .find(|world| world.world_id == world_id)
             .ok_or(WorldSessionGatewayError::NotFound)?;
         world.title = title.to_string();
+        world.description = description.map(str::to_string);
         world.cover = cover;
-        self.metadata_writes
-            .push((world_id.to_string(), title.to_string()));
+        self.metadata_writes.push((
+            world_id.to_string(),
+            title.to_string(),
+            description.map(str::to_string),
+        ));
         Ok(world.clone())
+    }
+
+    fn delete_world(&mut self, world_id: &str) -> Result<(), WorldSessionGatewayError> {
+        let index = self
+            .worlds
+            .iter()
+            .position(|world| world.world_id == world_id)
+            .ok_or(WorldSessionGatewayError::NotFound)?;
+        self.worlds.remove(index);
+        self.deleted_worlds.push(world_id.to_string());
+        Ok(())
     }
 
     fn set_active(&mut self, world_id: &str, active: bool) -> Result<(), WorldSessionGatewayError> {
@@ -76,6 +94,7 @@ fn record(world_id: WorldId, active: bool) -> WorldSessionRecord {
     WorldSessionRecord {
         world_id: world_id.to_string(),
         title: String::from("World"),
+        description: None,
         cover: None,
         commit_position: 0,
         active,
@@ -157,9 +176,25 @@ fn test_should_normalize_catalog_and_mount_valid_portable_ui_snapshot() -> anyho
             .iter()
             .map(|column| column.label.as_str())
             .collect::<Vec<_>>(),
-        vec!["World", "Status", "Last issue"]
+        vec!["World"]
     );
     assert_eq!(grid.row_keys.len(), 2);
+    assert_eq!(grid.cells.len(), 2);
+    assert!(snapshot.nodes.iter().any(|node| {
+        node.traits
+            .iter()
+            .any(|trait_id| trait_id.as_str() == "media-item")
+    }));
+    assert!(snapshot.nodes.iter().any(|node| {
+        node.traits
+            .iter()
+            .any(|trait_id| trait_id.as_str() == "media-thumbnail")
+    }));
+    assert!(snapshot.nodes.iter().any(|node| {
+        node.traits
+            .iter()
+            .any(|trait_id| trait_id.as_str() == "media-description")
+    }));
     assert_eq!(grid.selected_rows.len(), 1);
     assert!(
         grid.columns
@@ -180,6 +215,20 @@ fn test_should_normalize_catalog_and_mount_valid_portable_ui_snapshot() -> anyho
     };
     assert_eq!(workspace.axis, UiSplitAxis::Horizontal);
     assert_eq!(workspace.weights, vec![100, 27]);
+    let selected_world = controller.state().selected_world().expect("selected world");
+    let delete_node = world_delete_node_id(selected_world.world_id);
+    let delete = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.id == delete_node)
+        .expect("selected world should expose delete action");
+    let UiNodeKind::Button(delete) = &delete.kind else {
+        panic!("delete action must render as a button");
+    };
+    assert_eq!(
+        delete.is_enabled,
+        !selected_world.active && selected_world.pending_active.is_none()
+    );
     let ui = UiRuntime::new();
     let instance_id = ExtensionInstanceId::new("world-manager");
     let owner = ComponentRef::new(instance_id.clone(), "ui");
@@ -412,7 +461,7 @@ fn test_should_edit_and_persist_selected_world_title() -> anyhow::Result<()> {
     );
     assert_eq!(
         controller.gateway().metadata_writes,
-        vec![(world_id.to_string(), String::from("New Name"))]
+        vec![(world_id.to_string(), String::from("New Name"), None)]
     );
     Ok(())
 }
@@ -503,6 +552,44 @@ fn test_should_select_world_for_contextual_actions_and_reject_unselected_spoof()
 }
 
 #[test]
+fn test_should_delete_only_stopped_selected_world_and_choose_fallback() -> anyhow::Result<()> {
+    let first = WorldId::new();
+    let second = WorldId::new();
+    let gateway = RecordingGateway {
+        worlds: vec![record(first, false), record(second, false)],
+        ..RecordingGateway::default()
+    };
+    let mut controller = WorldManagerController::new(gateway);
+    controller.refresh()?;
+    select_world(&mut controller, first)?;
+
+    let delete = action(
+        controller.state().revision(),
+        world_delete_node_id(first),
+        WORLD_MANAGER_ACTION_DELETE,
+        UiActionPayload::None,
+    );
+    controller.handle_action(&delete)?;
+    assert_eq!(controller.gateway().deleted_worlds, vec![first.to_string()]);
+    assert_eq!(controller.state().worlds().len(), 1);
+    assert_eq!(controller.state().selected_world_id(), Some(second));
+
+    controller.request_active(second, true)?;
+    let blocked = action(
+        controller.state().revision(),
+        world_delete_node_id(second),
+        WORLD_MANAGER_ACTION_DELETE,
+        UiActionPayload::None,
+    );
+    assert_eq!(
+        controller.handle_action(&blocked),
+        Err(WorldManagerError::DeleteRequiresStopped)
+    );
+    assert_eq!(controller.gateway().deleted_worlds, vec![first.to_string()]);
+    Ok(())
+}
+
+#[test]
 fn test_should_preserve_selection_across_refresh_and_fallback_when_removed() -> anyhow::Result<()> {
     let first = WorldId::new();
     let second = WorldId::new();
@@ -540,6 +627,23 @@ fn test_should_preserve_previous_state_when_refresh_catalog_is_invalid() -> anyh
 }
 
 #[test]
+fn test_should_reject_oversized_world_description() {
+    let world_id = WorldId::new();
+    let mut oversized = record(world_id, false);
+    oversized.description = Some("x".repeat(MAX_WORLD_DESCRIPTION_BYTES + 1));
+    let gateway = RecordingGateway {
+        worlds: vec![oversized],
+        ..RecordingGateway::default()
+    };
+    let mut controller = WorldManagerController::new(gateway);
+
+    assert_eq!(
+        controller.refresh(),
+        Err(WorldManagerError::InvalidDescription)
+    );
+}
+
+#[test]
 fn test_should_reject_noncanonical_world_id_text() {
     let world_id = WorldId::new();
     let noncanonical = world_id.to_string().to_ascii_uppercase();
@@ -547,6 +651,7 @@ fn test_should_reject_noncanonical_world_id_text() {
         worlds: vec![WorldSessionRecord {
             world_id: noncanonical.clone(),
             title: String::from("World"),
+            description: None,
             cover: None,
             commit_position: 0,
             active: false,
@@ -630,16 +735,6 @@ fn test_should_sort_world_catalog_from_data_grid_actions() -> anyhow::Result<()>
         vec!["Zulu", "Alpha"]
     );
 
-    let sort_status = action(
-        controller.state().revision(),
-        UiNodeId::new("catalog.grid"),
-        WORLD_MANAGER_ACTION_SORT,
-        UiActionPayload::Text(String::from("status")),
-    );
-    controller.handle_action(&sort_status)?;
-    assert_eq!(controller.state().worlds()[0].world_id, alpha);
-    assert_eq!(controller.state().worlds()[1].world_id, zulu);
-
     let snapshot = build_world_manager_snapshot(controller.state());
     let grid = snapshot
         .nodes
@@ -707,6 +802,7 @@ fn test_should_report_accepted_create_with_invalid_summary_distinctly() -> anyho
         create_result: Some(WorldSessionRecord {
             world_id: String::from("not-a-world-id"),
             title: String::from("World"),
+            description: None,
             cover: None,
             commit_position: 0,
             active: false,

@@ -106,6 +106,7 @@ pub fn build_character_library_snapshot(state: &CharacterLibraryState) -> UiSurf
                 placeholder: Some(String::from("Paste Tavern V2 JSON here")),
                 change_action: None,
                 submit_action: Some(UiActionId::new(CHARACTER_LIBRARY_ACTION_IMPORT)),
+                submit_label: Some(String::from("Import")),
                 is_enabled: !state.import_pending(),
             }),
         ),

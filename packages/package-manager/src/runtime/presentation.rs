@@ -427,11 +427,11 @@ impl UiBuilder {
 
 pub(super) fn build_surface(state: &ManagerState) -> RenderedSurface {
     let mut ui = UiBuilder::new();
-    let status = ui.text(state.status.clone());
 
     if let Some(pending) = state.pending_install.as_ref() {
         let title = ui.markdown(format!("## {}", message(Message::InstallationReview)));
         let pending = build_pending_install(&mut ui, pending);
+        let status = ui.text(state.status.clone());
         let content = ui.column(vec![title, pending, status]);
         return ui.finish(vec![content]);
     }
@@ -439,11 +439,18 @@ pub(super) fn build_surface(state: &ManagerState) -> RenderedSurface {
     let workspace = match state.view {
         View::Browse => build_browse(&mut ui, state),
         View::Installed => build_installed(&mut ui, state),
-        View::Repositories => build_repositories(&mut ui, state),
-        View::DirectUrl => build_direct_url(&mut ui, state),
+        View::Repositories => {
+            let repositories = build_repositories(&mut ui, state);
+            let status = ui.text(state.status.clone());
+            ui.column(vec![repositories, status])
+        }
+        View::DirectUrl => {
+            let direct_url = build_direct_url(&mut ui, state);
+            let status = ui.text(state.status.clone());
+            ui.column(vec![direct_url, status])
+        }
     };
-    let content = ui.column(vec![workspace, status]);
-    ui.finish(vec![content])
+    ui.finish(vec![workspace])
 }
 
 fn build_pending_install(ui: &mut UiBuilder, pending: &PendingInstall) -> String {
@@ -763,6 +770,7 @@ fn build_package_details(
 
 fn build_browse(ui: &mut UiBuilder, state: &ManagerState) -> String {
     let title = ui.text(message(Message::DownloadExtensions));
+    let status = ui.text(state.status.clone());
     let close = ui.button_with_appearance(
         message(Message::Close),
         "view.close",
@@ -865,7 +873,14 @@ fn build_browse(ui: &mut UiBuilder, state: &ManagerState) -> String {
         ));
     }
     let footer = ui.row(footer_items);
-    let catalog = ui.column(vec![title_row, search_row, summary, catalog_list, footer]);
+    let catalog = ui.column(vec![
+        title_row,
+        search_row,
+        status,
+        summary,
+        catalog_list,
+        footer,
+    ]);
     let catalog = ui.presentation_semantic(
         catalog,
         "management.extensions.catalog.results",
@@ -1123,6 +1138,7 @@ fn build_installed_commands(
 }
 
 fn build_installed(ui: &mut UiBuilder, state: &ManagerState) -> String {
+    let status = ui.text(state.status.clone());
     let selected = state
         .selected_package
         .as_ref()
@@ -1159,7 +1175,7 @@ fn build_installed(ui: &mut UiBuilder, state: &ManagerState) -> String {
         );
         let empty = ui.text("No baseline extensions are installed.");
         let hint = ui.text("Use Download Extensions to browse configured repositories.");
-        let body = ui.column(vec![title, icon, empty, hint, search]);
+        let body = ui.column(vec![title, search, status, icon, empty, hint]);
         let body = ui.presentation_semantic(
             body,
             "management.extensions.installed.content",
@@ -1292,7 +1308,7 @@ fn build_installed(ui: &mut UiBuilder, state: &ManagerState) -> String {
         "management.extensions.installed.selection-details",
         &["inspector", "selection-context"],
     );
-    let mut content = vec![title, search];
+    let mut content = vec![title, search, status];
     if visible_count > MAX_INSTALLED_RESULTS {
         content.push(ui.text(format!(
             "Showing first {MAX_INSTALLED_RESULTS} of {visible_count} matches. Narrow the search to find more."

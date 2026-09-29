@@ -3,12 +3,12 @@
 use rintawa_sdk::{
     contracts::{ContractKey, ContractVersion},
     ui::{
-        UI_CAPABILITY_BUTTON, UI_CAPABILITY_COLUMN, UI_CAPABILITY_DATA_GRID, UI_CAPABILITY_ROW,
-        UI_CAPABILITY_SPLIT, UI_CAPABILITY_TEXT, UI_CAPABILITY_TEXT_INPUT, UiActionId,
-        UiActivityContribution, UiButtonAppearance, UiButtonNode, UiContainerNode,
-        UiDataGridColumn, UiDataGridNode, UiDataGridSortDirection, UiNode, UiNodeId, UiNodeKind,
-        UiPlacementHint, UiSplitAxis, UiSplitNode, UiSurfaceContribution, UiSurfaceId,
-        UiSurfaceSnapshot, UiTextInputNode, UiTextNode,
+        UI_CAPABILITY_BUTTON, UI_CAPABILITY_COLUMN, UI_CAPABILITY_DATA_GRID, UI_CAPABILITY_ICON,
+        UI_CAPABILITY_ROW, UI_CAPABILITY_SPLIT, UI_CAPABILITY_TEXT, UI_CAPABILITY_TEXT_INPUT,
+        UiActionId, UiActivityContribution, UiButtonAppearance, UiButtonNode, UiContainerNode,
+        UiDataGridColumn, UiDataGridNode, UiDataGridSortDirection, UiIconNode, UiIconSlotId,
+        UiNode, UiNodeId, UiNodeKind, UiPlacementHint, UiSplitAxis, UiSplitNode,
+        UiSurfaceContribution, UiSurfaceId, UiSurfaceSnapshot, UiTextInputNode, UiTextNode,
     },
     world::WorldId,
 };
@@ -31,6 +31,8 @@ pub const WORLD_MANAGER_ACTION_SORT: &str = "rintawa.world-manager.sort";
 pub const WORLD_MANAGER_ACTION_RENAME_DRAFT: &str = "rintawa.world-manager.rename-draft";
 /// Semantic action persisting the selected World's human-facing title.
 pub const WORLD_MANAGER_ACTION_RENAME: &str = "rintawa.world-manager.rename";
+/// Semantic action permanently deleting the selected stopped World.
+pub const WORLD_MANAGER_ACTION_DELETE: &str = "rintawa.world-manager.delete";
 /// Semantic action used to bring one World into the foreground shell session.
 pub const WORLD_MANAGER_ACTION_OPEN: &str = "rintawa.world-manager.open";
 /// Semantic action shared by the selected World's Start/Stop lifecycle control.
@@ -48,11 +50,10 @@ const CATALOG_PANE_NODE: &str = "catalog.pane";
 const EMPTY_NODE: &str = "catalog.empty";
 const INSPECTOR_NODE: &str = "selection.inspector";
 const INSPECTOR_TITLE_NODE: &str = "selection.title";
-const INSPECTOR_ID_NODE: &str = "selection.id";
+const INSPECTOR_DESCRIPTION_NODE: &str = "selection.description";
 pub(crate) const RENAME_INPUT_NODE: &str = "selection.rename-input";
 pub(crate) const RENAME_SAVE_NODE: &str = "selection.rename-save";
 const INSPECTOR_STATUS_NODE: &str = "selection.status";
-const INSPECTOR_POSITION_NODE: &str = "selection.position";
 const INSPECTOR_ERROR_NODE: &str = "selection.error";
 const INSPECTOR_COMMANDS_NODE: &str = "selection.commands";
 
@@ -69,6 +70,7 @@ pub fn world_manager_surface_contribution() -> UiSurfaceContribution {
         .requiring_capability(UI_CAPABILITY_ROW)
         .requiring_capability(UI_CAPABILITY_SPLIT)
         .requiring_capability(UI_CAPABILITY_DATA_GRID)
+        .requiring_capability(UI_CAPABILITY_ICON)
         .requiring_capability(UI_CAPABILITY_TEXT)
         .requiring_capability(UI_CAPABILITY_TEXT_INPUT)
         .requiring_capability(UI_CAPABILITY_BUTTON)
@@ -84,7 +86,12 @@ pub fn world_toggle_node_id(world_id: WorldId) -> UiNodeId {
     UiNodeId::new(format!("world.{world_id}.toggle"))
 }
 
-/// Renders the current World Manager state as a Prism-style table plus contextual inspector.
+/// Returns the stable destructive-delete button node identity for one selected World.
+pub fn world_delete_node_id(world_id: WorldId) -> UiNodeId {
+    UiNodeId::new(format!("world.{world_id}.delete"))
+}
+
+/// Renders the current World Manager state as a game-style media collection plus contextual actions.
 pub fn build_world_manager_snapshot(state: &WorldManagerState) -> UiSurfaceSnapshot {
     let mut nodes = vec![
         UiNode::new(
@@ -151,21 +158,63 @@ pub fn build_world_manager_snapshot(state: &WorldManagerState) -> UiSurfaceSnaps
 }
 
 fn build_catalog_pane(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiNodeId {
-    let mut cells = Vec::with_capacity(state.worlds().len() * 3);
+    let mut cells = Vec::with_capacity(state.worlds().len());
     let mut row_keys = Vec::with_capacity(state.worlds().len());
     let mut selected_rows = Vec::new();
 
     for (index, world) in state.worlds().iter().enumerate() {
-        let name = world_node_id(world.world_id, "name");
+        let icon = world_node_id(world.world_id, "thumbnail");
+        let title = world_node_id(world.world_id, "title");
+        let description = world_node_id(world.world_id, "description");
         let status = world_node_id(world.world_id, "status");
-        let diagnostic = world_node_id(world.world_id, "diagnostic");
-        nodes.push(text_node(name.clone(), world.title.clone()));
-        nodes.push(text_node(status.clone(), world_status(world)));
-        nodes.push(text_node(
-            diagnostic.clone(),
-            world.last_error.as_deref().unwrap_or("—"),
-        ));
-        cells.extend([name, status, diagnostic]);
+        let details = world_node_id(world.world_id, "details");
+        let row = world_node_id(world.world_id, "row");
+
+        nodes.push(
+            UiNode::new(
+                icon.clone(),
+                UiNodeKind::Icon(UiIconNode {
+                    slot: UiIconSlotId::new("world.thumbnail"),
+                    label: Some(world.title.clone()),
+                    size: Some(48),
+                }),
+            )
+            .with_trait("media-thumbnail"),
+        );
+        nodes.push(text_node(title.clone(), world.title.clone()).with_trait("media-title"));
+        nodes.push(
+            text_node(
+                description.clone(),
+                world
+                    .description
+                    .as_deref()
+                    .filter(|description| !description.trim().is_empty())
+                    .unwrap_or("No description"),
+            )
+            .with_trait("media-description")
+            .with_trait("muted"),
+        );
+        nodes.push(text_node(status.clone(), world_status(world)).with_trait("media-status"));
+        nodes.push(
+            UiNode::new(
+                details.clone(),
+                UiNodeKind::Column(UiContainerNode {
+                    children: vec![title, description, status],
+                }),
+            )
+            .with_trait("media-details"),
+        );
+        nodes.push(
+            UiNode::new(
+                row.clone(),
+                UiNodeKind::Row(UiContainerNode {
+                    children: vec![icon, details],
+                }),
+            )
+            .with_trait("media-item")
+            .with_trait("world-entry"),
+        );
+        cells.push(row);
         row_keys.push(world.world_id.to_string());
         if state.selected_world_id() == Some(world.world_id) {
             selected_rows.push(index as u32);
@@ -176,11 +225,7 @@ fn build_catalog_pane(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiN
         UiNode::new(
             CATALOG_GRID_NODE,
             UiNodeKind::DataGrid(UiDataGridNode {
-                columns: vec![
-                    grid_column(state, WorldSortColumn::Title, "World", 48),
-                    grid_column(state, WorldSortColumn::Status, "Status", 18),
-                    grid_column(state, WorldSortColumn::Diagnostic, "Last issue", 34),
-                ],
+                columns: vec![grid_column(state, WorldSortColumn::Title, "World", 100)],
                 cells,
                 selected_rows,
                 row_keys,
@@ -189,6 +234,7 @@ fn build_catalog_pane(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiN
         )
         .with_semantic(semantic("management.worlds.items"))
         .with_trait("collection")
+        .with_trait("media-collection")
         .with_trait("primary-content")
         .with_trait("resizable"),
     );
@@ -221,7 +267,10 @@ fn build_inspector(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiNode
             UiNode::new(
                 INSPECTOR_NODE,
                 UiNodeKind::Column(UiContainerNode {
-                    children: vec![INSPECTOR_TITLE_NODE.into(), INSPECTOR_ID_NODE.into()],
+                    children: vec![
+                        INSPECTOR_TITLE_NODE.into(),
+                        INSPECTOR_DESCRIPTION_NODE.into(),
+                    ],
                 }),
             )
             .with_semantic(semantic("management.worlds.selection-details"))
@@ -231,8 +280,8 @@ fn build_inspector(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiNode
         nodes.push(text_node(INSPECTOR_TITLE_NODE, "World details").with_trait("section-title"));
         nodes.push(
             text_node(
-                INSPECTOR_ID_NODE,
-                "Select a World to view details and actions.",
+                INSPECTOR_DESCRIPTION_NODE,
+                "Select a World to view its details and actions.",
             )
             .with_trait("muted"),
         );
@@ -241,6 +290,7 @@ fn build_inspector(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiNode
 
     let open_node = world_open_node_id(world.world_id);
     let toggle_node = world_toggle_node_id(world.world_id);
+    let delete_node = world_delete_node_id(world.world_id);
     let is_stopping = world.pending_active == Some(false);
     let lifecycle_pending = world.pending_active.is_some();
     let lifecycle_label = match world.pending_active {
@@ -257,11 +307,10 @@ fn build_inspector(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiNode
 
     let mut details = vec![
         UiNodeId::new(INSPECTOR_TITLE_NODE),
-        UiNodeId::new(INSPECTOR_ID_NODE),
+        UiNodeId::new(INSPECTOR_DESCRIPTION_NODE),
         UiNodeId::new(RENAME_INPUT_NODE),
         UiNodeId::new(RENAME_SAVE_NODE),
         UiNodeId::new(INSPECTOR_STATUS_NODE),
-        UiNodeId::new(INSPECTOR_POSITION_NODE),
     ];
     if world.last_error.is_some() {
         details.push(UiNodeId::new(INSPECTOR_ERROR_NODE));
@@ -278,7 +327,13 @@ fn build_inspector(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiNode
         .with_trait("selection-context"),
     );
     nodes.push(text_node(INSPECTOR_TITLE_NODE, world.title.clone()).with_trait("section-title"));
-    nodes.push(text_node(INSPECTOR_ID_NODE, format!("ID  {}", world.world_id)).with_trait("muted"));
+    nodes.push(
+        text_node(
+            INSPECTOR_DESCRIPTION_NODE,
+            world.description.as_deref().unwrap_or("No description"),
+        )
+        .with_trait("muted"),
+    );
     nodes.push(
         UiNode::new(
             RENAME_INPUT_NODE,
@@ -287,6 +342,7 @@ fn build_inspector(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiNode
                 placeholder: Some(String::from("World name")),
                 change_action: Some(UiActionId::new(WORLD_MANAGER_ACTION_RENAME_DRAFT)),
                 submit_action: Some(UiActionId::new(WORLD_MANAGER_ACTION_RENAME)),
+                submit_label: None,
                 is_enabled: true,
             }),
         )
@@ -306,10 +362,6 @@ fn build_inspector(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiNode
         INSPECTOR_STATUS_NODE,
         format!("Status  {}", world_status(world)),
     ));
-    nodes.push(text_node(
-        INSPECTOR_POSITION_NODE,
-        format!("Commit  {}", world.commit_position),
-    ));
     if let Some(error) = &world.last_error {
         nodes.push(
             text_node(INSPECTOR_ERROR_NODE, format!("Last issue  {error}")).with_trait("warning"),
@@ -319,7 +371,7 @@ fn build_inspector(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiNode
         UiNode::new(
             INSPECTOR_COMMANDS_NODE,
             UiNodeKind::Column(UiContainerNode {
-                children: vec![open_node.clone(), toggle_node.clone()],
+                children: vec![open_node.clone(), toggle_node.clone(), delete_node.clone()],
             }),
         )
         .with_trait("command-set")
@@ -338,6 +390,13 @@ fn build_inspector(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiNode
         WORLD_MANAGER_ACTION_TOGGLE_ACTIVE,
         !lifecycle_pending,
         UiButtonAppearance::Default,
+    ));
+    nodes.push(button_node(
+        delete_node,
+        "Delete World",
+        WORLD_MANAGER_ACTION_DELETE,
+        !world.active && !lifecycle_pending,
+        UiButtonAppearance::Danger,
     ));
     UiNodeId::new(INSPECTOR_NODE)
 }

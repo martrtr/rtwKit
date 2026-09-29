@@ -175,6 +175,8 @@ const TOKEN_TO_CSS_VARIABLE: Record<string, string> = {
   "web.workbench.section-nav-width": "--rintawa-web-section-nav-width",
   "web.workbench.section-nav-min-width": "--rintawa-web-section-nav-min-width",
   "web.workbench.section-nav-max-width": "--rintawa-web-section-nav-max-width",
+  "web.collection.media-row-min-height": "--rintawa-web-media-row-min-height",
+  "web.collection.thumbnail-size": "--rintawa-web-media-thumbnail-size",
   "web.motion.fast": "--rintawa-web-motion-fast",
   "web.motion.normal": "--rintawa-web-motion-normal",
   "web.motion.easing": "--rintawa-web-motion-easing",

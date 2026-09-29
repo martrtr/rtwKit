@@ -34,6 +34,7 @@ pub use schemas::{
 pub use system::evaluate_chat_world_system;
 pub use ui::{
     CHAT_ACTION_CREATE_CONVERSATION, CHAT_ACTION_REFRESH, CHAT_ACTION_SELECT_BRANCH,
-    CHAT_ACTION_SELECT_CONVERSATION, CHAT_ACTION_SEND, CHAT_SURFACE_ID, build_chat_snapshot,
-    chat_surface_contribution, conversation_select_node_id, message_select_branch_node_id,
+    CHAT_ACTION_SELECT_CONVERSATION, CHAT_ACTION_SEND, CHAT_ACTION_SHOW_CONVERSATIONS,
+    CHAT_SURFACE_ID, build_chat_snapshot, chat_surface_contribution, conversation_select_node_id,
+    message_select_branch_node_id, show_conversations_node_id,
 };

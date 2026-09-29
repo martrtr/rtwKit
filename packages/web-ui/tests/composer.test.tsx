@@ -62,11 +62,13 @@ describe("surface composer", () => {
     ];
     const regions = groupSurfacesByRegion(surfaces, STANDARD_EXPERIENCE_PACK);
 
-    expect(regions.get("main")?.map((item) => item.contribution.id)).toEqual(["primary-a"]);
-    expect(regions.get("left-dock")?.map((item) => item.contribution.id)).toEqual([
+    expect(regions.get("main")?.map((item) => item.contribution.id)).toEqual([
       "sidebar-a",
+      "primary-a",
       "sidebar-b",
     ]);
+    expect(regions.has("left-dock")).toBe(false);
+    expect(regions.has("right-dock")).toBe(false);
     expect(regions.get("status")?.map((item) => item.contribution.id)).toEqual(["status-a"]);
   });
 
@@ -85,16 +87,14 @@ describe("surface composer", () => {
     );
 
     expect(markup).toContain('data-experience-pack="rintawa.web.standard"');
-    expect(markup).toContain('data-axis="horizontal"');
-    for (const region of ["main", "left-dock", "status", "dialog", "overlay"]) {
+    expect(markup).not.toContain('data-axis="horizontal"');
+    for (const region of ["main", "status", "dialog", "overlay"]) {
       expect(markup).toContain(`data-shell-region="${region}"`);
     }
+    expect(markup).not.toContain('data-shell-region="left-dock"');
+    expect(markup).not.toContain('data-shell-region="right-dock"');
     expect(markup).toContain('class="rintawa-activity-rail"');
-    expect(
-      markup.match(/class="rintawa-shell-split-resize-handle"/g),
-    ).toHaveLength(1);
-    expect(markup).toContain('aria-label="Resize Left Dock and Main"');
-    expect(markup).not.toContain('aria-label="Resize Main and Right Dock"');
+    expect(markup).not.toContain('class="rintawa-shell-split-resize-handle"');
     expect(markup).toContain('data-presentation="dialog"');
     expect(markup).toContain('data-presentation="overlay"');
   });
@@ -128,7 +128,29 @@ describe("surface composer", () => {
     expect(markup).not.toContain('class="rintawa-workbench-tabs"');
   });
 
-  test("trait routing overrides generic placement but not exact semantic", () => {
+  test("alternative tiled packs can route traits without changing standard topology", () => {
+    const tiled = mergeExperiencePack(STANDARD_EXPERIENCE_PACK, {
+      format: "rintawa.web.experience-pack@1",
+      id: "demo.tiled",
+      name: "Tiled",
+      extends: "rintawa.web.standard",
+      shell: {
+        workspace: {
+          type: "split",
+          axis: "horizontal",
+          children: [
+            { type: "region", region: "main", weight: 1 },
+            { type: "region", region: "inspector", weight: 0.3 },
+          ],
+        },
+        region_presentations: [
+          { region: "main", label: "Main", mode: "activity-tabs", accepts_activities: true },
+          { region: "inspector", label: "Inspector", mode: "activity-tabs", accepts_activities: true },
+        ],
+        activity_bar: { presentation: "vertical-start" },
+        rules: [{ match: { trait: "inspector" }, region: "inspector" }],
+      },
+    });
     const inspector = surface("primary", "inspector", null, {
       traits: ["inspector"],
     });
@@ -136,13 +158,19 @@ describe("surface composer", () => {
       traits: ["navigation"],
     });
 
-    const regions = groupSurfacesByRegion(
-      [inspector, extensions],
-      STANDARD_EXPERIENCE_PACK,
-    );
-
-    expect(regions.get("right-dock")?.[0]?.contribution.id).toBe("inspector");
+    const regions = groupSurfacesByRegion([inspector, extensions], tiled);
+    expect(regions.get("inspector")?.[0]?.contribution.id).toBe("inspector");
     expect(regions.get("main")?.[0]?.contribution.id).toBe("extensions");
+
+    const markup = renderToStaticMarkup(
+      <SurfaceComposer
+        surfaces={[inspector, extensions]}
+        experiencePack={tiled}
+        onAction={() => undefined}
+      />,
+    );
+    expect(markup).toContain('data-axis="horizontal"');
+    expect(markup).toContain('class="rintawa-shell-split-resize-handle"');
   });
 
   test("unknown semantics remain reachable through fallback activity region", () => {

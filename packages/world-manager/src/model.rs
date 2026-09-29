@@ -12,6 +12,8 @@ pub const MAX_WORLD_CATALOG_ENTRIES: usize = 512;
 pub const MAX_WORLD_SESSION_DIAGNOSTIC_BYTES: usize = 2 * 1024;
 /// Maximum UTF-8 byte length accepted for one human-facing World title.
 pub const MAX_WORLD_TITLE_BYTES: usize = 256;
+/// Maximum UTF-8 byte length accepted for an optional human-facing World description.
+pub const MAX_WORLD_DESCRIPTION_BYTES: usize = 4 * 1024;
 
 /// Transport-neutral immutable asset reference attached to World catalog metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +36,8 @@ pub struct WorldSessionRecord {
     pub world_id: String,
     /// Human-facing host-owned title.
     pub title: String,
+    /// Optional human-facing description.
+    pub description: Option<String>,
     /// Optional immutable cover reference.
     pub cover: Option<WorldCatalogAssetRef>,
     /// Last committed authoritative position.
@@ -53,6 +57,8 @@ pub struct WorldCatalogEntry {
     pub world_id: WorldId,
     /// Human-facing host-owned title.
     pub title: String,
+    /// Optional human-facing description.
+    pub description: Option<String>,
     /// Optional immutable cover reference.
     pub cover: Option<WorldCatalogAssetRef>,
     /// Last committed authoritative position.
@@ -212,8 +218,12 @@ pub trait WorldSessionGateway {
         &mut self,
         world_id: &str,
         title: &str,
+        description: Option<&str>,
         cover: Option<WorldCatalogAssetRef>,
     ) -> Result<WorldSessionRecord, WorldSessionGatewayError>;
+
+    /// Deletes one stopped persistent World.
+    fn delete_world(&mut self, world_id: &str) -> Result<(), WorldSessionGatewayError>;
 
     /// Requests active/inactive state; application is deferred to the host pump.
     fn set_active(&mut self, world_id: &str, active: bool) -> Result<(), WorldSessionGatewayError>;

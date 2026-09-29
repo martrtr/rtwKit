@@ -61,7 +61,10 @@ function dataGridSurface(selectedRows: number[]): UiPresentationSurface {
 }
 
 
-function textAreaSurface(submitAction: string | null): UiPresentationSurface {
+function textAreaSurface(
+  submitAction: string | null,
+  submitLabel?: string | null,
+): UiPresentationSurface {
   return {
     owner: {
       instance_id: "demo.text-area",
@@ -92,6 +95,7 @@ function textAreaSurface(submitAction: string | null): UiPresentationSurface {
               placeholder: "Notes",
               change_action: null,
               submit_action: submitAction,
+              submit_label: submitLabel,
               is_enabled: true,
             },
           },
@@ -133,12 +137,19 @@ describe("portable surface", () => {
         onAction={() => undefined}
       />,
     );
+    const withCustomLabel = renderToStaticMarkup(
+      <PortableSurface
+        surface={textAreaSurface("notes.submit", "Save note")}
+        onAction={() => undefined}
+      />,
+    );
     const withoutSubmit = renderToStaticMarkup(
       <PortableSurface surface={textAreaSurface(null)} onAction={() => undefined} />,
     );
 
     expect(withSubmit).toContain('class="rintawa-button rintawa-textarea-submit"');
     expect(withSubmit).toContain(">Submit</button>");
+    expect(withCustomLabel).toContain(">Save note</button>");
     expect(withoutSubmit).not.toContain("rintawa-textarea-submit");
   });
 });

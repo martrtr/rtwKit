@@ -54,6 +54,7 @@ impl WorldSessionGateway for WitWorldSessionGateway {
         &mut self,
         world_id: &str,
         title: &str,
+        description: Option<&str>,
         cover: Option<WorldCatalogAssetRef>,
     ) -> Result<WorldSessionRecord, WorldSessionGatewayError> {
         let cover = cover.map(|reference| rintawa::engine::asset_store::AssetRef {
@@ -61,9 +62,13 @@ impl WorldSessionGateway for WitWorldSessionGateway {
             size: reference.size,
             media_type: reference.media_type,
         });
-        rintawa::engine::world_sessions::set_metadata(world_id, title, cover.as_ref())
+        rintawa::engine::world_sessions::set_metadata(world_id, title, description, cover.as_ref())
             .map(world_record)
             .map_err(world_session_error)
+    }
+
+    fn delete_world(&mut self, world_id: &str) -> Result<(), WorldSessionGatewayError> {
+        rintawa::engine::world_sessions::delete(world_id).map_err(world_session_error)
     }
 
     fn set_active(&mut self, world_id: &str, active: bool) -> Result<(), WorldSessionGatewayError> {
@@ -353,6 +358,7 @@ fn world_record(summary: rintawa::engine::world_sessions::Summary) -> WorldSessi
     WorldSessionRecord {
         world_id: summary.world_id,
         title: summary.title,
+        description: summary.description,
         cover: summary.cover.map(|reference| WorldCatalogAssetRef {
             digest: reference.digest,
             size: reference.size,
