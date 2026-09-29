@@ -10,7 +10,10 @@ import {
   SurfaceComposer,
   groupSurfacesByRegion,
 } from "../src/renderer/SurfaceComposer";
-import { deriveActivities } from "../src/renderer/WorkbenchComposer";
+import {
+  deriveActivities,
+  deriveGlobalActivities,
+} from "../src/renderer/WorkbenchComposer";
 
 function surface(
   placement: UiPlacementHint,
@@ -89,11 +92,40 @@ describe("surface composer", () => {
     expect(markup).toContain('class="rintawa-activity-rail"');
     expect(
       markup.match(/class="rintawa-shell-split-resize-handle"/g),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(markup).toContain('aria-label="Resize Left Dock and Main"');
-    expect(markup).toContain('aria-label="Resize Main and Right Dock"');
+    expect(markup).not.toContain('aria-label="Resize Main and Right Dock"');
     expect(markup).toContain('data-presentation="dialog"');
     expect(markup).toContain('data-presentation="overlay"');
+  });
+
+  test("renders explicit global activities in a VS Code-style vertical activity rail", () => {
+    const worlds = surface("primary", "worlds", "management.worlds@1", {
+      instanceId: "rintawa.world-manager",
+      activity: {
+        id: "worlds",
+        label: "Worlds",
+        icon_slot: "activity.worlds",
+      },
+    });
+    const extensions = surface("primary", "extensions", "management.extensions@1", {
+      instanceId: "rintawa.package-manager",
+      activity: {
+        id: "extensions",
+        label: "Extensions",
+        icon_slot: "activity.extensions",
+      },
+    });
+
+    const markup = renderToStaticMarkup(
+      <SurfaceComposer surfaces={[worlds, extensions]} onAction={() => undefined} />,
+    );
+
+    expect(markup).toContain('data-presentation="vertical-start"');
+    expect(markup).toContain('class="rintawa-activity-label">Worlds</span>');
+    expect(markup).toContain('class="rintawa-activity-label">Extensions</span>');
+    expect(markup.match(/class="rintawa-activity-button"/g)).toHaveLength(2);
+    expect(markup).not.toContain('class="rintawa-workbench-tabs"');
   });
 
   test("trait routing overrides generic placement but not exact semantic", () => {
@@ -128,6 +160,43 @@ describe("surface composer", () => {
     expect(activities[0]?.label).toBe("Mystery");
   });
 
+  test("groups shared activity sections across extension owners", () => {
+    const sharedActivity = {
+      id: "rintawa.management",
+      label: "Manage",
+      icon_slot: "activity.management",
+    };
+    const extensions = surface("settings", "extensions", "management.extensions@1", {
+      instanceId: "rintawa.package-manager",
+      activity: sharedActivity,
+      traits: ["activity-section"],
+    });
+    const settings = surface("settings", "settings", "management.settings@1", {
+      instanceId: "demo.settings",
+      activity: sharedActivity,
+      traits: ["activity-section"],
+    });
+
+    const activities = deriveActivities(
+      [extensions, settings],
+      STANDARD_EXPERIENCE_PACK,
+    );
+    expect(activities).toHaveLength(1);
+    expect(activities[0]?.surfaces.map((item) => item.contribution.id)).toEqual([
+      "extensions",
+      "settings",
+    ]);
+
+    const markup = renderToStaticMarkup(
+      <SurfaceComposer surfaces={[extensions, settings]} onAction={() => undefined} />,
+    );
+    expect(markup.match(/class="rintawa-activity-button"/g)).toHaveLength(1);
+    expect(markup).toContain('aria-label="Manage"');
+    expect(markup).toContain('class="rintawa-activity-section-nav"');
+    expect(markup).toContain(">Extensions</button>");
+    expect(markup).toContain(">Settings</button>");
+  });
+
   test("groups multiple surfaces from one extension under one activity id", () => {
     const activity = {
       id: "world",
@@ -152,6 +221,44 @@ describe("surface composer", () => {
       "world.main",
       "world.detail",
     ]);
+  });
+
+  test("focused world entry surfaces do not create global activity rail entries", () => {
+    const worldSurface = surface("primary", "chat", null, {
+      instanceId: "world.chat",
+      activity: {
+        id: "chat",
+        label: "Chat",
+        icon_slot: "activity.chat",
+      },
+      context: {
+        kind: "focused-world",
+        world_id: "world-a",
+      },
+    });
+
+    const activities = deriveGlobalActivities(
+      [worldSurface],
+      STANDARD_EXPERIENCE_PACK,
+    );
+    expect(activities).toHaveLength(0);
+
+    const markup = renderToStaticMarkup(
+      <SurfaceComposer
+        surfaces={[worldSurface]}
+        presentation={{
+          focused_world: {
+            world_id: "world-a",
+            descriptor: { entry_surface_id: "chat", presentation_intent: null },
+          },
+          pending_world_id: null,
+          last_focus_error: null,
+        }}
+        onAction={() => undefined}
+      />,
+    );
+
+    expect(markup).not.toContain("rintawa-activity-button");
   });
 
   test("semantic rules override generic placement fallback", () => {

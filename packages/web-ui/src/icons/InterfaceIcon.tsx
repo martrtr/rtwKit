@@ -18,8 +18,10 @@ import {
   IconPuzzle,
   IconSearch,
   IconSettings,
+  IconTool,
   IconTrash,
   IconUpload,
+  IconWorld,
 } from "@tabler/icons-react";
 
 type IconComponent = ComponentType<{
@@ -39,14 +41,18 @@ const STANDARD_GLYPHS: Record<string, IconComponent> = {
   puzzle: IconPuzzle,
   search: IconSearch,
   settings: IconSettings,
+  tool: IconTool,
   trash: IconTrash,
   upload: IconUpload,
   warning: IconAlertTriangle,
+  world: IconWorld,
 };
 
 const STANDARD_SLOT_MAP: Record<string, string> = {
   "activity.extensions": "packages",
+  "activity.management": "tool",
   "activity.extension": "puzzle",
+  "activity.worlds": "world",
   "action.download": "download",
   "action.update": "upload",
   "action.remove": "trash",

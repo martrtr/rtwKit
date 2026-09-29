@@ -52,11 +52,23 @@ function humanizeSurface(surface: UiPresentationSurface): string {
     .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
-function activityKey(surface: UiPresentationSurface, activityId: string): string {
-  return `${surface.owner.instance_id}:${activityId}`;
+function activityKey(
+  surface: UiPresentationSurface,
+  activityId: string,
+): string {
+  if (surface.contribution.activity) {
+    return `activity:${activityId}`;
+  }
+  return `surface:${surface.owner.instance_id}:${activityId}`;
 }
 
-function activityDestinations(pack: WebExperiencePack): ShellRegionPresentation[] {
+function activitySurfaceKey(surface: UiPresentationSurface): string {
+  return `${surface.owner.instance_id}:${surface.contribution.id}`;
+}
+
+function activityDestinations(
+  pack: WebExperiencePack,
+): ShellRegionPresentation[] {
   return (pack.shell.region_presentations ?? []).filter(
     (presentation) => presentation.accepts_activities === true,
   );
@@ -67,7 +79,9 @@ export function deriveActivities(
   pack: WebExperiencePack,
 ): DerivedActivity[] {
   const layerRegions = new Set(pack.shell.layers.map((layer) => layer.region));
-  const destinations = new Set(activityDestinations(pack).map((item) => item.region));
+  const destinations = new Set(
+    activityDestinations(pack).map((item) => item.region),
+  );
   const activities = new Map<string, DerivedActivity>();
 
   for (const surface of surfaces) {
@@ -80,18 +94,33 @@ export function deriveActivities(
     const defaultRegion = destinations.has(routedRegion)
       ? routedRegion
       : pack.shell.fallback_region;
+    const label = declared?.label ?? humanizeSurface(surface);
+    const iconSlot = declared?.icon_slot ?? "activity.extension";
     const existing = activities.get(key);
 
-    if (existing) {
+    const isActivitySection = surface.contribution.traits.includes("activity-section");
+    const existingIsActivitySection = existing?.surfaces.every((candidate) =>
+      candidate.contribution.traits.includes("activity-section"),
+    );
+    if (
+      existing &&
+      existing.label === label &&
+      existing.iconSlot === iconSlot &&
+      existing.defaultRegion === defaultRegion &&
+      existingIsActivitySection === isActivitySection
+    ) {
       existing.surfaces.push(surface);
       continue;
     }
 
-    activities.set(key, {
-      key,
+    const effectiveKey = existing
+      ? `${key}:${surface.owner.instance_id}:${surface.contribution.id}`
+      : key;
+    activities.set(effectiveKey, {
+      key: effectiveKey,
       id: activityId,
-      label: declared?.label ?? humanizeSurface(surface),
-      iconSlot: declared?.icon_slot ?? "activity.extension",
+      label,
+      iconSlot,
       surfaces: [surface],
       defaultRegion,
     });
@@ -153,15 +182,20 @@ export function focusedWorldEntryActivity(
   if (entryWorkspaceActivity) return entryWorkspaceActivity;
 
   const routedRegion = regionForSurface(pack, entry);
-  if (pack.shell.layers.some((layer) => layer.region === routedRegion)) return null;
-  const destinations = new Set(activityDestinations(pack).map((item) => item.region));
+  if (pack.shell.layers.some((layer) => layer.region === routedRegion))
+    return null;
+  const destinations = new Set(
+    activityDestinations(pack).map((item) => item.region),
+  );
   return {
     key: `world-entry:${focused.world_id}:${entry.owner.instance_id}:${entry.contribution.id}`,
     id: `world-entry:${focused.world_id}`,
     label: humanizeSurface(entry),
     iconSlot: null,
     surfaces: [entry],
-    defaultRegion: destinations.has(routedRegion) ? routedRegion : pack.shell.fallback_region,
+    defaultRegion: destinations.has(routedRegion)
+      ? routedRegion
+      : pack.shell.fallback_region,
   };
 }
 
@@ -170,13 +204,16 @@ function layerSurfaces(
   pack: WebExperiencePack,
   region: string,
 ): UiPresentationSurface[] {
-  return surfaces.filter((surface) => regionForSurface(pack, surface) === region);
+  return surfaces.filter(
+    (surface) => regionForSurface(pack, surface) === region,
+  );
 }
 
 interface ActivityRegionProps {
   region: string;
   presentation: ShellRegionPresentation | undefined;
   activities: readonly DerivedActivity[];
+  tabActivities: readonly DerivedActivity[];
   activeKey: string | undefined;
   collapsed: boolean;
   onFocus: (activity: DerivedActivity) => void;
@@ -189,6 +226,7 @@ function ActivityRegion({
   region,
   presentation,
   activities,
+  tabActivities,
   activeKey,
   collapsed,
   onFocus,
@@ -196,12 +234,29 @@ function ActivityRegion({
   onOpenMenu,
   onAction,
 }: ActivityRegionProps) {
+  const [selectedSurfaceByActivity, setSelectedSurfaceByActivity] = useState<
+    Record<string, string>
+  >({});
+
   if (presentation?.collapsible && (collapsed || activities.length === 0)) {
     return null;
   }
 
   const active =
     activities.find((activity) => activity.key === activeKey) ?? activities[0];
+  const usesSectionNavigation = Boolean(
+    active?.surfaces.some((surface) =>
+      surface.contribution.traits.includes("activity-section"),
+    ),
+  );
+  const requestedSurface = active
+    ? selectedSurfaceByActivity[active.key]
+    : undefined;
+  const selectedSurface = active
+    ? (active.surfaces.find(
+        (surface) => activitySurfaceKey(surface) === requestedSurface,
+      ) ?? active.surfaces[0])
+    : undefined;
 
   return (
     <section
@@ -209,10 +264,14 @@ function ActivityRegion({
       data-shell-region={region}
       data-region-mode={presentation?.mode ?? "plain"}
     >
-      {presentation?.mode === "activity-tabs" ? (
-        <div className="rintawa-workbench-tabs" role="tablist" aria-label={presentation.label}>
+      {presentation?.mode === "activity-tabs" && tabActivities.length > 0 ? (
+        <div
+          className="rintawa-workbench-tabs"
+          role="tablist"
+          aria-label={presentation.label}
+        >
           <div className="rintawa-workbench-tab-strip">
-            {activities.map((activity) => (
+            {tabActivities.map((activity) => (
               <button
                 key={activity.key}
                 type="button"
@@ -247,13 +306,55 @@ function ActivityRegion({
 
       <div className="rintawa-workbench-region-content">
         {active ? (
-          active.surfaces.map((surface) => (
-            <PortableSurface
-              key={`${surface.owner.instance_id}:${surface.snapshot.surface_id}`}
-              surface={surface}
-              onAction={onAction}
-            />
-          ))
+          usesSectionNavigation ? (
+            <div className="rintawa-activity-section-layout">
+              <nav
+                className="rintawa-activity-section-nav"
+                aria-label={`${active.label} sections`}
+              >
+                {active.surfaces.map((surface) => {
+                  const surfaceKey = activitySurfaceKey(surface);
+                  const isSelected =
+                    selectedSurface &&
+                    activitySurfaceKey(selectedSurface) === surfaceKey;
+                  return (
+                    <button
+                      key={surfaceKey}
+                      type="button"
+                      className="rintawa-activity-section-button"
+                      data-active={isSelected}
+                      aria-current={isSelected ? "page" : undefined}
+                      onClick={() =>
+                        setSelectedSurfaceByActivity((current) => ({
+                          ...current,
+                          [active.key]: surfaceKey,
+                        }))
+                      }
+                    >
+                      {humanizeSurface(surface)}
+                    </button>
+                  );
+                })}
+              </nav>
+              <div className="rintawa-activity-section-content">
+                {selectedSurface ? (
+                  <PortableSurface
+                    key={`${selectedSurface.owner.instance_id}:${selectedSurface.snapshot.surface_id}`}
+                    surface={selectedSurface}
+                    onAction={onAction}
+                  />
+                ) : null}
+              </div>
+            </div>
+          ) : (
+            active.surfaces.map((surface) => (
+              <PortableSurface
+                key={`${surface.owner.instance_id}:${surface.snapshot.surface_id}`}
+                surface={surface}
+                onAction={onAction}
+              />
+            ))
+          )
         ) : (
           <div className="rintawa-workbench-empty-region">
             {presentation?.label ?? region}
@@ -276,16 +377,32 @@ function renderWorkbenchLayout(
   onResizeSplit: (splitId: string, weights: number[]) => void,
   onOpenMenu: (activity: DerivedActivity, anchor: HTMLElement) => void,
   onAction: (event: UiActionEvent) => void,
+  showGlobalActivityTabs: boolean,
   key: string,
 ): ReactNode {
   if (node.type === "region") {
     const presentation = shellRegionPresentation(pack, node);
+    const regionActivities = assigned.get(node.region) ?? [];
+    if (
+      presentation?.collapsible &&
+      (collapsed[node.region] || regionActivities.length === 0)
+    ) {
+      return null;
+    }
+    const tabActivities = showGlobalActivityTabs
+      ? regionActivities
+      : regionActivities.filter((activity) =>
+          activity.surfaces.some(
+            (surface) => surface.context?.kind === "focused-world",
+          ),
+        );
     return (
       <ActivityRegion
         key={key}
         region={node.region}
         presentation={presentation}
-        activities={assigned.get(node.region) ?? []}
+        activities={regionActivities}
+        tabActivities={tabActivities}
         activeKey={activeByRegion[node.region]}
         collapsed={collapsed[node.region] ?? false}
         onFocus={onFocus}
@@ -298,7 +415,7 @@ function renderWorkbenchLayout(
 
   const splitId = shellLayoutIdentity(node);
   const defaultWeights = node.children.map((child) =>
-    child.type === "region" ? child.weight ?? 1 : 1,
+    child.type === "region" ? (child.weight ?? 1) : 1,
   );
   const weights = effectiveWeights(defaultWeights, splitWeights[splitId]);
   const visibleChildren = node.children
@@ -317,6 +434,7 @@ function renderWorkbenchLayout(
         onResizeSplit,
         onOpenMenu,
         onAction,
+        showGlobalActivityTabs,
         `${key}.${sourceIndex}`,
       ),
     }))
@@ -398,12 +516,10 @@ function renderWorkbenchLayout(
     const pairPixels = geometry.pairPixels;
 
     const move = (pointerEvent: PointerEvent) => {
-      const coordinate = horizontal ? pointerEvent.clientX : pointerEvent.clientY;
-      resizeVisiblePair(
-        visibleIndex,
-        coordinate - startCoordinate,
-        pairPixels,
-      );
+      const coordinate = horizontal
+        ? pointerEvent.clientX
+        : pointerEvent.clientY;
+      resizeVisiblePair(visibleIndex, coordinate - startCoordinate, pairPixels);
     };
     const stop = () => {
       window.removeEventListener("pointermove", move);
@@ -440,8 +556,10 @@ function renderWorkbenchLayout(
             aria-label={`Resize ${shellLayoutLabel(pack, entry.child)} and ${shellLayoutLabel(pack, next.child)}`}
             onPointerDown={(event) => beginResize(event, visibleIndex)}
             onKeyDown={(event) => {
-              const decrease = node.axis === "horizontal" ? "ArrowLeft" : "ArrowUp";
-              const increase = node.axis === "horizontal" ? "ArrowRight" : "ArrowDown";
+              const decrease =
+                node.axis === "horizontal" ? "ArrowLeft" : "ArrowUp";
+              const increase =
+                node.axis === "horizontal" ? "ArrowRight" : "ArrowDown";
               if (event.key === decrease) {
                 event.preventDefault();
                 resizeByKeyboard(event, visibleIndex, -40);
@@ -471,10 +589,11 @@ export function WorkbenchComposer({
   experiencePack,
 }: WorkbenchComposerProps) {
   const layerLocalActivities = useMemo(
-    () => deriveActivities(
-      surfaces.filter((surface) => surface.context?.kind !== "focused-world"),
-      experiencePack,
-    ),
+    () =>
+      deriveActivities(
+        surfaces.filter((surface) => surface.context?.kind !== "focused-world"),
+        experiencePack,
+      ),
     [surfaces, experiencePack],
   );
   const globalActivities = useMemo(
@@ -496,7 +615,12 @@ export function WorkbenchComposer({
     [surfaces, focusedWorldActivities, presentation, experiencePack],
   );
   const activities = useMemo(() => {
-    if (!entryActivity || focusedWorldActivities.some((activity) => activity.key === entryActivity.key)) {
+    if (
+      !entryActivity ||
+      focusedWorldActivities.some(
+        (activity) => activity.key === entryActivity.key,
+      )
+    ) {
       return [...layerLocalActivities, ...focusedWorldActivities];
     }
     return [...layerLocalActivities, ...focusedWorldActivities, entryActivity];
@@ -545,7 +669,10 @@ export function WorkbenchComposer({
           : entryActivity.defaultRegion;
       return {
         ...current,
-        activeByRegion: { ...current.activeByRegion, [region]: entryActivity.key },
+        activeByRegion: {
+          ...current.activeByRegion,
+          [region]: entryActivity.key,
+        },
         collapsed: { ...current.collapsed, [region]: false },
       };
     });
@@ -577,7 +704,9 @@ export function WorkbenchComposer({
   const effectiveActiveByRegion = useMemo(() => {
     const active = { ...preferences.activeByRegion };
     for (const [region, regionActivities] of assigned) {
-      if (!regionActivities.some((activity) => activity.key === active[region])) {
+      if (
+        !regionActivities.some((activity) => activity.key === active[region])
+      ) {
         const first = regionActivities[0];
         if (first) active[region] = first.key;
       }
@@ -592,7 +721,9 @@ export function WorkbenchComposer({
   const focusActivity = (activity: DerivedActivity) => {
     const override = preferences.placements[activity.key];
     const region =
-      override && destinationIds.has(override) ? override : activity.defaultRegion;
+      override && destinationIds.has(override)
+        ? override
+        : activity.defaultRegion;
     updatePreferences((current) => ({
       ...current,
       activeByRegion: { ...current.activeByRegion, [region]: activity.key },
@@ -622,7 +753,8 @@ export function WorkbenchComposer({
   };
 
   const resizeSplit = (splitId: string, weights: number[]) => {
-    if (!weights.every((weight) => Number.isFinite(weight) && weight > 0)) return;
+    if (!weights.every((weight) => Number.isFinite(weight) && weight > 0))
+      return;
     updatePreferences((current) => ({
       ...current,
       splitWeights: {
@@ -657,6 +789,7 @@ export function WorkbenchComposer({
     resizeSplit,
     openMenu,
     onAction,
+    experiencePack.shell.activity_bar?.presentation === "hidden",
     "workspace",
   );
 
@@ -698,6 +831,7 @@ export function WorkbenchComposer({
                 }}
               >
                 <InterfaceIcon slot={activity.iconSlot} size={22} />
+                <span className="rintawa-activity-label">{activity.label}</span>
               </button>
             );
           })}

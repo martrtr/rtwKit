@@ -371,13 +371,13 @@ impl exports::rintawa::engine::guest::Guest for PackageManager {
             "rintawa.ui.data-grid@1".to_string(),
         ];
         let activity = rintawa::engine::portable_ui::Activity {
-            id: "extensions".to_string(),
-            label: "Extensions".to_string(),
-            icon_slot: Some("activity.extensions".to_string()),
+            id: "rintawa.management".to_string(),
+            label: "Manage".to_string(),
+            icon_slot: Some("activity.management".to_string()),
         };
         let traits = vec![
             "workspace-tool".to_string(),
-            "settings".to_string(),
+            "activity-section".to_string(),
             "navigable".to_string(),
             "inspectable".to_string(),
         ];

@@ -24,8 +24,12 @@
       "web.color.control-border": "#3f3f46",
       "web.radius.surface": "0.75rem",
       "web.workbench.activity-rail-width": "3rem",
+      "web.workbench.horizontal-activity-bar-height": "3.7rem",
       "web.workbench.dock-min-width": "13rem",
       "web.workbench.tab-height": "2.35rem",
+      "web.workbench.section-nav-width": "12rem",
+      "web.workbench.section-nav-min-width": "9rem",
+      "web.workbench.section-nav-max-width": "18rem",
       "web.motion.fast": "120ms",
       "web.motion.normal": "180ms",
       "web.motion.easing": "cubic-bezier(0.2, 0, 0, 1)",
@@ -33,6 +37,7 @@
     },
     "icons": {
       "activity.extensions": "packages",
+      "activity.management": "tool",
       "activity.extension": "puzzle",
       "action.download": "download",
       "action.update": "upload",
@@ -44,7 +49,8 @@
       "status.success": "check",
       "repository.generic": "database",
       "fallback.package": "package",
-      "fallback.generic": "box"
+      "fallback.generic": "box",
+      "activity.worlds": "world"
     }
   },
   "shell": {

@@ -13,6 +13,9 @@ describe("web experience packs", () => {
     expect(STANDARD_EXPERIENCE_PACK.format).toBe("rintawa.web.experience-pack@1");
     expect(STANDARD_EXPERIENCE_PACK.id).toBe("rintawa.web.standard");
     expect(STANDARD_EXPERIENCE_PACK.shell.fallback_region).toBe("main");
+    expect(STANDARD_EXPERIENCE_PACK.shell.activity_bar?.presentation).toBe("vertical-start");
+    expect(STANDARD_EXPERIENCE_PACK.theme.icons?.["activity.worlds"]).toBe("world");
+    expect(STANDARD_EXPERIENCE_PACK.theme.icons?.["activity.management"]).toBe("tool");
   });
 
   test("can override theme tokens without changing shell topology", () => {
@@ -29,6 +32,9 @@ describe("web experience packs", () => {
     expect(custom.theme.tokens["ui.color.accent"]).toBe("#c084fc");
     expect(custom.shell.workspace).toEqual(STANDARD_EXPERIENCE_PACK.shell.workspace);
     expect(themeCssVariables(custom)["--rintawa-ui-color-accent"]).toBe("#c084fc");
+    expect(
+      themeCssVariables(STANDARD_EXPERIENCE_PACK)["--rintawa-web-section-nav-width"],
+    ).toBe("12rem");
   });
 
   test("can prepend a semantic layout override without copying default rules", () => {
