@@ -1,11 +1,12 @@
 //! WIT adapter for Character-owned authoritative World materialization.
 
 use rintawa_character_library::{
-    CHARACTER_TEMPLATE_CONTENT_V1, CharacterContentDocument, CharacterContentRecord,
-    CharacterInstantiateCommand, CharacterInstantiateCommandV2, CharacterLibraryIntent,
-    build_character_instantiation_transaction, build_character_instantiation_transaction_v2,
-    character_instantiate_command_schema_key, character_instantiate_command_schema_key_v2,
-    character_world_schemas, decode_character_content_document,
+    CHARACTER_TEMPLATE_CONTENT_V1, CharacterCastSelection, CharacterContentDocument,
+    CharacterContentRecord, CharacterInstantiateCommand, CharacterInstantiateCommandV2,
+    CharacterLibraryIntent, build_character_instantiation_transaction,
+    build_character_instantiation_transaction_v2, character_instantiate_command_schema_key,
+    character_instantiate_command_schema_key_v2, character_world_schemas,
+    decode_character_content_document,
 };
 use rintawa_sdk::{
     world::{SchemaKey, SchemaKind},
@@ -63,10 +64,7 @@ pub(crate) fn execute_intent(intent: CharacterLibraryIntent) -> Result<(), Strin
         CharacterLibraryIntent::ImportTavernJson { .. } => Err(String::from(
             "Character import intent cannot enter World materialization",
         )),
-        CharacterLibraryIntent::InstantiateSelected {
-            template_id,
-            template_revision,
-        } => create_world_with_character(template_id, template_revision),
+        CharacterLibraryIntent::InstantiateCast { templates } => create_world_with_cast(templates),
     }
 }
 
@@ -206,52 +204,54 @@ fn rejected_command() -> Vec<u8> {
     })
 }
 
-fn create_world_with_character(
-    template_id: String,
-    template_revision: String,
-) -> Result<(), String> {
+fn create_world_with_cast(selections: Vec<CharacterCastSelection>) -> Result<(), String> {
+    if selections.is_empty() {
+        return Err(String::from("Character cast cannot be empty"));
+    }
     require_world_default()?;
-    let provenance = CharacterInstantiateCommand {
-        template_id: template_id.clone(),
-        template_revision: template_revision.clone(),
-    };
-    let template = load_exact_template(&provenance).map_err(|failure| match failure {
-        ServiceFailure::Rejected(reason) | ServiceFailure::Failed(reason) => {
-            format!("Character exact-template preflight failed: {reason}")
-        }
-    })?;
-    let command = CharacterInstantiateCommandV2 {
-        template_id,
-        template_revision,
-        template,
-    };
-    command
-        .validate()
-        .map_err(|error| format!("Character instantiate@2 preflight failed: {error}"))?;
+    let mut commands = Vec::with_capacity(selections.len());
+    for selection in selections {
+        let provenance = CharacterInstantiateCommand {
+            template_id: selection.template_id.clone(),
+            template_revision: selection.template_revision.clone(),
+        };
+        let template = load_exact_template(&provenance).map_err(|failure| match failure {
+            ServiceFailure::Rejected(reason) | ServiceFailure::Failed(reason) => {
+                format!("Character exact-template preflight failed: {reason}")
+            }
+        })?;
+        let command = CharacterInstantiateCommandV2 {
+            template_id: selection.template_id,
+            template_revision: selection.template_revision,
+            template,
+        };
+        command
+            .validate()
+            .map_err(|error| format!("Character instantiate@2 preflight failed: {error}"))?;
+        commands.push(command);
+    }
     let schema = character_instantiate_command_schema_key_v2()
         .map_err(|error| format!("Character command schema construction failed: {error}"))?;
-    let payload_json = serde_json::to_vec(&command)
-        .map_err(|error| format!("Character instantiate command serialization failed: {error}"))?;
-
     let world = world_sessions::create()
         .map_err(|error| format!("Character World creation failed: {error:?}"))?;
     world_sessions::set_active(&world.world_id, true)
         .map_err(|error| format!("Character World activation request failed: {error:?}"))?;
-    world_commands::submit(&world_commands::Request {
-        world_id: world.world_id.clone(),
-        schema: schema.to_string(),
-        actor: world_commands::Actor::Principal,
-        expected_position: Some(0),
-        payload_json,
-    })
-    .map_err(|error| {
-        // The world already exists at this point. Reversing the pending activation
-        // is best-effort cleanup before the host pump can start it. Immediate delete
-        // is intentionally rejected while lifecycle state is pending; reclaiming the
-        // stopped orphan requires a later lifecycle-aware cleanup pass.
-        let _ = world_sessions::set_active(&world.world_id, false);
-        format!("Character instantiation command submission failed: {error:?}")
-    })?;
+    for (index, command) in commands.into_iter().enumerate() {
+        let payload_json = serde_json::to_vec(&command).map_err(|error| {
+            format!("Character instantiate command serialization failed: {error}")
+        })?;
+        world_commands::submit(&world_commands::Request {
+            world_id: world.world_id.clone(),
+            schema: schema.to_string(),
+            actor: world_commands::Actor::Principal,
+            expected_position: (index == 0).then_some(0),
+            payload_json,
+        })
+        .map_err(|error| {
+            let _ = world_sessions::set_active(&world.world_id, false);
+            format!("Character cast instantiation submission failed: {error:?}")
+        })?;
+    }
     Ok(())
 }
 

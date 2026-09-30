@@ -11,4 +11,4 @@ entry = "web-layer.toml"
 required = true
 
 [components.permissions]
-runtime = ["background-task", "loopback-listen"]
+runtime = ["asset-import", "background-task", "loopback-listen"]

@@ -105,6 +105,25 @@ function textAreaSurface(
   };
 }
 
+
+function markdownSurface(source: string): UiPresentationSurface {
+  return {
+    owner: { instance_id: "demo.markdown", component_id: "runtime" },
+    context: null,
+    contribution: {
+      id: "markdown", placement: "primary", semantic: null, activity: null,
+      traits: [], required_capabilities: ["rintawa.ui.markdown@1"],
+    },
+    snapshot: {
+      surface_id: "markdown", revision: "1", root: "markdown",
+      nodes: [{
+        id: "markdown", semantic: null, traits: ["chat-message-content"],
+        kind: { type: "markdown", data: { source } },
+      }],
+    },
+  };
+}
+
 describe("portable surface", () => {
   test("marks feature-selected data-grid rows without owning selection state", () => {
     const markup = renderToStaticMarkup(
@@ -128,6 +147,23 @@ describe("portable surface", () => {
     expect(markup).toContain('data-ui-traits="collection primary-content"');
     expect(markup).toContain("First");
     expect(markup).toContain("Second");
+  });
+
+  test("renders safe GitHub-flavored Markdown used by Chat messages", () => {
+    const markup = renderToStaticMarkup(
+      <PortableSurface
+        surface={markdownSurface(
+          "~~gone~~\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n- [x] done\n\n![remote](https://example.com/x.png)",
+        )}
+        onAction={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("<del>gone</del>");
+    expect(markup).toContain("<table>");
+    expect(markup).toContain('type="checkbox"');
+    expect(markup).toContain("[Image: remote]");
+    expect(markup).not.toContain("https://example.com/x.png");
   });
 
   test("renders a visible renderer-owned submit affordance for multiline inputs", () => {

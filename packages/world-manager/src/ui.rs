@@ -3,12 +3,13 @@
 use rintawa_sdk::{
     contracts::{ContractKey, ContractVersion},
     ui::{
-        UI_CAPABILITY_BUTTON, UI_CAPABILITY_COLUMN, UI_CAPABILITY_DATA_GRID, UI_CAPABILITY_ICON,
-        UI_CAPABILITY_ROW, UI_CAPABILITY_SPLIT, UI_CAPABILITY_TEXT, UI_CAPABILITY_TEXT_INPUT,
-        UiActionId, UiActivityContribution, UiButtonAppearance, UiButtonNode, UiContainerNode,
-        UiDataGridColumn, UiDataGridNode, UiDataGridSortDirection, UiIconNode, UiIconSlotId,
-        UiNode, UiNodeId, UiNodeKind, UiPlacementHint, UiSplitAxis, UiSplitNode,
-        UiSurfaceContribution, UiSurfaceId, UiSurfaceSnapshot, UiTextInputNode, UiTextNode,
+        UI_CAPABILITY_ASSET_IMAGE, UI_CAPABILITY_BUTTON, UI_CAPABILITY_COLUMN,
+        UI_CAPABILITY_DATA_GRID, UI_CAPABILITY_ICON, UI_CAPABILITY_ROW, UI_CAPABILITY_SPLIT,
+        UI_CAPABILITY_TEXT, UI_CAPABILITY_TEXT_INPUT, UiActionId, UiActivityContribution,
+        UiAssetImageNode, UiButtonAppearance, UiButtonNode, UiContainerNode, UiDataGridColumn,
+        UiDataGridNode, UiDataGridSortDirection, UiIconNode, UiIconSlotId, UiNode, UiNodeId,
+        UiNodeKind, UiPlacementHint, UiSplitAxis, UiSplitNode, UiSurfaceContribution, UiSurfaceId,
+        UiSurfaceSnapshot, UiTextInputNode, UiTextNode,
     },
     world::WorldId,
 };
@@ -71,6 +72,7 @@ pub fn world_manager_surface_contribution() -> UiSurfaceContribution {
         .requiring_capability(UI_CAPABILITY_SPLIT)
         .requiring_capability(UI_CAPABILITY_DATA_GRID)
         .requiring_capability(UI_CAPABILITY_ICON)
+        .requiring_capability(UI_CAPABILITY_ASSET_IMAGE)
         .requiring_capability(UI_CAPABILITY_TEXT)
         .requiring_capability(UI_CAPABILITY_TEXT_INPUT)
         .requiring_capability(UI_CAPABILITY_BUTTON)
@@ -170,16 +172,29 @@ fn build_catalog_pane(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiN
         let details = world_node_id(world.world_id, "details");
         let row = world_node_id(world.world_id, "row");
 
-        nodes.push(
-            UiNode::new(
-                icon.clone(),
+        let thumbnail_kind = world.cover.as_ref().map_or_else(
+            || {
                 UiNodeKind::Icon(UiIconNode {
                     slot: UiIconSlotId::new("world.thumbnail"),
                     label: Some(world.title.clone()),
-                    size: Some(48),
-                }),
-            )
-            .with_trait("media-thumbnail"),
+                    size: Some(64),
+                })
+            },
+            |cover| {
+                UiNodeKind::AssetImage(UiAssetImageNode {
+                    digest: cover.digest.clone(),
+                    size: cover.size,
+                    media_type: cover.media_type.clone(),
+                    alt: world.title.clone(),
+                    width: Some(64),
+                    height: Some(64),
+                })
+            },
+        );
+        nodes.push(
+            UiNode::new(icon.clone(), thumbnail_kind)
+                .with_trait("media-thumbnail")
+                .with_trait("media-thumbnail-square"),
         );
         nodes.push(text_node(title.clone(), world.title.clone()).with_trait("media-title"));
         nodes.push(

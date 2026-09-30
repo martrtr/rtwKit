@@ -2,14 +2,24 @@ import {
   createContext,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkBreaks from "remark-breaks";
+import remarkGfm from "remark-gfm";
 
 import type { UiActionEvent, UiPresentationSurface } from "../bridge";
-import type { UiNode, UiTextInputNode } from "../bridge/types";
+import type {
+  UiActionAssetRef,
+  UiAssetImageNode,
+  UiAssetPickerNode,
+  UiNode,
+  UiTextInputNode,
+} from "../bridge/types";
 import { InterfaceIcon } from "../icons/InterfaceIcon";
 import {
   EMPTY_PORTABLE_LAYOUT_OVERRIDES,
@@ -21,6 +31,38 @@ import {
   writePortableLayoutOverrides,
 } from "./portableLayout";
 import type { PortableLayoutOverrides } from "./portableLayout";
+import { shouldSubmitMultilineGesture } from "./textControlSemantics";
+
+function PortableListContainer({
+  node,
+  content,
+}: {
+  node: UiNode;
+  content: ReactNode;
+}) {
+  const container = useRef<HTMLDivElement>(null);
+  const pinnedToEnd = useRef(true);
+  const stickToEnd = node.traits?.includes("stick-to-end") ?? false;
+  useLayoutEffect(() => {
+    const element = container.current;
+    if (stickToEnd && pinnedToEnd.current && element)
+      element.scrollTop = element.scrollHeight;
+  }, [content, stickToEnd]);
+  return (
+    <div
+      ref={container}
+      {...nodePresentationAttributes(node)}
+      className="rintawa-list"
+      onScroll={(event) => {
+        const element = event.currentTarget;
+        pinnedToEnd.current =
+          element.scrollHeight - element.clientHeight - element.scrollTop <= 48;
+      }}
+    >
+      {content}
+    </div>
+  );
+}
 
 interface PortableSurfaceProps {
   surface: UiPresentationSurface;
@@ -45,7 +87,6 @@ const PortableLayoutContext = createContext<PortableLayoutContextValue>({
   setGridWeights: () => {},
 });
 
-
 interface NodePresentationAttributes {
   "data-ui-node-id": string;
   "data-ui-semantic"?: string;
@@ -67,7 +108,7 @@ function actionEvent(
   surface: UiPresentationSurface,
   nodeId: string,
   actionId: string,
-  value?: string | boolean,
+  value?: string | boolean | UiActionAssetRef,
 ): UiActionEvent {
   return {
     owner_instance_id: surface.owner.instance_id,
@@ -80,7 +121,9 @@ function actionEvent(
         ? { type: "none" }
         : typeof value === "boolean"
           ? { type: "boolean", value }
-          : { type: "text", value },
+          : typeof value === "string"
+            ? { type: "text", value }
+            : { type: "asset", value },
   };
 }
 
@@ -90,6 +133,9 @@ function TextControl({
   surface,
   onAction,
   isMultiline,
+  submitOnEnter = false,
+  allowEmptySubmit = false,
+  clearOnSubmit = false,
   presentationAttributes,
 }: {
   nodeId: string;
@@ -97,11 +143,21 @@ function TextControl({
   surface: UiPresentationSurface;
   onAction: (event: UiActionEvent) => void;
   isMultiline: boolean;
+  submitOnEnter?: boolean;
+  allowEmptySubmit?: boolean;
+  clearOnSubmit?: boolean;
   presentationAttributes: NodePresentationAttributes;
 }) {
   const [value, setValue] = useState(data.value);
+  const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => setValue(data.value), [data.value]);
+  useLayoutEffect(() => {
+    if (!isMultiline || !textAreaRef.current) return;
+    const element = textAreaRef.current;
+    element.style.height = "0px";
+    element.style.height = `${element.scrollHeight}px`;
+  }, [isMultiline, value]);
 
   const onChange = (nextValue: string) => {
     setValue(nextValue);
@@ -110,26 +166,43 @@ function TextControl({
     }
   };
 
+  const canSubmit =
+    data.is_enabled && (allowEmptySubmit || value.trim().length > 0);
   const submit = () => {
-    if (data.submit_action) {
-      onAction(actionEvent(surface, nodeId, data.submit_action, value));
-    }
+    if (!data.submit_action || !canSubmit) return;
+    onAction(actionEvent(surface, nodeId, data.submit_action, value));
+    if (clearOnSubmit) setValue("");
   };
 
   if (isMultiline) {
     return (
-      <>
+      <div
+        className="rintawa-textarea-control"
+        data-ui-control-traits={presentationAttributes["data-ui-traits"]}
+      >
         <textarea
           {...presentationAttributes}
+          ref={textAreaRef}
+          rows={1}
           className="rintawa-input rintawa-textarea"
           value={value}
           placeholder={data.placeholder ?? undefined}
           disabled={!data.is_enabled}
           onChange={(event) => onChange(event.currentTarget.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-              submit();
-            }
+            const submitRequested = shouldSubmitMultilineGesture(
+              {
+                key: event.key,
+                isComposing: event.nativeEvent.isComposing,
+                shiftKey: event.shiftKey,
+                ctrlKey: event.ctrlKey,
+                metaKey: event.metaKey,
+              },
+              submitOnEnter,
+            );
+            if (!submitRequested || !canSubmit) return;
+            event.preventDefault();
+            submit();
           }}
         />
         {data.submit_action ? (
@@ -137,13 +210,13 @@ function TextControl({
             type="button"
             className="rintawa-button rintawa-textarea-submit"
             data-appearance="default"
-            disabled={!data.is_enabled}
+            disabled={!canSubmit}
             onClick={submit}
           >
             {data.submit_label ?? "Submit"}
           </button>
         ) : null}
-      </>
+      </div>
     );
   }
 
@@ -164,7 +237,148 @@ function TextControl({
   );
 }
 
-function NodeRenderer({ surface, onAction, nodeId, nodes, ancestors }: NodeRendererProps) {
+function AssetImage({
+  data,
+  presentationAttributes,
+}: {
+  data: UiAssetImageNode;
+  presentationAttributes: NodePresentationAttributes;
+}) {
+  const [failed, setFailed] = useState(false);
+  const digest = data.digest.slice("sha256:".length);
+  if (failed) {
+    return (
+      <span
+        {...presentationAttributes}
+        className="rintawa-image rintawa-asset-image-fallback"
+        role="img"
+        aria-label={data.alt}
+        style={{
+          width: data.width ?? undefined,
+          height: data.height ?? undefined,
+        }}
+      >
+        <InterfaceIcon
+          slot="fallback.generic"
+          size={Math.min(data.width ?? 32, 64)}
+        />
+      </span>
+    );
+  }
+  return (
+    <img
+      {...presentationAttributes}
+      className="rintawa-image rintawa-asset-image"
+      src={`/__rintawa/asset/${digest}`}
+      alt={data.alt}
+      width={data.width ?? undefined}
+      height={data.height ?? undefined}
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function AssetPicker({
+  nodeId,
+  data,
+  surface,
+  onAction,
+  presentationAttributes,
+}: {
+  nodeId: string;
+  data: UiAssetPickerNode;
+  surface: UiPresentationSurface;
+  onAction: (event: UiActionEvent) => void;
+  presentationAttributes: NodePresentationAttributes;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const importFile = async (file: File) => {
+    setError(null);
+    if (!data.accepted_media_types.includes(file.type)) {
+      setError("Unsupported file type");
+      return;
+    }
+    if (file.size <= 0 || file.size > data.max_bytes) {
+      setError(
+        `File must be at most ${Math.ceil(data.max_bytes / 1024 / 1024)} MiB`,
+      );
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await fetch("/__rintawa/import-asset", {
+        method: "POST",
+        headers: { "Content-Type": file.type },
+        body: file,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const value = (await response.json()) as Partial<UiActionAssetRef>;
+      if (
+        typeof value.digest !== "string" ||
+        !/^sha256:[0-9a-f]{64}$/.test(value.digest) ||
+        typeof value.size !== "number" ||
+        value.size !== file.size ||
+        value.media_type !== file.type
+      ) {
+        throw new Error("Invalid asset import response");
+      }
+      onAction(
+        actionEvent(surface, nodeId, data.change_action, {
+          digest: value.digest,
+          size: value.size,
+          media_type: value.media_type,
+          name: file.name || null,
+        }),
+      );
+      if (inputRef.current) inputRef.current.value = "";
+    } catch {
+      setError("Could not attach this file");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div {...presentationAttributes} className="rintawa-asset-picker">
+      <input
+        ref={inputRef}
+        className="rintawa-asset-picker-input"
+        type="file"
+        accept={data.accepted_media_types.join(",")}
+        disabled={!data.is_enabled || busy}
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          if (file) void importFile(file);
+        }}
+      />
+      <button
+        type="button"
+        className="rintawa-button rintawa-asset-picker-button"
+        data-appearance="subtle"
+        disabled={!data.is_enabled || busy}
+        onClick={() => inputRef.current?.click()}
+      >
+        {busy ? "Attaching…" : data.label}
+      </button>
+      {error ? (
+        <span className="rintawa-asset-picker-error">{error}</span>
+      ) : null}
+    </div>
+  );
+}
+
+function NodeRenderer({
+  surface,
+  onAction,
+  nodeId,
+  nodes,
+  ancestors,
+}: NodeRendererProps) {
   const layout = useContext(PortableLayoutContext);
   const node = nodes.get(nodeId);
   if (!node) {
@@ -176,26 +390,33 @@ function NodeRenderer({ surface, onAction, nodeId, nodes, ancestors }: NodeRende
 
   const nextAncestors = new Set(ancestors).add(nodeId);
   const children = (ids: string[]) =>
-    effectiveChildOrder(ids, layout.overrides.childOrder[node.id]).map((childId) => (
-      <NodeRenderer
-        key={childId}
-        surface={surface}
-        onAction={onAction}
-        nodeId={childId}
-        nodes={nodes}
-        ancestors={nextAncestors}
-      />
-    ));
+    effectiveChildOrder(ids, layout.overrides.childOrder[node.id]).map(
+      (childId) => (
+        <NodeRenderer
+          key={childId}
+          surface={surface}
+          onAction={onAction}
+          nodeId={childId}
+          nodes={nodes}
+          ancestors={nextAncestors}
+        />
+      ),
+    );
 
   const kind = node.kind;
   const presentationAttributes = nodePresentationAttributes(node);
   switch (kind.type) {
     case "text":
-      return <span {...presentationAttributes} className="rintawa-text">{kind.data.text}</span>;
+      return (
+        <span {...presentationAttributes} className="rintawa-text">
+          {kind.data.text}
+        </span>
+      );
     case "markdown":
       return (
         <div {...presentationAttributes} className="rintawa-markdown">
           <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkBreaks]}
             components={{
               img: ({ alt }) => (
                 <span className="rintawa-markdown-image-placeholder">
@@ -206,16 +427,13 @@ function NodeRenderer({ surface, onAction, nodeId, nodes, ancestors }: NodeRende
                 let safeHref: string | undefined;
                 try {
                   const parsed = href ? new URL(href) : null;
-                  if (parsed?.protocol === "https:") safeHref = parsed.toString();
+                  if (parsed?.protocol === "https:")
+                    safeHref = parsed.toString();
                 } catch {
                   safeHref = undefined;
                 }
                 return safeHref ? (
-                  <a
-                    href={safeHref}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                  >
+                  <a href={safeHref} target="_blank" rel="noreferrer noopener">
                     {children}
                   </a>
                 ) : (
@@ -235,7 +453,9 @@ function NodeRenderer({ surface, onAction, nodeId, nodes, ancestors }: NodeRende
           className="rintawa-button"
           data-appearance={kind.data.appearance}
           disabled={!kind.data.is_enabled}
-          onClick={() => onAction(actionEvent(surface, node.id, kind.data.action))}
+          onClick={() =>
+            onAction(actionEvent(surface, node.id, kind.data.action))
+          }
         >
           {kind.data.label}
         </button>
@@ -262,6 +482,13 @@ function NodeRenderer({ surface, onAction, nodeId, nodes, ancestors }: NodeRende
           height={kind.data.height ?? undefined}
           loading="lazy"
           decoding="async"
+        />
+      );
+    case "asset-image":
+      return (
+        <AssetImage
+          data={kind.data}
+          presentationAttributes={presentationAttributes}
         />
       );
     case "checkbox":
@@ -329,6 +556,21 @@ function NodeRenderer({ surface, onAction, nodeId, nodes, ancestors }: NodeRende
           surface={surface}
           onAction={onAction}
           isMultiline
+          submitOnEnter={node.traits?.includes("submit-on-enter") ?? false}
+          allowEmptySubmit={
+            node.traits?.includes("allow-empty-submit") ?? false
+          }
+          clearOnSubmit={node.traits?.includes("clear-on-submit") ?? false}
+          presentationAttributes={presentationAttributes}
+        />
+      );
+    case "asset-picker":
+      return (
+        <AssetPicker
+          nodeId={node.id}
+          data={kind.data}
+          surface={surface}
+          onAction={onAction}
           presentationAttributes={presentationAttributes}
         />
       );
@@ -433,7 +675,9 @@ function NodeRenderer({ surface, onAction, nodeId, nodes, ancestors }: NodeRende
                   const decrease =
                     kind.data.axis === "horizontal" ? "ArrowLeft" : "ArrowUp";
                   const increase =
-                    kind.data.axis === "horizontal" ? "ArrowRight" : "ArrowDown";
+                    kind.data.axis === "horizontal"
+                      ? "ArrowRight"
+                      : "ArrowDown";
                   if (event.key === decrease) {
                     event.preventDefault();
                     resizeByKeyboard(index, -0.5);
@@ -449,11 +693,24 @@ function NodeRenderer({ surface, onAction, nodeId, nodes, ancestors }: NodeRende
       );
     }
     case "row":
-      return <div {...presentationAttributes} className="rintawa-row">{children(kind.data.children)}</div>;
+      return (
+        <div {...presentationAttributes} className="rintawa-row">
+          {children(kind.data.children)}
+        </div>
+      );
     case "column":
-      return <div {...presentationAttributes} className="rintawa-column">{children(kind.data.children)}</div>;
+      return (
+        <div {...presentationAttributes} className="rintawa-column">
+          {children(kind.data.children)}
+        </div>
+      );
     case "list":
-      return <div {...presentationAttributes} className="rintawa-list">{children(kind.data.children)}</div>;
+      return (
+        <PortableListContainer
+          node={node}
+          content={children(kind.data.children)}
+        />
+      );
     case "data-grid": {
       const defaultWeights = kind.data.columns.map((column) => column.weight);
       const weights = effectiveWeights(
@@ -520,7 +777,11 @@ function NodeRenderer({ surface, onAction, nodeId, nodes, ancestors }: NodeRende
       };
 
       return (
-        <div {...presentationAttributes} className="rintawa-data-grid" role="table">
+        <div
+          {...presentationAttributes}
+          className="rintawa-data-grid"
+          role="table"
+        >
           <div
             className="rintawa-data-grid-header"
             role="row"
@@ -608,14 +869,17 @@ function NodeRenderer({ surface, onAction, nodeId, nodes, ancestors }: NodeRende
                   const target = event.target;
                   if (
                     target instanceof Element &&
-                    target.closest("button, input, select, textarea, a, [role=button]")
+                    target.closest(
+                      "button, input, select, textarea, a, [role=button]",
+                    )
                   ) {
                     return;
                   }
                   activateRow();
                 }}
                 onKeyDown={(event) => {
-                  if (!isActionable || event.target !== event.currentTarget) return;
+                  if (!isActionable || event.target !== event.currentTarget)
+                    return;
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
                     activateRow();
@@ -651,7 +915,8 @@ function NodeRenderer({ surface, onAction, nodeId, nodes, ancestors }: NodeRende
           })}
         </div>
       );
-    }  }
+    }
+  }
 }
 
 function PortableSurfaceBody({ surface, onAction }: PortableSurfaceProps) {
@@ -695,6 +960,11 @@ function PortableSurfaceBody({ surface, onAction }: PortableSurfaceProps) {
         className="rintawa-surface"
         data-placement={surface.contribution.placement}
         data-surface-id={surface.snapshot.surface_id}
+        data-surface-traits={
+          surface.contribution.traits.length > 0
+            ? surface.contribution.traits.join(" ")
+            : undefined
+        }
       >
         <NodeRenderer
           surface={surface}

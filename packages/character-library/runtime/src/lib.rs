@@ -82,6 +82,19 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
             return;
         }
 
+        let context = match rintawa::engine::runtime_context::current() {
+            Ok(context) => context,
+            Err(error) => {
+                log_error(&format!(
+                    "Character Library runtime context read failed: {error:?}"
+                ));
+                return;
+            }
+        };
+        if context.world_id.is_some() {
+            return;
+        }
+
         let mut controller = CharacterLibraryController::new(WitCharacterLibraryGateway);
         if let Err(error) = controller.refresh() {
             log_error(&format!(
@@ -148,7 +161,7 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
                     log_error(&error);
                 }
             }
-            intent @ CharacterLibraryIntent::InstantiateSelected { .. } => {
+            intent @ CharacterLibraryIntent::InstantiateCast { .. } => {
                 if let Err(error) = materialization::execute_intent(intent) {
                     log_error(&error);
                     return;

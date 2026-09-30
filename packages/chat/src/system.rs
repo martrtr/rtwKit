@@ -16,8 +16,9 @@ use crate::{
     ids::{command_entity_id, derived_entity_id, relation_id},
     model::{
         AddParticipantCommand, AlternativeRequestedEvent, BranchSelectedEvent, ChatWorldIndex,
-        ConversationCreatedEvent, ConversationState, CreateConversationCommand, EditMessageCommand,
-        MessageAddedEvent, MessageContent, MessageEditedEvent, MessageState, ParticipantAddedEvent,
+        ConversationCreatedEvent, ConversationState, CreateConversationCommand,
+        DeleteMessageCommand, EditMessageCommand, MessageAddedEvent, MessageContent,
+        MessageDeletedEvent, MessageEditedEvent, MessageState, ParticipantAddedEvent,
         ParticipantBinding, ParticipantBindingRequest, ParticipantIdentity,
         RequestAlternativeCommand, SelectBranchCommand, SendMessageCommand, validate_blocks,
         validate_participant_name, validate_title,
@@ -25,12 +26,13 @@ use crate::{
     schemas::{
         alternative_requested_event_schema_key, branch_selected_event_schema_key,
         chat_add_participant_command_schema_key, chat_create_conversation_command_schema_key,
-        chat_edit_message_command_schema_key, chat_request_alternative_command_schema_key,
-        chat_select_branch_command_schema_key, chat_send_message_command_schema_key,
-        chat_world_index_schema_key, conversation_created_event_schema_key,
-        conversation_entity_schema_key, conversation_message_schema_key,
-        conversation_participant_schema_key, conversation_state_schema_key,
-        message_added_event_schema_key, message_author_schema_key, message_content_schema_key,
+        chat_delete_message_command_schema_key, chat_edit_message_command_schema_key,
+        chat_request_alternative_command_schema_key, chat_select_branch_command_schema_key,
+        chat_send_message_command_schema_key, chat_world_index_schema_key,
+        conversation_created_event_schema_key, conversation_entity_schema_key,
+        conversation_message_schema_key, conversation_participant_schema_key,
+        conversation_state_schema_key, message_added_event_schema_key, message_author_schema_key,
+        message_content_schema_key, message_deleted_event_schema_key,
         message_edited_event_schema_key, message_entity_schema_key, message_parent_schema_key,
         message_revision_entity_schema_key, message_revision_schema_key, message_state_schema_key,
         message_variant_schema_key, participant_added_event_schema_key,
@@ -75,6 +77,8 @@ fn evaluate(
         evaluate_send_message(request)
     } else if schema == &chat_edit_message_command_schema_key().map_err(schema_error)? {
         evaluate_edit_message(request)
+    } else if schema == &chat_delete_message_command_schema_key().map_err(schema_error)? {
+        evaluate_delete_message(request)
     } else if schema == &chat_select_branch_command_schema_key().map_err(schema_error)? {
         evaluate_select_branch(request)
     } else if schema == &chat_request_alternative_command_schema_key().map_err(schema_error)? {
@@ -469,6 +473,124 @@ fn evaluate_edit_message(
             message_id: command.message_id,
             previous_revision_id: state.current_revision,
             revision_id,
+        },
+    )?;
+    Ok(transaction_response(transaction))
+}
+
+fn evaluate_delete_message(
+    request: &WorldSystemServiceRequest,
+) -> Result<WorldSystemServiceResponse, EvaluationError> {
+    let command: DeleteMessageCommand = decode_payload(request)?;
+    let message_schema = message_entity_schema_key().map_err(schema_error)?;
+    let message_state_schema = message_state_schema_key().map_err(schema_error)?;
+    if request.reads.is_empty() {
+        return Ok(read_response(vec![
+            WorldSystemReadRequest::Entity {
+                entity_id: command.message_id,
+            },
+            facet_read(command.message_id, message_state_schema.clone()),
+        ]));
+    }
+
+    expect_entity(request, command.message_id, &message_schema)?;
+    let message: MessageState = expect_facet(
+        request,
+        WorldSystemFacetTarget::Entity(command.message_id),
+        &message_state_schema,
+    )?;
+    let conversation_schema = conversation_state_schema_key().map_err(schema_error)?;
+    if !has_facet_result(
+        request,
+        WorldSystemFacetTarget::Entity(message.conversation_id),
+        &conversation_schema,
+    ) {
+        return Ok(read_response(vec![
+            WorldSystemReadRequest::Entity {
+                entity_id: message.conversation_id,
+            },
+            facet_read(message.conversation_id, conversation_schema),
+        ]));
+    }
+
+    require_direct_principal(request)?;
+    expect_entity(
+        request,
+        message.conversation_id,
+        &conversation_entity_schema_key().map_err(schema_error)?,
+    )?;
+    let mut conversation: ConversationState = expect_facet(
+        request,
+        WorldSystemFacetTarget::Entity(message.conversation_id),
+        &conversation_state_schema_key().map_err(schema_error)?,
+    )?;
+    if conversation.selected_leaf != Some(command.message_id)
+        || !conversation.message_ids.contains(&command.message_id)
+    {
+        return Err(EvaluationError::Rejected(DIAGNOSTIC_INVALID_COMMAND));
+    }
+
+    let missing = conversation
+        .message_ids
+        .iter()
+        .copied()
+        .filter(|message_id| *message_id != command.message_id)
+        .filter(|message_id| {
+            !has_facet_result(
+                request,
+                WorldSystemFacetTarget::Entity(*message_id),
+                &message_state_schema,
+            )
+        })
+        .map(|message_id| facet_read(message_id, message_state_schema.clone()))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Ok(read_response(missing));
+    }
+
+    for other_id in conversation
+        .message_ids
+        .iter()
+        .copied()
+        .filter(|message_id| *message_id != command.message_id)
+    {
+        let other: MessageState = expect_facet(
+            request,
+            WorldSystemFacetTarget::Entity(other_id),
+            &message_state_schema,
+        )?;
+        if other.parent_message_id == Some(command.message_id)
+            || other.alternative_of == Some(command.message_id)
+        {
+            return Err(EvaluationError::Rejected(DIAGNOSTIC_INVALID_COMMAND));
+        }
+    }
+
+    conversation
+        .message_ids
+        .retain(|message_id| *message_id != command.message_id);
+    conversation.selected_leaf = message.alternative_of.or(message.parent_message_id);
+    conversation.validate().map_err(invalid_model)?;
+
+    let mut transaction = WorldSystemTransaction::new();
+    transaction.push_mutation(WorldSystemMutation::DeleteRelation {
+        relation_id: relation_id(
+            "conversation-message",
+            &[message.conversation_id, command.message_id],
+        ),
+    });
+    push_facet(
+        &mut transaction,
+        message.conversation_id,
+        conversation_state_schema_key().map_err(schema_error)?,
+        &conversation,
+    )?;
+    push_event(
+        &mut transaction,
+        message_deleted_event_schema_key().map_err(schema_error)?,
+        &MessageDeletedEvent {
+            conversation_id: message.conversation_id,
+            message_id: command.message_id,
         },
     )?;
     Ok(transaction_response(transaction))

@@ -6,9 +6,12 @@ use rintawa_sdk::ui::{UiActionEvent, UiActionPayload};
 
 use crate::{
     CharacterLibraryError, CharacterLibraryGateway, CharacterLibraryState,
-    MAX_CHARACTER_IMPORT_TEXT_BYTES, MAX_CHARACTER_LIBRARY_ENTRIES,
-    decode_character_content_document,
-    ui::{IMPORT_SOURCE_NODE, INSTANTIATE_NODE, REFRESH_NODE},
+    MAX_CHARACTER_CAST_ENTRIES, MAX_CHARACTER_IMPORT_TEXT_BYTES, MAX_CHARACTER_LIBRARY_ENTRIES,
+    MAX_CHARACTER_SEARCH_BYTES, decode_character_content_document,
+    ui::{
+        CAST_CREATE_NODE, IMPORT_SOURCE_NODE, IMPORT_TOGGLE_NODE, REFRESH_NODE, SEARCH_NODE,
+        cast_member_toggle_node_id, entry_cast_toggle_node_id,
+    },
 };
 
 /// Semantic action used by the explicit catalog refresh control.
@@ -17,8 +20,14 @@ pub const CHARACTER_LIBRARY_ACTION_REFRESH: &str = "rintawa.character-library.re
 pub const CHARACTER_LIBRARY_ACTION_SELECT: &str = "rintawa.character-library.select";
 /// Semantic action used to instantiate the exact selected template into a new World.
 pub const CHARACTER_LIBRARY_ACTION_INSTANTIATE: &str = "rintawa.character-library.instantiate";
+/// Semantic action adding/removing one reusable template from the new-World cast.
+pub const CHARACTER_LIBRARY_ACTION_TOGGLE_CAST: &str = "rintawa.character-library.toggle-cast";
 /// Semantic action used to submit Tavern V2 JSON from the portable import editor.
 pub const CHARACTER_LIBRARY_ACTION_IMPORT: &str = "rintawa.character-library.import-tavern-v2";
+/// Semantic action updating the bounded Character Gateway search query.
+pub const CHARACTER_LIBRARY_ACTION_SEARCH: &str = "rintawa.character-library.search";
+/// Semantic action opening or closing the advanced Tavern import panel.
+pub const CHARACTER_LIBRARY_ACTION_TOGGLE_IMPORT: &str = "rintawa.character-library.toggle-import";
 
 const MAX_IMPORT_STATUS_BYTES: usize = 2 * 1024;
 
@@ -32,13 +41,20 @@ pub enum CharacterLibraryIntent {
         /// Exact bounded source submitted by the Portable UI field.
         source: String,
     },
-    /// Create/open a new World and instantiate one exact immutable template revision.
-    InstantiateSelected {
-        /// Stable logical user-content identity.
-        template_id: String,
-        /// Exact immutable artifact revision selected by the user.
-        template_revision: String,
+    /// Create one new World and instantiate the exact selected immutable cast.
+    InstantiateCast {
+        /// Exact immutable templates selected by the user, in deterministic cast order.
+        templates: Vec<CharacterCastSelection>,
     },
+}
+
+/// One exact reusable template revision selected for World materialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CharacterCastSelection {
+    /// Stable logical user-content identity.
+    pub template_id: String,
+    /// Exact immutable artifact revision selected by the user.
+    pub template_revision: String,
 }
 
 /// Stateful Character Library controller parameterized by a runtime adapter.
@@ -102,6 +118,13 @@ where
                 .then_with(|| left.id.cmp(&right.id))
         });
 
+        let cast_ids = self
+            .state
+            .cast_ids
+            .iter()
+            .filter(|id| entries.iter().any(|entry| &entry.id == *id))
+            .cloned()
+            .collect::<Vec<_>>();
         let selected_id = self
             .state
             .selected_id
@@ -112,10 +135,13 @@ where
         self.state = CharacterLibraryState {
             entries,
             selected_id,
+            cast_ids,
             revision,
             import_source: self.state.import_source.clone(),
             import_status: self.state.import_status.clone(),
             import_pending: self.state.import_pending,
+            search_query: self.state.search_query.clone(),
+            import_open: self.state.import_open,
         };
         Ok(())
     }
@@ -135,6 +161,67 @@ where
             .ok_or(CharacterLibraryError::UnknownEntryAction)?;
         let revision = next_revision(self.state.revision)?;
         self.state.selected_id = Some(id);
+        self.state.revision = revision;
+        Ok(())
+    }
+
+    /// Adds or removes one current CharacterTemplate from the pending new-World cast.
+    pub fn toggle_cast_index(&mut self, index: usize) -> Result<(), CharacterLibraryError> {
+        let id = self
+            .state
+            .entries
+            .get(index)
+            .map(|entry| entry.id.clone())
+            .ok_or(CharacterLibraryError::UnknownEntryAction)?;
+        let revision = next_revision(self.state.revision)?;
+        if let Some(position) = self
+            .state
+            .cast_ids
+            .iter()
+            .position(|candidate| candidate == &id)
+        {
+            self.state.cast_ids.remove(position);
+        } else {
+            if self.state.cast_ids.len() >= MAX_CHARACTER_CAST_ENTRIES {
+                return Err(CharacterLibraryError::CastTooLarge);
+            }
+            self.state.cast_ids.push(id);
+        }
+        self.state.revision = revision;
+        Ok(())
+    }
+
+    /// Updates the package-owned Character Gateway search query.
+    pub fn update_search_query(&mut self, query: String) -> Result<(), CharacterLibraryError> {
+        if query.len() > MAX_CHARACTER_SEARCH_BYTES {
+            return Err(CharacterLibraryError::SearchQueryTooLarge);
+        }
+        let revision = next_revision(self.state.revision)?;
+        let normalized = query.trim().to_lowercase();
+        let current_matches = self.state.selected_id.as_ref().is_some_and(|selected| {
+            self.state
+                .entries
+                .iter()
+                .find(|entry| &entry.id == selected)
+                .is_some_and(|entry| search_matches_entry(entry, &normalized))
+        });
+        if !current_matches {
+            self.state.selected_id = self
+                .state
+                .entries
+                .iter()
+                .find(|entry| search_matches_entry(entry, &normalized))
+                .map(|entry| entry.id.clone());
+        }
+        self.state.search_query = query;
+        self.state.revision = revision;
+        Ok(())
+    }
+
+    /// Toggles the advanced Tavern import panel without affecting catalog state.
+    pub fn toggle_import_panel(&mut self) -> Result<(), CharacterLibraryError> {
+        let revision = next_revision(self.state.revision)?;
+        self.state.import_open = !self.state.import_open;
         self.state.revision = revision;
         Ok(())
     }
@@ -177,6 +264,7 @@ where
         self.state.selected_id = Some(imported.id.clone());
         self.state.import_source.clear();
         self.state.import_pending = false;
+        self.state.import_open = false;
         self.state.import_status = Some(bounded_status(&format!("Imported {name}.")));
         Ok(())
     }
@@ -224,8 +312,26 @@ where
                 self.select_index(index)?;
                 Ok(CharacterLibraryIntent::None)
             }
+            CHARACTER_LIBRARY_ACTION_SEARCH => {
+                if event.node_id.as_str() != SEARCH_NODE {
+                    return Err(CharacterLibraryError::WrongActionNode);
+                }
+                let UiActionPayload::Text(query) = &event.payload else {
+                    return Err(CharacterLibraryError::InvalidActionPayload);
+                };
+                self.update_search_query(query.clone())?;
+                Ok(CharacterLibraryIntent::None)
+            }
+            CHARACTER_LIBRARY_ACTION_TOGGLE_IMPORT => {
+                require_none_payload(event)?;
+                if event.node_id.as_str() != IMPORT_TOGGLE_NODE {
+                    return Err(CharacterLibraryError::WrongActionNode);
+                }
+                self.toggle_import_panel()?;
+                Ok(CharacterLibraryIntent::None)
+            }
             CHARACTER_LIBRARY_ACTION_IMPORT => {
-                if event.node_id.as_str() != IMPORT_SOURCE_NODE {
+                if event.node_id.as_str() != IMPORT_SOURCE_NODE || !self.state.import_open {
                     return Err(CharacterLibraryError::WrongActionNode);
                 }
                 if self.state.import_pending {
@@ -249,23 +355,85 @@ where
                     source: source.clone(),
                 })
             }
+            CHARACTER_LIBRARY_ACTION_TOGGLE_CAST => {
+                require_none_payload(event)?;
+                let catalog_index = self
+                    .state
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, _)| {
+                        (entry_cast_toggle_node_id(index) == event.node_id).then_some(index)
+                    })
+                    .or_else(|| {
+                        self.state
+                            .cast_ids
+                            .iter()
+                            .enumerate()
+                            .find_map(|(cast_index, id)| {
+                                (cast_member_toggle_node_id(cast_index) == event.node_id)
+                                    .then_some(id)
+                            })
+                            .and_then(|id| {
+                                self.state.entries.iter().position(|entry| &entry.id == id)
+                            })
+                    })
+                    .ok_or(CharacterLibraryError::UnknownEntryAction)?;
+                self.toggle_cast_index(catalog_index)?;
+                Ok(CharacterLibraryIntent::None)
+            }
             CHARACTER_LIBRARY_ACTION_INSTANTIATE => {
                 require_none_payload(event)?;
-                if event.node_id.as_str() != INSTANTIATE_NODE {
+                if event.node_id.as_str() != CAST_CREATE_NODE {
                     return Err(CharacterLibraryError::WrongActionNode);
                 }
-                let entry = self
+                if self.state.cast_ids.is_empty() {
+                    return Err(CharacterLibraryError::EmptyCast);
+                }
+                let templates = self
                     .state
-                    .selected_entry()
-                    .ok_or(CharacterLibraryError::UnknownEntryAction)?;
-                Ok(CharacterLibraryIntent::InstantiateSelected {
-                    template_id: entry.id.clone(),
-                    template_revision: entry.revision.to_string(),
-                })
+                    .cast_ids
+                    .iter()
+                    .map(|id| {
+                        let entry = self
+                            .state
+                            .entries
+                            .iter()
+                            .find(|entry| &entry.id == id)
+                            .ok_or(CharacterLibraryError::UnknownEntryAction)?;
+                        Ok(CharacterCastSelection {
+                            template_id: entry.id.clone(),
+                            template_revision: entry.revision.to_string(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, CharacterLibraryError>>()?;
+                Ok(CharacterLibraryIntent::InstantiateCast { templates })
             }
             _ => Err(CharacterLibraryError::UnknownAction),
         }
     }
+}
+
+fn search_matches_entry(entry: &crate::CharacterLibraryEntry, normalized: &str) -> bool {
+    normalized.is_empty()
+        || entry.template.name.to_lowercase().contains(normalized)
+        || entry
+            .template
+            .description
+            .to_lowercase()
+            .contains(normalized)
+        || entry
+            .template
+            .metadata
+            .creator
+            .to_lowercase()
+            .contains(normalized)
+        || entry
+            .template
+            .metadata
+            .tags
+            .iter()
+            .any(|tag| tag.to_lowercase().contains(normalized))
 }
 
 fn require_none_payload(event: &UiActionEvent) -> Result<(), CharacterLibraryError> {

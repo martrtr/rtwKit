@@ -7,10 +7,12 @@ export const UI_CAPABILITIES = [
   "rintawa.ui.button@1",
   "rintawa.ui.icon@1",
   "rintawa.ui.image@1",
+  "rintawa.ui.asset-image@1",
   "rintawa.ui.input.checkbox@1",
   "rintawa.ui.input.select@1",
   "rintawa.ui.input.text@1",
   "rintawa.ui.input.text-area@1",
+  "rintawa.ui.input.asset@1",
   "rintawa.ui.layout.split@1",
   "rintawa.ui.layout.row@1",
   "rintawa.ui.layout.column@1",
@@ -105,6 +107,15 @@ export interface UiImageNode {
   height: number | null;
 }
 
+export interface UiAssetImageNode {
+  digest: string;
+  size: number;
+  media_type: "image/png" | "image/webp" | "image/jpeg";
+  alt: string;
+  width: number | null;
+  height: number | null;
+}
+
 export interface UiCheckboxNode {
   label: string;
   checked: boolean;
@@ -134,6 +145,21 @@ export interface UiTextInputNode {
 }
 
 export type UiTextAreaNode = UiTextInputNode;
+
+export interface UiAssetPickerNode {
+  label: string;
+  accepted_media_types: string[];
+  max_bytes: number;
+  change_action: string;
+  is_enabled: boolean;
+}
+
+export interface UiActionAssetRef {
+  digest: string;
+  size: number;
+  media_type: string;
+  name: string | null;
+}
 
 export interface UiContainerNode {
   children: string[];
@@ -167,10 +193,12 @@ export type UiNodeKind =
   | { type: "button"; data: UiButtonNode }
   | { type: "icon"; data: UiIconNode }
   | { type: "image"; data: UiImageNode }
+  | { type: "asset-image"; data: UiAssetImageNode }
   | { type: "checkbox"; data: UiCheckboxNode }
   | { type: "select"; data: UiSelectNode }
   | { type: "text-input"; data: UiTextInputNode }
   | { type: "text-area"; data: UiTextAreaNode }
+  | { type: "asset-picker"; data: UiAssetPickerNode }
   | { type: "split"; data: UiSplitNode }
   | { type: "row"; data: UiContainerNode }
   | { type: "column"; data: UiContainerNode }
@@ -201,7 +229,8 @@ export interface UiPresentationSurface {
 export type UiActionPayload =
   | { type: "none" }
   | { type: "text"; value: string }
-  | { type: "boolean"; value: boolean };
+  | { type: "boolean"; value: boolean }
+  | { type: "asset"; value: UiActionAssetRef };
 
 export interface UiActionEvent {
   owner_instance_id: string;

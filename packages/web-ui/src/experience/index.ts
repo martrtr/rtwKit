@@ -19,8 +19,15 @@ export type {
   WebExperienceModule,
   WebExperiencePackPatch,
 } from "./types";
-export { WEB_EXPERIENCE_MODULE_FORMAT, WEB_EXPERIENCE_PACK_FORMAT } from "./types";
-export { parseExperienceModule, parseExperiencePack, parseExperiencePackPatch } from "./schema";
+export {
+  WEB_EXPERIENCE_MODULE_FORMAT,
+  WEB_EXPERIENCE_PACK_FORMAT,
+} from "./types";
+export {
+  parseExperienceModule,
+  parseExperiencePack,
+  parseExperiencePackPatch,
+} from "./schema";
 
 export const STANDARD_EXPERIENCE_PACK = parseExperiencePack(standardPackJson);
 
@@ -58,7 +65,8 @@ function mergePresentation(
       workspace: shellPatch?.workspace ?? base.shell.workspace,
       layers: shellPatch?.layers ?? base.shell.layers,
       rules,
-      fallback_region: shellPatch?.fallback_region ?? base.shell.fallback_region,
+      fallback_region:
+        shellPatch?.fallback_region ?? base.shell.fallback_region,
       region_presentations:
         shellPatch?.region_presentations ??
         (replacesWorkspace ? undefined : base.shell.region_presentations),
@@ -122,7 +130,8 @@ export function regionForSurface(
 
   let selected: { region: string; specificity: number } | null = null;
   for (const rule of pack.shell.rules) {
-    if (rule.match.semantic !== undefined && rule.match.semantic !== semantic) continue;
+    if (rule.match.semantic !== undefined && rule.match.semantic !== semantic)
+      continue;
     if (
       rule.match.trait !== undefined &&
       !surface.contribution.traits.includes(rule.match.trait)
@@ -169,7 +178,8 @@ const TOKEN_TO_CSS_VARIABLE: Record<string, string> = {
   "web.color.control-border": "--rintawa-web-color-control-border",
   "web.radius.surface": "--rintawa-web-radius-surface",
   "web.workbench.activity-rail-width": "--rintawa-web-activity-rail-width",
-  "web.workbench.horizontal-activity-bar-height": "--rintawa-web-horizontal-activity-bar-height",
+  "web.workbench.horizontal-activity-bar-height":
+    "--rintawa-web-horizontal-activity-bar-height",
   "web.workbench.dock-min-width": "--rintawa-web-dock-min-width",
   "web.workbench.tab-height": "--rintawa-web-tab-height",
   "web.workbench.section-nav-width": "--rintawa-web-section-nav-width",
@@ -177,13 +187,18 @@ const TOKEN_TO_CSS_VARIABLE: Record<string, string> = {
   "web.workbench.section-nav-max-width": "--rintawa-web-section-nav-max-width",
   "web.collection.media-row-min-height": "--rintawa-web-media-row-min-height",
   "web.collection.thumbnail-size": "--rintawa-web-media-thumbnail-size",
+  "web.chat.max-width": "--rintawa-web-chat-max-width",
+  "web.chat.avatar-size": "--rintawa-web-chat-avatar-size",
+  "web.chat.composer-min-height": "--rintawa-web-chat-composer-min-height",
   "web.motion.fast": "--rintawa-web-motion-fast",
   "web.motion.normal": "--rintawa-web-motion-normal",
   "web.motion.easing": "--rintawa-web-motion-easing",
   "web.color-scheme": "--rintawa-web-color-scheme",
 };
 
-export function themeCssVariables(pack: WebExperiencePack): Record<string, string> {
+export function themeCssVariables(
+  pack: WebExperiencePack,
+): Record<string, string> {
   const variables: Record<string, string> = {};
   for (const [token, value] of Object.entries(pack.theme.tokens)) {
     const variable = TOKEN_TO_CSS_VARIABLE[token];

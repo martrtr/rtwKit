@@ -34,6 +34,7 @@ const CREATE_CONVERSATION_COMMAND: &str = "rintawa.chat.create-conversation";
 const ADD_PARTICIPANT_COMMAND: &str = "rintawa.chat.add-participant";
 const SEND_MESSAGE_COMMAND: &str = "rintawa.chat.send-message";
 const EDIT_MESSAGE_COMMAND: &str = "rintawa.chat.edit-message";
+const DELETE_MESSAGE_COMMAND: &str = "rintawa.chat.delete-message";
 const SELECT_BRANCH_COMMAND: &str = "rintawa.chat.select-branch";
 const REQUEST_ALTERNATIVE_COMMAND: &str = "rintawa.chat.request-alternative";
 
@@ -41,6 +42,7 @@ const CONVERSATION_CREATED_EVENT: &str = "rintawa.chat.conversation-created";
 const PARTICIPANT_ADDED_EVENT: &str = "rintawa.chat.participant-added";
 const MESSAGE_ADDED_EVENT: &str = "rintawa.chat.message-added";
 const MESSAGE_EDITED_EVENT: &str = "rintawa.chat.message-edited";
+const MESSAGE_DELETED_EVENT: &str = "rintawa.chat.message-deleted";
 const BRANCH_SELECTED_EVENT: &str = "rintawa.chat.branch-selected";
 const ALTERNATIVE_REQUESTED_EVENT: &str = "rintawa.chat.alternative-requested";
 
@@ -132,6 +134,11 @@ pub fn chat_all_world_schemas() -> Result<Vec<WorldSchemaContribution>, ChatSche
             edit_message_schema(),
         )?,
         contribution(
+            DELETE_MESSAGE_COMMAND,
+            SchemaKind::Command,
+            delete_message_schema(),
+        )?,
+        contribution(
             SELECT_BRANCH_COMMAND,
             SchemaKind::Command,
             select_branch_schema(),
@@ -147,6 +154,7 @@ pub fn chat_all_world_schemas() -> Result<Vec<WorldSchemaContribution>, ChatSche
         PARTICIPANT_ADDED_EVENT,
         MESSAGE_ADDED_EVENT,
         MESSAGE_EDITED_EVENT,
+        MESSAGE_DELETED_EVENT,
         BRANCH_SELECTED_EVENT,
         ALTERNATIVE_REQUESTED_EVENT,
     ] {
@@ -178,6 +186,11 @@ pub fn chat_send_message_command_schema_key() -> Result<SchemaKey, ChatSchemaErr
 /// Returns the edit-message command schema key.
 pub fn chat_edit_message_command_schema_key() -> Result<SchemaKey, ChatSchemaError> {
     key(EDIT_MESSAGE_COMMAND)
+}
+
+/// Returns the delete-message command schema key.
+pub fn chat_delete_message_command_schema_key() -> Result<SchemaKey, ChatSchemaError> {
+    key(DELETE_MESSAGE_COMMAND)
 }
 
 /// Returns the select-branch command schema key.
@@ -269,6 +282,10 @@ pub(crate) fn message_added_event_schema_key() -> Result<SchemaKey, ChatSchemaEr
 
 pub(crate) fn message_edited_event_schema_key() -> Result<SchemaKey, ChatSchemaError> {
     key(MESSAGE_EDITED_EVENT)
+}
+
+pub(crate) fn message_deleted_event_schema_key() -> Result<SchemaKey, ChatSchemaError> {
+    key(MESSAGE_DELETED_EVENT)
 }
 
 pub(crate) fn branch_selected_event_schema_key() -> Result<SchemaKey, ChatSchemaError> {
@@ -610,6 +627,15 @@ fn edit_message_schema() -> Value {
     })
 }
 
+fn delete_message_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["message-id"],
+        "properties": { "message-id": uuid_schema() },
+        "additionalProperties": false
+    })
+}
+
 fn select_branch_schema() -> Value {
     json!({
         "type": "object",
@@ -770,6 +796,15 @@ fn event_schema(id: &str) -> Value {
                 "message-id": uuid_schema(),
                 "previous-revision-id": uuid_schema(),
                 "revision-id": uuid_schema()
+            },
+            "additionalProperties": false
+        }),
+        MESSAGE_DELETED_EVENT => json!({
+            "type": "object",
+            "required": ["conversation-id", "message-id"],
+            "properties": {
+                "conversation-id": uuid_schema(),
+                "message-id": uuid_schema()
             },
             "additionalProperties": false
         }),

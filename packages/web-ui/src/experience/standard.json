@@ -35,7 +35,10 @@
       "web.motion.easing": "cubic-bezier(0.2, 0, 0, 1)",
       "web.color-scheme": "dark",
       "web.collection.media-row-min-height": "5.25rem",
-      "web.collection.thumbnail-size": "4rem"
+      "web.collection.thumbnail-size": "4rem",
+      "web.chat.max-width": "64rem",
+      "web.chat.avatar-size": "3rem",
+      "web.chat.composer-min-height": "3.25rem"
     },
     "icons": {
       "activity.extensions": "packages",
@@ -53,7 +56,9 @@
       "fallback.package": "package",
       "fallback.generic": "box",
       "activity.worlds": "world",
-      "world.thumbnail": "world"
+      "world.thumbnail": "world",
+      "participant.local": "user",
+      "participant.remote": "sparkles"
     }
   },
   "shell": {

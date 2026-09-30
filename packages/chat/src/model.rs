@@ -315,6 +315,14 @@ pub struct EditMessageCommand {
     pub blocks: Vec<ContentBlock>,
 }
 
+/// Logically removes one leaf Message from its Conversation while preserving immutable history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct DeleteMessageCommand {
+    /// Existing logical Message entity to remove from the visible conversation index.
+    pub message_id: EntityId,
+}
+
 /// Chooses one existing message as the currently visible conversation branch leaf.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -383,6 +391,16 @@ pub struct MessageEditedEvent {
     pub previous_revision_id: EntityId,
     /// New immutable head revision.
     pub revision_id: EntityId,
+}
+
+/// Durable event emitted after one logical Message leaves the visible conversation index.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct MessageDeletedEvent {
+    /// Conversation that previously exposed the Message.
+    pub conversation_id: EntityId,
+    /// Logical Message removed from the visible conversation index.
+    pub message_id: EntityId,
 }
 
 /// Durable event emitted after the selected visible branch changes.

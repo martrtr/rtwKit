@@ -5,12 +5,15 @@ use std::collections::BTreeMap;
 use rintawa_artifacts::ArtifactDigest;
 use rintawa_character_library::{
     CHARACTER_LIBRARY_ACTION_IMPORT, CHARACTER_LIBRARY_ACTION_INSTANTIATE,
-    CHARACTER_LIBRARY_ACTION_REFRESH, CHARACTER_LIBRARY_ACTION_SELECT,
-    CHARACTER_LIBRARY_SURFACE_ID, CHARACTER_TEMPLATE_CONTENT_V1, CharacterContentDocument,
-    CharacterContentRecord, CharacterLibraryController, CharacterLibraryError,
-    CharacterLibraryGateway, CharacterLibraryGatewayError, CharacterLibraryIntent,
-    CharacterTemplate, MAX_CHARACTER_IMPORT_TEXT_BYTES, MAX_CHARACTER_LIBRARY_ENTRIES,
-    build_character_library_snapshot, character_library_surface_contribution, entry_select_node_id,
+    CHARACTER_LIBRARY_ACTION_REFRESH, CHARACTER_LIBRARY_ACTION_SEARCH,
+    CHARACTER_LIBRARY_ACTION_SELECT, CHARACTER_LIBRARY_ACTION_TOGGLE_CAST,
+    CHARACTER_LIBRARY_ACTION_TOGGLE_IMPORT, CHARACTER_LIBRARY_SURFACE_ID,
+    CHARACTER_TEMPLATE_CONTENT_V1, CharacterContentDocument, CharacterContentRecord,
+    CharacterLibraryController, CharacterLibraryError, CharacterLibraryGateway,
+    CharacterLibraryGatewayError, CharacterLibraryIntent, CharacterTemplate,
+    MAX_CHARACTER_IMPORT_TEXT_BYTES, MAX_CHARACTER_LIBRARY_ENTRIES,
+    build_character_library_snapshot, cast_member_toggle_node_id,
+    character_library_surface_contribution, entry_cast_toggle_node_id, entry_select_node_id,
 };
 use rintawa_sdk::{
     contracts::ComponentRef,
@@ -171,6 +174,37 @@ fn test_should_preserve_selection_across_refresh_when_entry_survives() -> anyhow
 }
 
 #[test]
+fn test_should_filter_character_gateway_without_mutating_catalog() -> anyhow::Result<()> {
+    let mut controller = CharacterLibraryController::new(gateway(&[
+        ("id-a", "Alice", "Ada"),
+        ("id-b", "Borin", "Bob"),
+    ]));
+    controller.refresh()?;
+    controller.handle_action(&action(
+        controller.state().revision(),
+        UiNodeId::new("search.input"),
+        CHARACTER_LIBRARY_ACTION_SEARCH,
+        UiActionPayload::Text(String::from("bor")),
+    ))?;
+    assert_eq!(controller.state().entries().len(), 2);
+    assert_eq!(controller.state().search_query(), "bor");
+    let snapshot = build_character_library_snapshot(controller.state());
+    assert!(
+        snapshot
+            .nodes
+            .iter()
+            .any(|node| { matches!(&node.kind, UiNodeKind::Text(text) if text.text == "Borin") })
+    );
+    assert!(
+        !snapshot
+            .nodes
+            .iter()
+            .any(|node| { matches!(&node.kind, UiNodeKind::Text(text) if text.text == "Alice") })
+    );
+    Ok(())
+}
+
+#[test]
 fn test_should_fail_closed_for_stale_spoofed_or_invalid_payload_actions() -> anyhow::Result<()> {
     let mut controller = CharacterLibraryController::new(gateway(&[("id-a", "Alice", "Ada")]));
     controller.refresh()?;
@@ -226,11 +260,25 @@ fn test_should_validate_and_reconcile_tavern_json_import_actions() -> anyhow::Re
     let mut controller = CharacterLibraryController::new(gateway(&[]));
     controller.refresh()?;
     let snapshot = build_character_library_snapshot(controller.state());
+    assert!(
+        snapshot
+            .nodes
+            .iter()
+            .all(|node| node.id.as_str() != "import.source"),
+        "advanced import editor must stay hidden in the default Character Gateway"
+    );
+    controller.handle_action(&action(
+        controller.state().revision(),
+        UiNodeId::new("toolbar.import"),
+        CHARACTER_LIBRARY_ACTION_TOGGLE_IMPORT,
+        UiActionPayload::None,
+    ))?;
+    let snapshot = build_character_library_snapshot(controller.state());
     let import_node = snapshot
         .nodes
         .iter()
         .find(|node| node.id.as_str() == "import.source")
-        .ok_or_else(|| anyhow::anyhow!("import text area must be rendered"))?;
+        .ok_or_else(|| anyhow::anyhow!("opened import text area must be rendered"))?;
     assert!(matches!(
         &import_node.kind,
         UiNodeKind::TextArea(area)
@@ -322,6 +370,12 @@ fn test_should_select_imported_item_only_after_validated_refresh() -> anyhow::Re
     controller.refresh()?;
     controller.handle_action(&action(
         controller.state().revision(),
+        UiNodeId::new("toolbar.import"),
+        CHARACTER_LIBRARY_ACTION_TOGGLE_IMPORT,
+        UiActionPayload::None,
+    ))?;
+    controller.handle_action(&action(
+        controller.state().revision(),
         UiNodeId::new("import.source"),
         CHARACTER_LIBRARY_ACTION_IMPORT,
         UiActionPayload::Text(String::from(
@@ -387,34 +441,73 @@ fn test_should_bound_every_rendered_text_node_with_long_utf8_content() -> anyhow
 }
 
 #[test]
-fn test_should_emit_exact_revision_instantiation_intent() -> anyhow::Result<()> {
+fn test_should_render_removable_cast_chips() -> anyhow::Result<()> {
+    let mut controller = CharacterLibraryController::new(gateway(&[
+        ("id-a", "Alice", "Ada"),
+        ("id-b", "Borin", "Bob"),
+    ]));
+    controller.refresh()?;
+    controller.handle_action(&action(
+        controller.state().revision(),
+        entry_cast_toggle_node_id(0),
+        CHARACTER_LIBRARY_ACTION_TOGGLE_CAST,
+        UiActionPayload::None,
+    ))?;
+
+    let snapshot = build_character_library_snapshot(controller.state());
+    assert!(snapshot.nodes.iter().any(|node| {
+        node.id == cast_member_toggle_node_id(0)
+            && matches!(&node.kind, UiNodeKind::Button(button) if button.label == "Remove")
+    }));
+
+    controller.handle_action(&action(
+        controller.state().revision(),
+        cast_member_toggle_node_id(0),
+        CHARACTER_LIBRARY_ACTION_TOGGLE_CAST,
+        UiActionPayload::None,
+    ))?;
+    assert!(controller.state().cast_ids().is_empty());
+    Ok(())
+}
+
+#[test]
+fn test_should_emit_exact_revision_cast_instantiation_intent() -> anyhow::Result<()> {
     let mut controller = CharacterLibraryController::new(gateway(&[("id-a", "Alice", "Ada")]));
     controller.refresh()?;
-    let snapshot = build_character_library_snapshot(controller.state());
-    let button = snapshot
-        .nodes
-        .iter()
-        .find(|node| node.id.as_str() == "details.instantiate")
-        .ok_or_else(|| anyhow::anyhow!("instantiate button must be rendered"))?;
-    assert!(matches!(button.kind, UiNodeKind::Button(_)));
-
     let expected_revision = controller
         .state()
         .selected_entry()
         .ok_or_else(|| anyhow::anyhow!("selected fixture entry must exist"))?
         .revision
         .to_string();
+
+    controller.handle_action(&action(
+        controller.state().revision(),
+        entry_cast_toggle_node_id(0),
+        CHARACTER_LIBRARY_ACTION_TOGGLE_CAST,
+        UiActionPayload::None,
+    ))?;
+    let snapshot = build_character_library_snapshot(controller.state());
+    let button = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "cast.create-world")
+        .ok_or_else(|| anyhow::anyhow!("cast create button must be rendered"))?;
+    assert!(matches!(button.kind, UiNodeKind::Button(_)));
+
     let intent = controller.handle_action(&action(
         controller.state().revision(),
-        UiNodeId::new("details.instantiate"),
+        UiNodeId::new("cast.create-world"),
         CHARACTER_LIBRARY_ACTION_INSTANTIATE,
         UiActionPayload::None,
     ))?;
     assert_eq!(
         intent,
-        CharacterLibraryIntent::InstantiateSelected {
-            template_id: String::from("id-a"),
-            template_revision: expected_revision,
+        CharacterLibraryIntent::InstantiateCast {
+            templates: vec![rintawa_character_library::CharacterCastSelection {
+                template_id: String::from("id-a"),
+                template_revision: expected_revision,
+            }],
         }
     );
     Ok(())
@@ -433,7 +526,7 @@ fn test_should_bound_catalog_and_render_maximum_snapshot() -> anyhow::Result<()>
     let mut controller = CharacterLibraryController::new(catalog_gateway);
     controller.refresh()?;
     let snapshot = build_character_library_snapshot(controller.state());
-    assert!(snapshot.nodes.len() < 1024);
+    assert!(snapshot.nodes.len() <= 4096);
 
     let mut oversized = gateway(&[]);
     for index in 0..=MAX_CHARACTER_LIBRARY_ENTRIES {

@@ -33,6 +33,9 @@ const TASK_INTERVAL_MS: u32 = 10;
 const NETWORK_READ_BYTES: u32 = 64 * 1024;
 const NETWORK_WRITE_BYTES: usize = 64 * 1024;
 const WS_PATH: &str = "/__rintawa/ws";
+const PRESENTED_ASSET_PATH_PREFIX: &str = "/__rintawa/asset/";
+const IMPORT_ASSET_PATH: &str = "/__rintawa/import-asset";
+const MAX_PICKED_ASSET_BYTES: usize = 1024 * 1024;
 const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 #[derive(Debug, Deserialize)]
@@ -749,7 +752,21 @@ fn process_http_request(component_handle: u64, client_id: u64) -> bool {
             .map(|client| client.inbound.clone())
             .unwrap_or_default()
     });
-    if inbound.len() > MAX_HTTP_HEADER_BYTES {
+    let header_end = inbound
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| index + 4);
+    if header_end.is_none() && inbound.len() > MAX_HTTP_HEADER_BYTES {
+        queue_http_response(
+            component_handle,
+            client_id,
+            431,
+            "text/plain; charset=utf-8",
+            b"request header too large",
+        );
+        return true;
+    }
+    if header_end.is_some_and(|length| length > MAX_HTTP_HEADER_BYTES) {
         queue_http_response(
             component_handle,
             client_id,
@@ -776,6 +793,17 @@ fn process_http_request(component_handle: u64, client_id: u64) -> bool {
             return true;
         }
     };
+    let path = request.path.unwrap_or("/");
+    let request_path = path.split('?').next().unwrap_or(path);
+    if request.method == Some("POST") && request_path == IMPORT_ASSET_PATH {
+        return process_asset_import_request(
+            component_handle,
+            client_id,
+            &inbound,
+            parsed,
+            request.headers,
+        );
+    }
     if request.method != Some("GET") {
         queue_http_response(
             component_handle,
@@ -786,7 +814,6 @@ fn process_http_request(component_handle: u64, client_id: u64) -> bool {
         );
         return true;
     }
-    let path = request.path.unwrap_or("/");
     if path.split('?').next() == Some(WS_PATH) {
         let key = request_header(request.headers, "sec-websocket-key");
         let host = request_header(request.headers, "host");
@@ -837,6 +864,41 @@ fn process_http_request(component_handle: u64, client_id: u64) -> bool {
         return true;
     }
 
+    if request_path.starts_with(PRESENTED_ASSET_PATH_PREFIX) {
+        if let Some(digest) = presented_asset_digest(request_path) {
+            match rintawa::engine::ui_layer::read_presented_asset(&digest) {
+                Ok(asset)
+                    if presented_asset_media_type_allowed(&asset.media_type)
+                        && asset.bytes.len() <= MAX_CLIENT_BUFFER_BYTES =>
+                {
+                    queue_http_immutable_response(
+                        component_handle,
+                        client_id,
+                        200,
+                        &asset.media_type,
+                        &asset.bytes,
+                    );
+                }
+                Ok(_) | Err(_) => queue_http_response(
+                    component_handle,
+                    client_id,
+                    404,
+                    "text/plain; charset=utf-8",
+                    b"not found",
+                ),
+            }
+        } else {
+            queue_http_response(
+                component_handle,
+                client_id,
+                404,
+                "text/plain; charset=utf-8",
+                b"not found",
+            );
+        }
+        return true;
+    }
+
     let asset = normalize_asset_path(path);
     let response = STATE.with(|state| {
         let state = state.borrow();
@@ -868,6 +930,93 @@ fn process_http_request(component_handle: u64, client_id: u64) -> bool {
         }
     }
     true
+}
+
+fn process_asset_import_request(
+    component_handle: u64,
+    client_id: u64,
+    inbound: &[u8],
+    body_offset: usize,
+    headers: &[httparse::Header<'_>],
+) -> bool {
+    let host = request_header(headers, "host");
+    let origin = request_header(headers, "origin");
+    if !host.is_some_and(|host| websocket_origin_allowed(host, origin)) {
+        queue_http_response(
+            component_handle,
+            client_id,
+            400,
+            "text/plain; charset=utf-8",
+            b"invalid origin",
+        );
+        return true;
+    }
+    let Some(content_length) =
+        request_header(headers, "content-length").and_then(|value| value.parse::<usize>().ok())
+    else {
+        queue_http_response(
+            component_handle,
+            client_id,
+            400,
+            "text/plain; charset=utf-8",
+            b"missing content length",
+        );
+        return true;
+    };
+    if content_length == 0 || content_length > MAX_PICKED_ASSET_BYTES {
+        queue_http_response(
+            component_handle,
+            client_id,
+            413,
+            "text/plain; charset=utf-8",
+            b"asset too large",
+        );
+        return true;
+    }
+    let required = body_offset.saturating_add(content_length);
+    if inbound.len() < required {
+        return false;
+    }
+    let media_type = request_header(headers, "content-type").unwrap_or("");
+    let bytes = &inbound[body_offset..required];
+    if !picked_asset_media_type_matches(media_type, bytes) {
+        queue_http_response(
+            component_handle,
+            client_id,
+            415,
+            "text/plain; charset=utf-8",
+            b"unsupported asset type",
+        );
+        return true;
+    }
+    match rintawa::engine::asset_store::import_asset(bytes, media_type) {
+        Ok(reference) => {
+            let body = serde_json::to_vec(&json!({
+                "digest": reference.digest,
+                "size": reference.size,
+                "media_type": reference.media_type,
+            }))
+            .unwrap_or_default();
+            queue_http_response(component_handle, client_id, 200, "application/json", &body);
+        }
+        Err(_) => queue_http_response(
+            component_handle,
+            client_id,
+            400,
+            "text/plain; charset=utf-8",
+            b"asset import rejected",
+        ),
+    }
+    true
+}
+
+fn picked_asset_media_type_matches(media_type: &str, bytes: &[u8]) -> bool {
+    match media_type {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/webp" => bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+        _ => false,
+    }
 }
 
 fn request_header<'a>(headers: &'a [httparse::Header<'a>], name: &str) -> Option<&'a str> {
@@ -908,6 +1057,22 @@ fn loopback_host_allowed(host: &str) -> bool {
     hostname == "127.0.0.1" || hostname.eq_ignore_ascii_case("localhost")
 }
 
+fn presented_asset_digest(path: &str) -> Option<String> {
+    let hex = path.strip_prefix(PRESENTED_ASSET_PATH_PREFIX)?;
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    Some(format!("sha256:{hex}"))
+}
+
+fn presented_asset_media_type_allowed(media_type: &str) -> bool {
+    matches!(media_type, "image/png" | "image/webp" | "image/jpeg")
+}
+
 fn normalize_asset_path(path: &str) -> Option<String> {
     let path = path.split('?').next().unwrap_or(path);
     if path == "/" {
@@ -931,6 +1096,8 @@ fn http_response_header(status: u16, content_type: &str, content_length: usize) 
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        413 => "Payload Too Large",
+        415 => "Unsupported Media Type",
         431 => "Request Header Fields Too Large",
         _ => "Error",
     };
@@ -938,6 +1105,45 @@ fn http_response_header(status: u16, content_type: &str, content_length: usize) 
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
     )
     .into_bytes()
+}
+
+fn http_immutable_response_header(
+    status: u16,
+    content_type: &str,
+    content_length: usize,
+) -> Vec<u8> {
+    let reason = if status == 200 { "OK" } else { "Error" };
+    format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\nConnection: close\r\nCache-Control: public, max-age=31536000, immutable\r\nX-Content-Type-Options: nosniff\r\nCross-Origin-Resource-Policy: same-origin\r\n\r\n"
+    )
+    .into_bytes()
+}
+
+fn queue_http_immutable_response(
+    component_handle: u64,
+    client_id: u64,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+) {
+    let header = http_immutable_response_header(status, content_type, body.len());
+    STATE.with(|state| {
+        if let Some(client) = state
+            .borrow_mut()
+            .components
+            .get_mut(&component_handle)
+            .and_then(|component| component.clients.get_mut(&client_id))
+        {
+            client.inbound.clear();
+            client.mode = ClientMode::HttpResponse;
+            client.outbound.clear();
+            client.outbound_offset = 0;
+            client.outbound.extend_from_slice(&header);
+            client.outbound.extend_from_slice(body);
+            client.pending_asset = None;
+            client.close_after_write = true;
+        }
+    });
 }
 
 fn queue_http_asset(
@@ -1545,6 +1751,47 @@ mod tests {
         assert_eq!(normalize_asset_path("/../secret"), Some(String::new()));
         assert_eq!(normalize_asset_path("/a//b"), Some(String::new()));
         assert_eq!(normalize_asset_path("/a\\b"), Some(String::new()));
+    }
+
+    #[test]
+    fn test_should_validate_picked_asset_media_by_declared_type_and_magic_bytes() {
+        assert!(picked_asset_media_type_matches(
+            "image/png",
+            b"\x89PNG\r\n\x1a\nrest"
+        ));
+        assert!(picked_asset_media_type_matches(
+            "image/jpeg",
+            &[0xff, 0xd8, 0xff, 0xe0]
+        ));
+        assert!(picked_asset_media_type_matches(
+            "image/webp",
+            b"RIFF1234WEBPrest"
+        ));
+        assert!(!picked_asset_media_type_matches("image/png", b"not png"));
+        assert!(!picked_asset_media_type_matches("image/svg+xml", b"<svg/>"));
+    }
+
+    #[test]
+    fn test_should_accept_only_canonical_presented_asset_paths_and_media() {
+        let digest = "a".repeat(64);
+        assert_eq!(
+            presented_asset_digest(&format!("/__rintawa/asset/{digest}")),
+            Some(format!("sha256:{digest}"))
+        );
+        assert_eq!(
+            presented_asset_digest(&format!("/__rintawa/asset/{}", "A".repeat(64))),
+            None
+        );
+        assert_eq!(presented_asset_digest("/__rintawa/asset/short"), None);
+        assert_eq!(
+            presented_asset_digest(&format!("/__rintawa/asset/{digest}/extra")),
+            None
+        );
+        assert!(presented_asset_media_type_allowed("image/png"));
+        assert!(presented_asset_media_type_allowed("image/webp"));
+        assert!(presented_asset_media_type_allowed("image/jpeg"));
+        assert!(!presented_asset_media_type_allowed("image/svg+xml"));
+        assert!(!presented_asset_media_type_allowed("text/html"));
     }
 
     #[test]

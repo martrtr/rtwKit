@@ -78,6 +78,15 @@ const image = z.object({
   height: z.number().int().positive().max(4096).nullable(),
 });
 
+const assetImage = z.object({
+  digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  size: z.number().int().positive().max(1024 * 1024),
+  media_type: z.enum(["image/png", "image/webp", "image/jpeg"]),
+  alt: z.string(),
+  width: z.number().int().positive().max(4096).nullable(),
+  height: z.number().int().positive().max(4096).nullable(),
+});
+
 const checkbox = z.object({
   label: z.string(),
   checked: z.boolean(),
@@ -104,6 +113,14 @@ const split = z
     (value) => value.children.length === value.weights.length,
     "split children/weights length mismatch",
   );
+
+const assetPicker = z.object({
+  label: z.string(),
+  accepted_media_types: z.array(z.string().min(3).max(128)).min(1).max(16),
+  max_bytes: z.number().int().positive().max(16 * 1024 * 1024),
+  change_action: identifier,
+  is_enabled: z.boolean(),
+});
 
 const textInput = z.object({
   value: z.string(),
@@ -215,10 +232,12 @@ const nodeKind = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("icon"), data: icon }),
   z.object({ type: z.literal("image"), data: image }),
+  z.object({ type: z.literal("asset-image"), data: assetImage }),
   z.object({ type: z.literal("checkbox"), data: checkbox }),
   z.object({ type: z.literal("select"), data: select }),
   z.object({ type: z.literal("text-input"), data: textInput }),
   z.object({ type: z.literal("text-area"), data: textInput }),
+  z.object({ type: z.literal("asset-picker"), data: assetPicker }),
   z.object({ type: z.literal("split"), data: split }),
   z.object({ type: z.literal("row"), data: z.object({ children: z.array(identifier) }) }),
   z.object({ type: z.literal("column"), data: z.object({ children: z.array(identifier) }) }),

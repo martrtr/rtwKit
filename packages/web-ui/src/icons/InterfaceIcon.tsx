@@ -1,11 +1,5 @@
-import {
-  createContext,
-  useContext,
-} from "react";
-import type {
-  ComponentType,
-  ReactNode,
-} from "react";
+import { createContext, useContext } from "react";
+import type { ComponentType, ReactNode } from "react";
 import {
   IconAlertTriangle,
   IconBox,
@@ -18,9 +12,12 @@ import {
   IconPuzzle,
   IconSearch,
   IconSettings,
+  IconSparkles,
   IconTool,
   IconTrash,
   IconUpload,
+  IconUser,
+  IconUsers,
   IconWorld,
 } from "@tabler/icons-react";
 
@@ -41,9 +38,12 @@ const STANDARD_GLYPHS: Record<string, IconComponent> = {
   puzzle: IconPuzzle,
   search: IconSearch,
   settings: IconSettings,
+  sparkles: IconSparkles,
   tool: IconTool,
   trash: IconTrash,
   upload: IconUpload,
+  user: IconUser,
+  users: IconUsers,
   warning: IconAlertTriangle,
   world: IconWorld,
 };
@@ -53,7 +53,11 @@ const STANDARD_SLOT_MAP: Record<string, string> = {
   "activity.management": "tool",
   "activity.extension": "puzzle",
   "activity.worlds": "world",
+  "activity.characters": "users",
+  "character.portrait": "user",
   "world.thumbnail": "world",
+  "participant.local": "user",
+  "participant.remote": "sparkles",
   "action.download": "download",
   "action.update": "upload",
   "action.remove": "trash",
@@ -96,7 +100,6 @@ export function InterfaceIcon({
     (slot ? STANDARD_SLOT_MAP[slot] : undefined) ??
     STANDARD_SLOT_MAP["fallback.generic"];
   const Icon =
-    (glyphId ? STANDARD_GLYPHS[glyphId] : undefined) ??
-    STANDARD_GLYPHS.box;
+    (glyphId ? STANDARD_GLYPHS[glyphId] : undefined) ?? STANDARD_GLYPHS.box;
   return <Icon size={size} stroke={1.8} aria-hidden />;
 }

@@ -18,19 +18,39 @@
   --rintawa-ui-radius-control: var(--rintawa-radius-control, 0.5rem);
 
   /* ui.font.* */
-  --rintawa-ui-font-body: var(--rintawa-font-body, Inter, ui-sans-serif, system-ui, sans-serif);
-  --rintawa-ui-font-heading: var(--rintawa-font-heading, var(--rintawa-ui-font-body));
-  --rintawa-ui-font-monospace: var(--rintawa-font-monospace, ui-monospace, SFMono-Regular, monospace);
+  --rintawa-ui-font-body: var(
+    --rintawa-font-body,
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif
+  );
+  --rintawa-ui-font-heading: var(
+    --rintawa-font-heading,
+    var(--rintawa-ui-font-body)
+  );
+  --rintawa-ui-font-monospace: var(
+    --rintawa-font-monospace,
+    ui-monospace,
+    SFMono-Regular,
+    monospace
+  );
 
   /* Web renderer-only seams; these are not portable token IDs. */
   --rintawa-web-color-scheme: dark;
   --rintawa-web-color-background: var(--rintawa-color-background, #111113);
   --rintawa-web-color-border: var(--rintawa-color-border, #2c2c31);
   --rintawa-web-color-control-border: var(--rintawa-color-border, #3f3f46);
-  --rintawa-web-radius-surface: var(--rintawa-radius-surface, var(--rintawa-radius-control, 0.75rem));
+  --rintawa-web-radius-surface: var(
+    --rintawa-radius-surface,
+    var(--rintawa-radius-control, 0.75rem)
+  );
   --rintawa-web-activity-rail-width: 3rem;
   --rintawa-web-dock-min-width: 13rem;
   --rintawa-web-tab-height: 2.35rem;
+  --rintawa-web-chat-max-width: 64rem;
+  --rintawa-web-chat-avatar-size: 3rem;
+  --rintawa-web-chat-composer-min-height: 3.25rem;
   --rintawa-web-motion-fast: 120ms;
   --rintawa-web-motion-normal: 180ms;
   --rintawa-web-motion-easing: cubic-bezier(0.2, 0, 0, 1);

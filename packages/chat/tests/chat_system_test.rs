@@ -5,11 +5,12 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result, bail};
 use rintawa_chat::{
     AddParticipantCommand, ContentBlock, ConversationState, CreateConversationCommand,
-    EditMessageCommand, MessageContent, MessageState, ParticipantBinding,
+    DeleteMessageCommand, EditMessageCommand, MessageContent, MessageState, ParticipantBinding,
     ParticipantBindingRequest, ParticipantIdentity, SendMessageCommand,
     chat_add_participant_command_schema_key, chat_all_world_schemas,
-    chat_create_conversation_command_schema_key, chat_edit_message_command_schema_key,
-    chat_send_message_command_schema_key, chat_surface_contribution, evaluate_chat_world_system,
+    chat_create_conversation_command_schema_key, chat_delete_message_command_schema_key,
+    chat_edit_message_command_schema_key, chat_send_message_command_schema_key,
+    chat_surface_contribution, evaluate_chat_world_system,
 };
 use rintawa_sdk::{
     world::{CommandId, CorrelationId, EntityId, PrincipalId, SchemaKey, WorldId},
@@ -195,7 +196,7 @@ fn facet_payload<T: serde::de::DeserializeOwned>(
 #[test]
 fn test_should_publish_unique_versioned_chat_schemas() -> Result<()> {
     let schemas = chat_all_world_schemas()?;
-    assert_eq!(schemas.len(), 28);
+    assert_eq!(schemas.len(), 30);
     let keys = schemas
         .iter()
         .map(|schema| schema.key().to_string())
@@ -415,6 +416,149 @@ fn test_should_authorize_participant_send_and_preserve_message_revisions() -> Re
         "rintawa.chat.message-state@1",
     )?;
     assert_eq!(edited_state.current_revision, edited_revision);
+    Ok(())
+}
+
+#[test]
+fn test_should_logically_delete_selected_leaf_and_restore_parent_selection() -> Result<()> {
+    let principal = PrincipalId::new();
+    let conversation_id = EntityId::new();
+    let participant_id = EntityId::new();
+    let parent_id = EntityId::new();
+    let leaf_id = EntityId::new();
+    let parent_state = MessageState {
+        conversation_id,
+        author_participant_id: participant_id,
+        parent_message_id: None,
+        alternative_of: None,
+        current_revision: EntityId::new(),
+    };
+    let leaf_state = MessageState {
+        conversation_id,
+        author_participant_id: participant_id,
+        parent_message_id: Some(parent_id),
+        alternative_of: None,
+        current_revision: EntityId::new(),
+    };
+    let conversation = ConversationState {
+        title: Some(String::from("Session")),
+        selected_leaf: Some(leaf_id),
+        participant_ids: vec![participant_id],
+        message_ids: vec![parent_id, leaf_id],
+    };
+    let request = request(
+        chat_delete_message_command_schema_key()?,
+        serde_json::to_value(DeleteMessageCommand {
+            message_id: leaf_id,
+        })?,
+        principal,
+        WorldSystemActor::Principal(principal),
+        Vec::new(),
+    );
+    let first = reads(evaluate_chat_world_system(&request))?;
+    assert_eq!(first.len(), 2);
+    let first_round = vec![
+        entity_result(leaf_id, "rintawa.chat.message@1")?,
+        facet_result(leaf_id, "rintawa.chat.message-state@1", &leaf_state)?,
+    ];
+    let second = reads(evaluate_chat_world_system(&with_reads(
+        &request,
+        first_round.clone(),
+    )))?;
+    assert_eq!(second.len(), 2);
+    let mut second_round = first_round;
+    second_round.extend([
+        entity_result(conversation_id, "rintawa.chat.conversation@1")?,
+        facet_result(
+            conversation_id,
+            "rintawa.chat.conversation-state@1",
+            &conversation,
+        )?,
+    ]);
+    let third = reads(evaluate_chat_world_system(&with_reads(
+        &request,
+        second_round.clone(),
+    )))?;
+    assert_eq!(third.len(), 1);
+    second_round.push(facet_result(
+        parent_id,
+        "rintawa.chat.message-state@1",
+        &parent_state,
+    )?);
+    let transaction = transaction(evaluate_chat_world_system(&with_reads(
+        &request,
+        second_round,
+    )))?;
+    assert!(
+        transaction
+            .mutations
+            .iter()
+            .any(|mutation| matches!(mutation, WorldSystemMutation::DeleteRelation { .. }))
+    );
+    let updated: ConversationState = facet_payload(
+        &transaction,
+        conversation_id,
+        "rintawa.chat.conversation-state@1",
+    )?;
+    assert_eq!(updated.message_ids, vec![parent_id]);
+    assert_eq!(updated.selected_leaf, Some(parent_id));
+    assert!(!transaction.mutations.iter().any(|mutation| matches!(
+        mutation,
+        WorldSystemMutation::DeleteEntity { entity_id } if *entity_id == leaf_id
+    )));
+    Ok(())
+}
+
+#[test]
+fn test_should_reject_logical_delete_when_another_message_references_target() -> Result<()> {
+    let principal = PrincipalId::new();
+    let conversation_id = EntityId::new();
+    let participant_id = EntityId::new();
+    let target_id = EntityId::new();
+    let child_id = EntityId::new();
+    let target = MessageState {
+        conversation_id,
+        author_participant_id: participant_id,
+        parent_message_id: None,
+        alternative_of: None,
+        current_revision: EntityId::new(),
+    };
+    let child = MessageState {
+        conversation_id,
+        author_participant_id: participant_id,
+        parent_message_id: Some(target_id),
+        alternative_of: None,
+        current_revision: EntityId::new(),
+    };
+    let conversation = ConversationState {
+        title: None,
+        selected_leaf: Some(target_id),
+        participant_ids: vec![participant_id],
+        message_ids: vec![target_id, child_id],
+    };
+    let request = request(
+        chat_delete_message_command_schema_key()?,
+        serde_json::to_value(DeleteMessageCommand {
+            message_id: target_id,
+        })?,
+        principal,
+        WorldSystemActor::Principal(principal),
+        vec![
+            entity_result(target_id, "rintawa.chat.message@1")?,
+            facet_result(target_id, "rintawa.chat.message-state@1", &target)?,
+            entity_result(conversation_id, "rintawa.chat.conversation@1")?,
+            facet_result(
+                conversation_id,
+                "rintawa.chat.conversation-state@1",
+                &conversation,
+            )?,
+            facet_result(child_id, "rintawa.chat.message-state@1", &child)?,
+        ],
+    );
+    assert!(matches!(
+        evaluate_chat_world_system(&request),
+        WorldSystemServiceResponse::Rejected { .. }
+    ));
     Ok(())
 }
 

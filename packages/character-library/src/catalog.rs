@@ -8,10 +8,14 @@ use crate::{CHARACTER_TEMPLATE_CONTENT_V1, CharacterTemplate};
 
 /// Maximum CharacterTemplate items loaded into one bounded library snapshot.
 pub const MAX_CHARACTER_LIBRARY_ENTRIES: usize = 128;
+/// Maximum reusable CharacterTemplates selected into one new World cast.
+pub const MAX_CHARACTER_CAST_ENTRIES: usize = 32;
 /// Maximum byte length accepted for one opaque host-local user-content identity.
 pub const MAX_CHARACTER_LIBRARY_ID_BYTES: usize = 128;
 /// Maximum Tavern V2 JSON text accepted from one Portable UI submit action.
 pub const MAX_CHARACTER_IMPORT_TEXT_BYTES: usize = 256 * 1024;
+/// Maximum UTF-8 byte length accepted for the Character Gateway search query.
+pub const MAX_CHARACTER_SEARCH_BYTES: usize = 256;
 
 /// Transport-neutral mirror of one generic user-content list record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,10 +53,13 @@ pub struct CharacterLibraryEntry {
 pub struct CharacterLibraryState {
     pub(crate) entries: Vec<CharacterLibraryEntry>,
     pub(crate) selected_id: Option<String>,
+    pub(crate) cast_ids: Vec<String>,
     pub(crate) revision: u64,
     pub(crate) import_source: String,
     pub(crate) import_status: Option<String>,
     pub(crate) import_pending: bool,
+    pub(crate) search_query: String,
+    pub(crate) import_open: bool,
 }
 
 impl CharacterLibraryState {
@@ -70,6 +77,15 @@ impl CharacterLibraryState {
     /// Returns the current selected opaque user-content identity.
     pub fn selected_id(&self) -> Option<&str> {
         self.selected_id.as_deref()
+    }
+    /// Returns stable logical ids currently selected into the new-World cast.
+    pub fn cast_ids(&self) -> &[String] {
+        &self.cast_ids
+    }
+
+    /// Returns whether one current library entry belongs to the new-World cast.
+    pub fn is_in_cast(&self, id: &str) -> bool {
+        self.cast_ids.iter().any(|candidate| candidate == id)
     }
 
     /// Returns the monotonic Portable UI revision owned by the package.
@@ -90,6 +106,16 @@ impl CharacterLibraryState {
     /// Returns whether a deferred Host user-content write is awaiting completion.
     pub const fn import_pending(&self) -> bool {
         self.import_pending
+    }
+
+    /// Returns the current bounded Character Gateway search query.
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
+    /// Returns whether the advanced Tavern import panel is currently visible.
+    pub const fn import_open(&self) -> bool {
+        self.import_open
     }
 }
 
@@ -193,6 +219,9 @@ pub enum CharacterLibraryError {
     /// Tavern JSON submitted from Portable UI exceeds the package UI bound.
     #[error("Character import source exceeds the package UI bound")]
     ImportSourceTooLarge,
+    /// Character Gateway search text exceeds the presentation bound.
+    #[error("Character search query exceeds the package UI bound")]
+    SearchQueryTooLarge,
     /// A second import was submitted before the previous deferred write completed.
     #[error("Character import is already pending")]
     ImportAlreadyPending,
@@ -202,6 +231,12 @@ pub enum CharacterLibraryError {
     /// A known semantic action was emitted from a node that does not own it.
     #[error("Character Library action was emitted from the wrong node")]
     WrongActionNode,
+    /// New-World cast contains too many reusable templates.
+    #[error("Character cast exceeds the package bound")]
+    CastTooLarge,
+    /// World materialization was requested without any selected CharacterTemplate.
+    #[error("Character cast is empty")]
+    EmptyCast,
     /// Row selection does not correspond to the current catalog.
     #[error("Character Library action references an unknown catalog row")]
     UnknownEntryAction,

@@ -6,17 +6,21 @@
 use std::{cell::RefCell, collections::BTreeSet};
 
 use rintawa_chat::{
-    AddParticipantCommand, CHAT_ACTION_CREATE_CONVERSATION, CHAT_ACTION_REFRESH,
+    AddParticipantCommand, CHAT_ACTION_ATTACH_ASSET, CHAT_ACTION_CREATE_CONVERSATION,
+    CHAT_ACTION_DELETE_MESSAGE, CHAT_ACTION_EDIT_CANCEL, CHAT_ACTION_EDIT_MESSAGE,
+    CHAT_ACTION_EDIT_SUBMIT, CHAT_ACTION_REFRESH, CHAT_ACTION_REMOVE_ATTACHMENT,
     CHAT_ACTION_SELECT_BRANCH, CHAT_ACTION_SELECT_CONVERSATION, CHAT_ACTION_SEND,
-    CHAT_ACTION_SHOW_CONVERSATIONS, CHAT_SURFACE_ID, ChatConversationView, ChatProjectionInput,
-    ContentBlock, CreateConversationCommand, ParticipantBindingRequest, SelectBranchCommand,
-    SendMessageCommand, build_chat_snapshot, chat_add_participant_command_schema_key,
-    chat_all_world_schemas, chat_conversation_projection_schema_key,
-    chat_create_conversation_command_schema_key, chat_edit_message_command_schema_key,
+    CHAT_ACTION_SHOW_CONVERSATIONS, CHAT_SURFACE_ID, ChatComposerAttachment, ChatConversationView,
+    ChatProjectionInput, ContentBlock, CreateConversationCommand, DeleteMessageCommand,
+    EditMessageCommand, ParticipantBindingRequest, SelectBranchCommand, SendMessageCommand,
+    build_chat_snapshot, chat_add_participant_command_schema_key, chat_all_world_schemas,
+    chat_conversation_projection_schema_key, chat_create_conversation_command_schema_key,
+    chat_delete_message_command_schema_key, chat_edit_message_command_schema_key,
     chat_request_alternative_command_schema_key, chat_select_branch_command_schema_key,
     chat_send_message_command_schema_key, chat_surface_contribution, conversation_select_node_id,
-    evaluate_chat_projection, evaluate_chat_world_system, message_select_branch_node_id,
-    show_conversations_node_id,
+    evaluate_chat_projection, evaluate_chat_world_system, message_delete_node_id,
+    message_edit_cancel_node_id, message_edit_input_node_id, message_edit_node_id,
+    message_select_branch_node_id, show_conversations_node_id,
 };
 use rintawa_sdk::{
     contracts::world_presentation_contract_key,
@@ -57,6 +61,8 @@ struct RuntimeState {
     projection_polls: u16,
     refresh_needed: bool,
     status: Option<String>,
+    editing_message_id: Option<EntityId>,
+    attachments: Vec<ChatComposerAttachment>,
     ui_revision: u64,
 }
 
@@ -105,6 +111,7 @@ impl exports::rintawa::engine::guest::Guest for ChatRuntime {
             let mut state = slot.borrow_mut();
             state.world_id = Some(world_id);
             state.refresh_needed = true;
+            state.status = Some(String::from("Opening Chat…"));
         });
 
         let task_handle =
@@ -122,9 +129,6 @@ impl exports::rintawa::engine::guest::Guest for ChatRuntime {
 
         if let Err(error) = render_surface() {
             log_error(&error);
-        }
-        if let Err(error) = tick() {
-            record_runtime_error(&error);
         }
     }
 
@@ -369,6 +373,14 @@ fn poll_projection() -> Result<bool, String> {
             STATE.with(|slot| {
                 let mut state = slot.borrow_mut();
                 state.selected_conversation_id = conversation_view.selected_conversation_id;
+                if state.editing_message_id.is_some_and(|editing| {
+                    !conversation_view
+                        .messages
+                        .iter()
+                        .any(|message| message.id == editing)
+                }) {
+                    state.editing_message_id = None;
+                }
                 state.view = Some(conversation_view);
                 state.projection_operation_id = None;
                 state.projection_polls = 0;
@@ -433,6 +445,24 @@ fn handle_ui_action(event: &UiActionEvent) -> Result<(), String> {
             require_no_payload(event)?;
             select_branch(event)
         }
+        CHAT_ACTION_EDIT_MESSAGE => {
+            require_no_payload(event)?;
+            begin_edit_message(event)
+        }
+        CHAT_ACTION_EDIT_CANCEL => {
+            require_no_payload(event)?;
+            cancel_edit_message(event)
+        }
+        CHAT_ACTION_EDIT_SUBMIT => submit_edit_message(event),
+        CHAT_ACTION_DELETE_MESSAGE => {
+            require_no_payload(event)?;
+            delete_message(event)
+        }
+        CHAT_ACTION_ATTACH_ASSET => attach_asset(event),
+        CHAT_ACTION_REMOVE_ATTACHMENT => {
+            require_no_payload(event)?;
+            remove_attachment(event)
+        }
         CHAT_ACTION_SEND => send_message(event),
         _ => Err(String::from("Chat received an unknown semantic action")),
     }
@@ -465,6 +495,7 @@ fn create_conversation() -> Result<(), String> {
     STATE.with(|slot| {
         let mut state = slot.borrow_mut();
         state.selected_conversation_id = Some(conversation_id);
+        state.editing_message_id = None;
         state.refresh_needed = true;
         state.status = Some(String::from("Creating conversation…"));
     });
@@ -492,6 +523,7 @@ fn show_conversations(event: &UiActionEvent) -> Result<(), String> {
             ));
         }
         state.selected_conversation_id = None;
+        state.editing_message_id = None;
         state.status = None;
         let view = state
             .view
@@ -520,6 +552,7 @@ fn select_conversation(event: &UiActionEvent) -> Result<(), String> {
     STATE.with(|slot| {
         let mut state = slot.borrow_mut();
         state.selected_conversation_id = Some(selected);
+        state.editing_message_id = None;
         state.refresh_needed = true;
         state.status = Some(String::from("Loading conversation…"));
     });
@@ -550,15 +583,202 @@ fn select_branch(event: &UiActionEvent) -> Result<(), String> {
             message_id,
         },
     )?;
+    STATE.with(|slot| slot.borrow_mut().editing_message_id = None);
     mark_refresh("Selecting branch…");
+    Ok(())
+}
+
+fn begin_edit_message(event: &UiActionEvent) -> Result<(), String> {
+    let message_id = STATE.with(|slot| {
+        let state = slot.borrow();
+        let view = state.view.as_ref()?;
+        view.messages
+            .iter()
+            .enumerate()
+            .find(|(index, message)| {
+                message_edit_node_id(*index) == event.node_id && message_is_editable(view, message)
+            })
+            .map(|(_, message)| message.id)
+    });
+    let message_id = message_id
+        .ok_or_else(|| String::from("Chat edit action is stale, spoofed, or not authorized"))?;
+    STATE.with(|slot| {
+        let mut state = slot.borrow_mut();
+        state.editing_message_id = Some(message_id);
+        state.status = None;
+    });
+    Ok(())
+}
+
+fn cancel_edit_message(event: &UiActionEvent) -> Result<(), String> {
+    let matches = STATE.with(|slot| {
+        let state = slot.borrow();
+        let editing = state.editing_message_id?;
+        let view = state.view.as_ref()?;
+        view.messages
+            .iter()
+            .position(|message| message.id == editing)
+            .map(|index| message_edit_cancel_node_id(index) == event.node_id)
+    });
+    if matches != Some(true) {
+        return Err(String::from("Chat edit-cancel action is stale or spoofed"));
+    }
+    STATE.with(|slot| slot.borrow_mut().editing_message_id = None);
+    Ok(())
+}
+
+fn submit_edit_message(event: &UiActionEvent) -> Result<(), String> {
+    let replacement = match &event.payload {
+        UiActionPayload::Text(text) if !text.trim().is_empty() => text.clone(),
+        _ => return Err(String::from("Chat message edit requires non-empty content")),
+    };
+    let context = STATE.with(|slot| {
+        let state = slot.borrow();
+        let editing = state.editing_message_id?;
+        let view = state.view.as_ref()?;
+        let (index, message) = view
+            .messages
+            .iter()
+            .enumerate()
+            .find(|(_, message)| message.id == editing)?;
+        if message_edit_input_node_id(index) != event.node_id || !message_is_editable(view, message)
+        {
+            return None;
+        }
+        let participant = view.participants.iter().find(|participant| {
+            participant.id == message.author_participant_id && participant.can_send
+        })?;
+        let block = match message.blocks.as_slice() {
+            [ContentBlock::Markdown { .. }] => ContentBlock::Markdown {
+                markdown: replacement.clone(),
+            },
+            [ContentBlock::Text { .. }] => ContentBlock::Text {
+                text: replacement.clone(),
+            },
+            _ => return None,
+        };
+        Some((message.id, participant.linked_entity, block))
+    });
+    let (message_id, linked_entity, block) = context
+        .ok_or_else(|| String::from("Chat edit action is stale, spoofed, or not authorized"))?;
+    let actor = linked_entity.map_or(
+        rintawa::engine::world_commands::Actor::Principal,
+        |entity_id| rintawa::engine::world_commands::Actor::Entity(entity_id.to_string()),
+    );
+    submit_command(
+        chat_edit_message_command_schema_key()
+            .map_err(|error| format!("Chat command schema construction failed: {error}"))?,
+        actor,
+        &EditMessageCommand {
+            message_id,
+            blocks: vec![block],
+        },
+    )?;
+    STATE.with(|slot| slot.borrow_mut().editing_message_id = None);
+    mark_refresh("Saving message…");
+    Ok(())
+}
+
+fn delete_message(event: &UiActionEvent) -> Result<(), String> {
+    let message_id = STATE.with(|slot| {
+        let state = slot.borrow();
+        let view = state.view.as_ref()?;
+        view.messages
+            .iter()
+            .enumerate()
+            .find(|(index, message)| {
+                message_delete_node_id(*index) == event.node_id
+                    && view.selected_leaf == Some(message.id)
+            })
+            .map(|(_, message)| message.id)
+    });
+    let message_id = message_id.ok_or_else(|| {
+        String::from("Chat delete action is stale or does not target the selected leaf")
+    })?;
+    submit_command(
+        chat_delete_message_command_schema_key()
+            .map_err(|error| format!("Chat command schema construction failed: {error}"))?,
+        rintawa::engine::world_commands::Actor::Principal,
+        &DeleteMessageCommand { message_id },
+    )?;
+    STATE.with(|slot| slot.borrow_mut().editing_message_id = None);
+    mark_refresh("Deleting message…");
+    Ok(())
+}
+
+fn message_is_editable(
+    view: &ChatConversationView,
+    message: &rintawa_chat::ChatMessageView,
+) -> bool {
+    let controllable_author = view
+        .participants
+        .iter()
+        .any(|participant| participant.id == message.author_participant_id && participant.can_send);
+    controllable_author
+        && matches!(
+            message.blocks.as_slice(),
+            [ContentBlock::Text { .. }] | [ContentBlock::Markdown { .. }]
+        )
+}
+
+fn attach_asset(event: &UiActionEvent) -> Result<(), String> {
+    let UiActionPayload::Asset(reference) = &event.payload else {
+        return Err(String::from("Chat attachment requires an asset reference"));
+    };
+    if event.node_id.as_str() != "composer.attach" {
+        return Err(String::from("Chat attachment action is stale or spoofed"));
+    }
+    let digest = rintawa_artifacts::AssetDigest::parse(&reference.digest)
+        .map_err(|error| format!("Chat attachment digest is invalid: {error}"))?;
+    let asset =
+        rintawa_artifacts::AssetRef::new(digest, reference.size, reference.media_type.clone())
+            .map_err(|error| format!("Chat attachment reference is invalid: {error}"))?;
+    if !matches!(
+        asset.media_type.as_str(),
+        "image/png" | "image/jpeg" | "image/webp"
+    ) {
+        return Err(String::from("Chat attachment media type is unsupported"));
+    }
+    STATE.with(|slot| {
+        let mut state = slot.borrow_mut();
+        if state.attachments.len() >= 8 {
+            return Err(String::from("Chat composer attachment limit reached"));
+        }
+        state.attachments.push(ChatComposerAttachment {
+            asset,
+            name: reference.name.clone(),
+        });
+        state.status = None;
+        Ok(())
+    })
+}
+
+fn remove_attachment(event: &UiActionEvent) -> Result<(), String> {
+    let index = STATE.with(|slot| {
+        let state = slot.borrow();
+        state
+            .attachments
+            .iter()
+            .enumerate()
+            .find(|(index, _)| rintawa_chat::attachment_remove_node_id(*index) == event.node_id)
+            .map(|(index, _)| index)
+    });
+    let index = index.ok_or_else(|| String::from("Chat attachment action is stale or spoofed"))?;
+    STATE.with(|slot| {
+        slot.borrow_mut().attachments.remove(index);
+    });
     Ok(())
 }
 
 fn send_message(event: &UiActionEvent) -> Result<(), String> {
     let text = match &event.payload {
-        UiActionPayload::Text(text) if !text.trim().is_empty() => text.clone(),
-        _ => return Err(String::from("Chat composer requires non-empty text")),
+        UiActionPayload::Text(text) => text.clone(),
+        _ => return Err(String::from("Chat composer requires text payload")),
     };
+    let attachments = STATE.with(|slot| slot.borrow().attachments.clone());
+    if text.trim().is_empty() && attachments.is_empty() {
+        return Err(String::from("Chat composer requires text or an attachment"));
+    }
     let context = STATE.with(|slot| {
         let state = slot.borrow();
         let view = state.view.as_ref()?;
@@ -582,6 +802,19 @@ fn send_message(event: &UiActionEvent) -> Result<(), String> {
         rintawa::engine::world_commands::Actor::Principal,
         |entity_id| rintawa::engine::world_commands::Actor::Entity(entity_id.to_string()),
     );
+    let mut blocks = Vec::with_capacity(usize::from(!text.trim().is_empty()) + attachments.len());
+    if !text.trim().is_empty() {
+        blocks.push(ContentBlock::Markdown { markdown: text });
+    }
+    blocks.extend(
+        attachments
+            .iter()
+            .cloned()
+            .map(|attachment| ContentBlock::ImageRef {
+                asset: attachment.asset,
+                alt: attachment.name,
+            }),
+    );
     submit_command(
         chat_send_message_command_schema_key()
             .map_err(|error| format!("Chat command schema construction failed: {error}"))?,
@@ -591,9 +824,10 @@ fn send_message(event: &UiActionEvent) -> Result<(), String> {
             participant_id,
             parent_message_id,
             alternative_of: None,
-            blocks: vec![ContentBlock::Text { text }],
+            blocks,
         },
     )?;
+    STATE.with(|slot| slot.borrow_mut().attachments.clear());
     mark_refresh("Sending message…");
     Ok(())
 }
@@ -733,6 +967,7 @@ fn command_schema_keys() -> Result<Vec<SchemaKey>, String> {
         chat_add_participant_command_schema_key(),
         chat_send_message_command_schema_key(),
         chat_edit_message_command_schema_key(),
+        chat_delete_message_command_schema_key(),
         chat_select_branch_command_schema_key(),
         chat_request_alternative_command_schema_key(),
     ]
@@ -756,24 +991,29 @@ fn schema_kind(kind: SchemaKind) -> rintawa::engine::world_registration::SchemaK
 }
 
 fn render_surface() -> Result<(), String> {
-    let (revision, world_id, view, status) = STATE.with(|slot| {
-        let mut state = slot.borrow_mut();
-        state.ui_revision = state
-            .ui_revision
-            .checked_add(1)
-            .ok_or_else(|| String::from("Chat UI revision overflow"))?;
-        Ok::<_, String>((
-            state.ui_revision,
-            state.world_id.clone(),
-            state.view.clone(),
-            state.status.clone(),
-        ))
-    })?;
+    let (revision, world_id, view, status, editing_message_id, attachments) =
+        STATE.with(|slot| {
+            let mut state = slot.borrow_mut();
+            state.ui_revision = state
+                .ui_revision
+                .checked_add(1)
+                .ok_or_else(|| String::from("Chat UI revision overflow"))?;
+            Ok::<_, String>((
+                state.ui_revision,
+                state.world_id.clone(),
+                state.view.clone(),
+                state.status.clone(),
+                state.editing_message_id,
+                state.attachments.clone(),
+            ))
+        })?;
     let snapshot = build_chat_snapshot(
         revision,
         world_id.as_deref(),
         view.as_ref(),
         status.as_deref(),
+        editing_message_id,
+        &attachments,
     );
     let node_ids = snapshot
         .nodes

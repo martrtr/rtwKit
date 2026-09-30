@@ -19,12 +19,14 @@ mod world_materialization;
 pub use catalog::{
     CharacterContentDocument, CharacterContentRecord, CharacterLibraryEntry, CharacterLibraryError,
     CharacterLibraryGateway, CharacterLibraryGatewayError, CharacterLibraryState,
-    MAX_CHARACTER_IMPORT_TEXT_BYTES, MAX_CHARACTER_LIBRARY_ENTRIES, MAX_CHARACTER_LIBRARY_ID_BYTES,
-    decode_character_content_document,
+    MAX_CHARACTER_CAST_ENTRIES, MAX_CHARACTER_IMPORT_TEXT_BYTES, MAX_CHARACTER_LIBRARY_ENTRIES,
+    MAX_CHARACTER_LIBRARY_ID_BYTES, MAX_CHARACTER_SEARCH_BYTES, decode_character_content_document,
 };
 pub use controller::{
     CHARACTER_LIBRARY_ACTION_IMPORT, CHARACTER_LIBRARY_ACTION_INSTANTIATE,
-    CHARACTER_LIBRARY_ACTION_REFRESH, CHARACTER_LIBRARY_ACTION_SELECT, CharacterLibraryController,
+    CHARACTER_LIBRARY_ACTION_REFRESH, CHARACTER_LIBRARY_ACTION_SEARCH,
+    CHARACTER_LIBRARY_ACTION_SELECT, CHARACTER_LIBRARY_ACTION_TOGGLE_CAST,
+    CHARACTER_LIBRARY_ACTION_TOGGLE_IMPORT, CharacterCastSelection, CharacterLibraryController,
     CharacterLibraryIntent,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -53,7 +55,8 @@ pub use tavern_v2::{
 
 pub use ui::{
     CHARACTER_LIBRARY_ACTIVITY_ID, CHARACTER_LIBRARY_SURFACE_ID, build_character_library_snapshot,
-    character_library_surface_contribution, entry_select_node_id,
+    cast_member_toggle_node_id, character_library_surface_contribution, entry_cast_toggle_node_id,
+    entry_select_node_id,
 };
 
 pub use world_materialization::{
