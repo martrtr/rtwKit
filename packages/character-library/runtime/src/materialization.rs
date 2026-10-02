@@ -3,20 +3,22 @@
 use rintawa_character_library::{
     CHARACTER_TEMPLATE_CONTENT_V1, CharacterCastSelection, CharacterContentDocument,
     CharacterContentRecord, CharacterInstantiateCommand, CharacterInstantiateCommandV2,
-    CharacterLibraryIntent, build_character_instantiation_transaction,
+    CharacterLibraryIntent, CharacterTemplate, build_character_instantiation_transaction,
     build_character_instantiation_transaction_v2, character_instantiate_command_schema_key,
     character_instantiate_command_schema_key_v2, character_world_schemas,
     decode_character_content_document,
 };
+use rintawa_chat::{BootstrapConversationCommand, chat_bootstrap_conversation_command_schema_key};
 use rintawa_sdk::{
-    world::{SchemaKey, SchemaKind},
+    world::{CommandId, EntityId, SchemaKey, SchemaKind},
     world_system::{
         WorldSystemServiceRequest, WorldSystemServiceResponse, world_system_service_contract_key,
     },
 };
 
 use crate::rintawa::engine::{
-    composition, registration, user_content, world_commands, world_registration, world_sessions,
+    asset_store, composition, registration, scoped_composition, user_content, world_commands,
+    world_registration, world_sessions,
 };
 
 const CHARACTER_LIBRARY_SUBJECT: &str = "rintawa.character-library";
@@ -65,6 +67,9 @@ pub(crate) fn execute_intent(intent: CharacterLibraryIntent) -> Result<(), Strin
             "Character import intent cannot enter World materialization",
         )),
         CharacterLibraryIntent::InstantiateCast { templates } => create_world_with_cast(templates),
+        CharacterLibraryIntent::InstantiateInWorld { world_id, template } => {
+            add_character_to_world(&world_id, template)
+        }
     }
 }
 
@@ -251,6 +256,181 @@ fn create_world_with_cast(selections: Vec<CharacterCastSelection>) -> Result<(),
             let _ = world_sessions::set_active(&world.world_id, false);
             format!("Character cast instantiation submission failed: {error:?}")
         })?;
+    }
+    Ok(())
+}
+
+/// Prepares one standard Character World and requests activation after metadata is durable.
+///
+/// The caller must wait until the World is active before submitting authoritative Character
+/// commands. Keeping activation and command submission in separate callbacks respects the Host's
+/// deferred lifecycle boundary.
+pub(crate) fn prepare_world_from_import(template: &CharacterTemplate) -> Result<String, String> {
+    require_world_default()?;
+    let world = world_sessions::create()
+        .map_err(|error| format!("Character World creation failed: {error:?}"))?;
+    let description = bounded_world_description(&template.description);
+    let cover = template
+        .assets
+        .portrait
+        .as_ref()
+        .map(|reference| asset_store::AssetRef {
+            digest: reference.digest.to_string(),
+            size: reference.size,
+            media_type: reference.media_type.to_string(),
+        });
+    if let Err(error) = world_sessions::set_metadata(
+        &world.world_id,
+        &template.name,
+        description.as_deref(),
+        cover.as_ref(),
+    ) {
+        let _ = world_sessions::delete(&world.world_id);
+        return Err(format!("Character World metadata update failed: {error:?}"));
+    }
+    if let Err(error) = world_sessions::set_active(&world.world_id, true) {
+        let _ = world_sessions::delete(&world.world_id);
+        return Err(format!(
+            "Character World activation request failed: {error:?}"
+        ));
+    }
+    Ok(world.world_id)
+}
+
+/// Submits one exact imported CharacterTemplate into an already active prepared World.
+pub(crate) fn submit_imported_character(
+    world_id: &str,
+    template: &CharacterTemplate,
+    template_id: &str,
+    template_revision: &str,
+) -> Result<EntityId, String> {
+    let command = CharacterInstantiateCommandV2 {
+        template_id: template_id.to_string(),
+        template_revision: template_revision.to_string(),
+        template: template.clone(),
+    };
+    command
+        .validate()
+        .map_err(|error| format!("Imported Character preflight failed: {error}"))?;
+    let schema = character_instantiate_command_schema_key_v2()
+        .map_err(|error| format!("Character command schema construction failed: {error}"))?;
+    let payload_json = serde_json::to_vec(&command)
+        .map_err(|error| format!("Character instantiate command serialization failed: {error}"))?;
+    let accepted = world_commands::submit(&world_commands::Request {
+        world_id: world_id.to_string(),
+        schema: schema.to_string(),
+        actor: world_commands::Actor::Principal,
+        expected_position: Some(0),
+        payload_json,
+    })
+    .map_err(|error| format!("Character instantiation submission failed: {error:?}"))?;
+    let command_id = accepted
+        .command_id
+        .parse::<CommandId>()
+        .map_err(|_| String::from("Host returned an invalid Character command identity"))?;
+    Ok(EntityId::from_bytes(command_id.into_bytes()))
+}
+
+/// Queues the Chat-owned primary conversation bootstrap after Character materialization commits.
+pub(crate) fn submit_imported_chat_bootstrap(
+    world_id: &str,
+    template: &CharacterTemplate,
+    character_entity_id: EntityId,
+) -> Result<(), String> {
+    let schema = chat_bootstrap_conversation_command_schema_key()
+        .map_err(|error| format!("Chat bootstrap schema construction failed: {error}"))?;
+    let title = Some(template.name.clone());
+    let greeting = if template.session.greeting.trim().is_empty() {
+        None
+    } else {
+        Some(template.session.greeting.clone())
+    };
+    let payload_json = serde_json::to_vec(&BootstrapConversationCommand {
+        title,
+        character_entity_id,
+        character_display_name: template.name.clone(),
+        greeting,
+    })
+    .map_err(|error| format!("Chat bootstrap serialization failed: {error}"))?;
+    world_commands::submit(&world_commands::Request {
+        world_id: world_id.to_string(),
+        schema: schema.to_string(),
+        actor: world_commands::Actor::Principal,
+        expected_position: Some(1),
+        payload_json,
+    })
+    .map_err(|error| format!("Chat bootstrap submission failed: {error:?}"))?;
+    Ok(())
+}
+
+fn bounded_world_description(description: &str) -> Option<String> {
+    const MAX_BYTES: usize = 1024;
+    let trimmed = description.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.len() <= MAX_BYTES {
+        return Some(trimmed.to_string());
+    }
+    let mut end = MAX_BYTES;
+    while !trimmed.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    Some(trimmed[..end].trim_end().to_string())
+}
+
+fn add_character_to_world(world_id: &str, selection: CharacterCastSelection) -> Result<(), String> {
+    require_character_support_in_world(world_id)?;
+    let provenance = CharacterInstantiateCommand {
+        template_id: selection.template_id.clone(),
+        template_revision: selection.template_revision.clone(),
+    };
+    let template = load_exact_template(&provenance).map_err(|failure| match failure {
+        ServiceFailure::Rejected(reason) | ServiceFailure::Failed(reason) => {
+            format!("Character exact-template preflight failed: {reason}")
+        }
+    })?;
+    let command = CharacterInstantiateCommandV2 {
+        template_id: selection.template_id,
+        template_revision: selection.template_revision,
+        template,
+    };
+    command
+        .validate()
+        .map_err(|error| format!("Character instantiate@2 preflight failed: {error}"))?;
+    let schema = character_instantiate_command_schema_key_v2()
+        .map_err(|error| format!("Character command schema construction failed: {error}"))?;
+    let payload_json = serde_json::to_vec(&command)
+        .map_err(|error| format!("Character instantiate command serialization failed: {error}"))?;
+
+    world_commands::submit(&world_commands::Request {
+        world_id: world_id.to_string(),
+        schema: schema.to_string(),
+        actor: world_commands::Actor::Principal,
+        expected_position: None,
+        payload_json,
+    })
+    .map_err(|error| format!("Character instantiation submission failed: {error:?}"))?;
+    Ok(())
+}
+
+fn require_character_support_in_world(world_id: &str) -> Result<(), String> {
+    let scope_id = format!("world:{world_id}");
+    let activations = scoped_composition::list_activations(&scope_id).map_err(|error| {
+        format!("Character target World composition preflight failed: {error:?}")
+    })?;
+    let activation = activations
+        .iter()
+        .find(|activation| activation.subject == CHARACTER_LIBRARY_SUBJECT)
+        .ok_or_else(|| {
+            String::from(
+                "Character support is not installed in the selected World; enable the Character Library extension for that World first",
+            )
+        })?;
+    if !activation.enabled {
+        return Err(String::from(
+            "Character support is disabled in the selected World; enable it before adding a character",
+        ));
     }
     Ok(())
 }

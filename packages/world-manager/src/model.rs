@@ -124,6 +124,38 @@ impl WorldSortDirection {
     }
 }
 
+/// One world-creation workflow discovered from a same-scope `world.creator@1` provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorldCreatorOption {
+    /// Session-local opaque key owned by the World Manager adapter.
+    pub key: String,
+    /// Human-facing action label supplied by the provider.
+    pub label: String,
+    /// Short bounded explanation of the accepted source.
+    pub description: String,
+    /// Canonical MIME types accepted by the provider.
+    pub accepted_media_types: Vec<String>,
+    /// Lowercase file extensions accepted by the provider.
+    pub accepted_extensions: Vec<String>,
+    /// Maximum accepted source size.
+    pub max_bytes: u64,
+    /// Optional renderer-neutral icon slot.
+    pub icon_slot: Option<String>,
+}
+
+/// Opaque ephemeral resource selected by the user for one creator provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorldImportResourceRef {
+    /// Host-issued opaque resource identity.
+    pub id: String,
+    /// Exact resource size.
+    pub size: u64,
+    /// Canonical media type.
+    pub media_type: String,
+    /// Optional bounded original file name.
+    pub name: Option<String>,
+}
+
 /// Current World Manager presentation/domain state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorldManagerState {
@@ -132,6 +164,8 @@ pub struct WorldManagerState {
     pub(crate) rename_draft: String,
     pub(crate) sort_column: WorldSortColumn,
     pub(crate) sort_direction: WorldSortDirection,
+    pub(crate) creators: Vec<WorldCreatorOption>,
+    pub(crate) import_status: Option<String>,
     pub(crate) revision: u64,
 }
 
@@ -165,6 +199,16 @@ impl WorldManagerState {
     /// Returns current catalog ordering direction.
     pub const fn sort_direction(&self) -> WorldSortDirection {
         self.sort_direction
+    }
+
+    /// Returns creator/import workflows currently available to the launcher.
+    pub fn creators(&self) -> &[WorldCreatorOption] {
+        &self.creators
+    }
+
+    /// Returns the latest bounded creator/import diagnostic, when any.
+    pub fn import_status(&self) -> Option<&str> {
+        self.import_status.as_deref()
     }
 
     /// Returns the monotonic package presentation revision.

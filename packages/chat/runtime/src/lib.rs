@@ -10,17 +10,19 @@ use rintawa_chat::{
     CHAT_ACTION_DELETE_MESSAGE, CHAT_ACTION_EDIT_CANCEL, CHAT_ACTION_EDIT_MESSAGE,
     CHAT_ACTION_EDIT_SUBMIT, CHAT_ACTION_REFRESH, CHAT_ACTION_REMOVE_ATTACHMENT,
     CHAT_ACTION_SELECT_BRANCH, CHAT_ACTION_SELECT_CONVERSATION, CHAT_ACTION_SEND,
-    CHAT_ACTION_SHOW_CONVERSATIONS, CHAT_SURFACE_ID, ChatComposerAttachment, ChatConversationView,
-    ChatProjectionInput, ContentBlock, CreateConversationCommand, DeleteMessageCommand,
-    EditMessageCommand, ParticipantBindingRequest, SelectBranchCommand, SendMessageCommand,
-    build_chat_snapshot, chat_add_participant_command_schema_key, chat_all_world_schemas,
-    chat_conversation_projection_schema_key, chat_create_conversation_command_schema_key,
-    chat_delete_message_command_schema_key, chat_edit_message_command_schema_key,
-    chat_request_alternative_command_schema_key, chat_select_branch_command_schema_key,
-    chat_send_message_command_schema_key, chat_surface_contribution, conversation_select_node_id,
-    evaluate_chat_projection, evaluate_chat_world_system, message_delete_node_id,
-    message_edit_cancel_node_id, message_edit_input_node_id, message_edit_node_id,
-    message_select_branch_node_id, show_conversations_node_id,
+    CHAT_ACTION_SHOW_CONVERSATIONS, CHAT_ACTION_TOGGLE_PARTICIPANTS, CHAT_SURFACE_ID,
+    ChatComposerAttachment, ChatConversationView, ChatProjectionInput, ContentBlock,
+    CreateConversationCommand, DeleteMessageCommand, EditMessageCommand, ParticipantBindingRequest,
+    SelectBranchCommand, SendMessageCommand, build_chat_snapshot,
+    chat_add_participant_command_schema_key, chat_all_world_schemas,
+    chat_bootstrap_conversation_command_schema_key, chat_conversation_projection_schema_key,
+    chat_create_conversation_command_schema_key, chat_delete_message_command_schema_key,
+    chat_edit_message_command_schema_key, chat_request_alternative_command_schema_key,
+    chat_select_branch_command_schema_key, chat_send_message_command_schema_key,
+    chat_surface_contribution, conversation_select_node_id, evaluate_chat_projection,
+    evaluate_chat_world_system, message_delete_node_id, message_edit_cancel_node_id,
+    message_edit_input_node_id, message_edit_node_id, message_select_branch_node_id,
+    show_conversations_node_id,
 };
 use rintawa_sdk::{
     contracts::world_presentation_contract_key,
@@ -63,6 +65,8 @@ struct RuntimeState {
     status: Option<String>,
     editing_message_id: Option<EntityId>,
     attachments: Vec<ChatComposerAttachment>,
+    participants_open: bool,
+    local_participant_pending: bool,
     ui_revision: u64,
 }
 
@@ -370,9 +374,15 @@ fn poll_projection() -> Result<bool, String> {
             let conversation_view =
                 serde_json::from_slice::<ChatConversationView>(&view.value_json)
                     .map_err(|error| format!("Chat projection decoding failed: {error}"))?;
-            STATE.with(|slot| {
+            let selected_conversation_id = conversation_view.selected_conversation_id;
+            let needs_local_participant = selected_conversation_id.is_some()
+                && !conversation_view
+                    .participants
+                    .iter()
+                    .any(|participant| participant.can_send);
+            let should_add_local_participant = STATE.with(|slot| {
                 let mut state = slot.borrow_mut();
-                state.selected_conversation_id = conversation_view.selected_conversation_id;
+                state.selected_conversation_id = selected_conversation_id;
                 if state.editing_message_id.is_some_and(|editing| {
                     !conversation_view
                         .messages
@@ -384,8 +394,30 @@ fn poll_projection() -> Result<bool, String> {
                 state.view = Some(conversation_view);
                 state.projection_operation_id = None;
                 state.projection_polls = 0;
-                state.status = None;
+                if needs_local_participant {
+                    state.refresh_needed = true;
+                    state.status = Some(String::from("Joining conversation…"));
+                    if !state.local_participant_pending {
+                        state.local_participant_pending = true;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    state.local_participant_pending = false;
+                    state.status = None;
+                    false
+                }
             });
+            if should_add_local_participant {
+                let conversation_id = selected_conversation_id.ok_or_else(|| {
+                    String::from("Chat local participant bootstrap lost its conversation")
+                })?;
+                if let Err(error) = add_local_participant(conversation_id) {
+                    STATE.with(|slot| slot.borrow_mut().local_participant_pending = false);
+                    return Err(error);
+                }
+            }
             Ok(true)
         }
         Ok(rintawa::engine::world_projections::ReadState::Failed(diagnostic)) => {
@@ -441,6 +473,10 @@ fn handle_ui_action(event: &UiActionEvent) -> Result<(), String> {
             require_no_payload(event)?;
             show_conversations(event)
         }
+        CHAT_ACTION_TOGGLE_PARTICIPANTS => {
+            require_no_payload(event)?;
+            toggle_participants(event)
+        }
         CHAT_ACTION_SELECT_BRANCH => {
             require_no_payload(event)?;
             select_branch(event)
@@ -468,6 +504,27 @@ fn handle_ui_action(event: &UiActionEvent) -> Result<(), String> {
     }
 }
 
+fn toggle_participants(event: &UiActionEvent) -> Result<(), String> {
+    if event.node_id.as_str() != "header.meta" {
+        return Err(String::from(
+            "Chat participant popover action is stale or spoofed",
+        ));
+    }
+    STATE.with(|slot| {
+        let mut state = slot.borrow_mut();
+        let has_participants = state.view.as_ref().is_some_and(|view| {
+            view.selected_conversation_id.is_some() && !view.participants.is_empty()
+        });
+        if !has_participants {
+            return Err(String::from(
+                "Chat participant popover requires a selected conversation",
+            ));
+        }
+        state.participants_open = !state.participants_open;
+        Ok(())
+    })
+}
+
 fn create_conversation() -> Result<(), String> {
     let create = submit_command(
         chat_create_conversation_command_schema_key()
@@ -481,6 +538,20 @@ fn create_conversation() -> Result<(), String> {
         .map_err(|_| String::from("Host returned an invalid Chat command identity"))?;
     let conversation_id = EntityId::from_bytes(command_id.into_bytes());
 
+    add_local_participant(conversation_id)?;
+
+    STATE.with(|slot| {
+        let mut state = slot.borrow_mut();
+        state.selected_conversation_id = Some(conversation_id);
+        state.editing_message_id = None;
+        state.participants_open = false;
+        state.refresh_needed = true;
+        state.status = Some(String::from("Creating conversation…"));
+    });
+    Ok(())
+}
+
+fn add_local_participant(conversation_id: EntityId) -> Result<(), String> {
     submit_command(
         chat_add_participant_command_schema_key()
             .map_err(|error| format!("Chat command schema construction failed: {error}"))?,
@@ -491,14 +562,6 @@ fn create_conversation() -> Result<(), String> {
             binding: ParticipantBindingRequest::CurrentPrincipal,
         },
     )?;
-
-    STATE.with(|slot| {
-        let mut state = slot.borrow_mut();
-        state.selected_conversation_id = Some(conversation_id);
-        state.editing_message_id = None;
-        state.refresh_needed = true;
-        state.status = Some(String::from("Creating conversation…"));
-    });
     Ok(())
 }
 
@@ -524,6 +587,7 @@ fn show_conversations(event: &UiActionEvent) -> Result<(), String> {
         }
         state.selected_conversation_id = None;
         state.editing_message_id = None;
+        state.participants_open = false;
         state.status = None;
         let view = state
             .view
@@ -553,6 +617,7 @@ fn select_conversation(event: &UiActionEvent) -> Result<(), String> {
         let mut state = slot.borrow_mut();
         state.selected_conversation_id = Some(selected);
         state.editing_message_id = None;
+        state.participants_open = false;
         state.refresh_needed = true;
         state.status = Some(String::from("Loading conversation…"));
     });
@@ -964,6 +1029,7 @@ fn encode_projection_response(response: WorldProjectionServiceResponse) -> Vec<u
 fn command_schema_keys() -> Result<Vec<SchemaKey>, String> {
     [
         chat_create_conversation_command_schema_key(),
+        chat_bootstrap_conversation_command_schema_key(),
         chat_add_participant_command_schema_key(),
         chat_send_message_command_schema_key(),
         chat_edit_message_command_schema_key(),
@@ -991,7 +1057,7 @@ fn schema_kind(kind: SchemaKind) -> rintawa::engine::world_registration::SchemaK
 }
 
 fn render_surface() -> Result<(), String> {
-    let (revision, world_id, view, status, editing_message_id, attachments) =
+    let (revision, world_id, view, status, editing_message_id, attachments, participants_open) =
         STATE.with(|slot| {
             let mut state = slot.borrow_mut();
             state.ui_revision = state
@@ -1005,6 +1071,7 @@ fn render_surface() -> Result<(), String> {
                 state.status.clone(),
                 state.editing_message_id,
                 state.attachments.clone(),
+                state.participants_open,
             ))
         })?;
     let snapshot = build_chat_snapshot(
@@ -1014,6 +1081,7 @@ fn render_surface() -> Result<(), String> {
         status.as_deref(),
         editing_message_id,
         &attachments,
+        participants_open,
     );
     let node_ids = snapshot
         .nodes

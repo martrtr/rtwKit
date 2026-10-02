@@ -49,6 +49,21 @@
   --rintawa-web-dock-min-width: 13rem;
   --rintawa-web-tab-height: 2.35rem;
   --rintawa-web-chat-max-width: 64rem;
+  --rintawa-web-chat-message-max-width: 64rem;
+  --rintawa-web-chat-message-background: transparent;
+  --rintawa-web-chat-message-local-background: color-mix(
+    in srgb,
+    var(--rintawa-ui-color-accent) 3%,
+    transparent
+  );
+  --rintawa-web-chat-message-border: color-mix(
+    in srgb,
+    var(--rintawa-web-color-border) 72%,
+    transparent
+  );
+  --rintawa-web-chat-message-border-width: 0 0 1px 0;
+  --rintawa-web-chat-message-radius: 0rem;
+  --rintawa-web-chat-message-spacing: 0rem;
   --rintawa-web-chat-avatar-size: 3rem;
   --rintawa-web-chat-composer-min-height: 3.25rem;
   --rintawa-web-motion-fast: 120ms;

@@ -4,13 +4,13 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context, Result, bail};
 use rintawa_chat::{
-    AddParticipantCommand, ContentBlock, ConversationState, CreateConversationCommand,
-    DeleteMessageCommand, EditMessageCommand, MessageContent, MessageState, ParticipantBinding,
-    ParticipantBindingRequest, ParticipantIdentity, SendMessageCommand,
-    chat_add_participant_command_schema_key, chat_all_world_schemas,
-    chat_create_conversation_command_schema_key, chat_delete_message_command_schema_key,
-    chat_edit_message_command_schema_key, chat_send_message_command_schema_key,
-    chat_surface_contribution, evaluate_chat_world_system,
+    AddParticipantCommand, BootstrapConversationCommand, ContentBlock, ConversationState,
+    CreateConversationCommand, DeleteMessageCommand, EditMessageCommand, MessageContent,
+    MessageState, ParticipantBinding, ParticipantBindingRequest, ParticipantIdentity,
+    SendMessageCommand, chat_add_participant_command_schema_key, chat_all_world_schemas,
+    chat_bootstrap_conversation_command_schema_key, chat_create_conversation_command_schema_key,
+    chat_delete_message_command_schema_key, chat_edit_message_command_schema_key,
+    chat_send_message_command_schema_key, chat_surface_contribution, evaluate_chat_world_system,
 };
 use rintawa_sdk::{
     world::{CommandId, CorrelationId, EntityId, PrincipalId, SchemaKey, WorldId},
@@ -196,7 +196,7 @@ fn facet_payload<T: serde::de::DeserializeOwned>(
 #[test]
 fn test_should_publish_unique_versioned_chat_schemas() -> Result<()> {
     let schemas = chat_all_world_schemas()?;
-    assert_eq!(schemas.len(), 30);
+    assert_eq!(schemas.len(), 31);
     let keys = schemas
         .iter()
         .map(|schema| schema.key().to_string())
@@ -207,6 +207,95 @@ fn test_should_publish_unique_versioned_chat_schemas() -> Result<()> {
         assert!(definition.is_object());
         assert_eq!(schema.key().version().get(), 1);
     }
+    Ok(())
+}
+
+#[test]
+fn test_should_bootstrap_primary_conversation_without_granting_character_authority() -> Result<()> {
+    let principal = PrincipalId::new();
+    let character_entity_id = EntityId::new();
+    let request = request(
+        chat_bootstrap_conversation_command_schema_key()?,
+        serde_json::to_value(BootstrapConversationCommand {
+            title: Some(String::from("Alice")),
+            character_entity_id,
+            character_display_name: String::from("Alice"),
+            greeting: Some(String::from("Hello **there**.")),
+        })?,
+        principal,
+        WorldSystemActor::Principal(principal),
+        Vec::new(),
+    );
+    let requested = reads(evaluate_chat_world_system(&request))?;
+    assert_eq!(requested.len(), 2);
+
+    let request = with_reads(
+        &request,
+        vec![
+            world_facet_result::<rintawa_chat::ChatWorldIndex>("rintawa.chat.world-index@1", None)?,
+            entity_result(character_entity_id, "rintawa.character@1")?,
+        ],
+    );
+    let transaction = transaction(evaluate_chat_world_system(&request))?;
+    let conversation_id = created_entity(&transaction, "rintawa.chat.conversation@1")?;
+    let conversation: ConversationState = facet_payload(
+        &transaction,
+        conversation_id,
+        "rintawa.chat.conversation-state@1",
+    )?;
+    assert_eq!(conversation.title.as_deref(), Some("Alice"));
+    assert_eq!(conversation.participant_ids.len(), 1);
+    assert_eq!(conversation.message_ids.len(), 1);
+    assert_eq!(
+        conversation.selected_leaf,
+        conversation.message_ids.first().copied()
+    );
+
+    let identities = conversation
+        .participant_ids
+        .iter()
+        .map(|participant_id| {
+            facet_payload::<ParticipantIdentity>(
+                &transaction,
+                *participant_id,
+                "rintawa.chat.participant-identity@1",
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    assert_eq!(identities.len(), 1);
+    assert!(matches!(
+        identities[0].binding,
+        ParticipantBinding::Entity { entity_id } if entity_id == character_entity_id
+    ));
+
+    let message_id = conversation.message_ids[0];
+    let message: MessageState =
+        facet_payload(&transaction, message_id, "rintawa.chat.message-state@1")?;
+    let character_participant_id = conversation
+        .participant_ids
+        .iter()
+        .copied()
+        .find(|participant_id| {
+            facet_payload::<ParticipantIdentity>(
+                &transaction,
+                *participant_id,
+                "rintawa.chat.participant-identity@1",
+            )
+            .is_ok_and(|identity| matches!(identity.binding, ParticipantBinding::Entity { .. }))
+        })
+        .context("expected entity-bound participant")?;
+    assert_eq!(message.author_participant_id, character_participant_id);
+    let content: MessageContent = facet_payload(
+        &transaction,
+        message.current_revision,
+        "rintawa.chat.message-content@1",
+    )?;
+    assert_eq!(
+        content.blocks,
+        vec![ContentBlock::Markdown {
+            markdown: String::from("Hello **there**."),
+        }]
+    );
     Ok(())
 }
 

@@ -322,3 +322,84 @@ fn test_should_close_secondary_views_in_lifo_order() {
         assert!(state.view_history.is_empty());
     });
 }
+
+#[test]
+fn test_should_namespace_managed_install_metadata_by_composition_scope() {
+    assert_eq!(
+        managed_install_key(HOST_SCOPE_ID, "example.package"),
+        "example.package"
+    );
+    assert_ne!(
+        managed_install_key("world:alpha", "example.package"),
+        managed_install_key("world:beta", "example.package")
+    );
+
+    let mut state = ManagerState {
+        selected_scope_id: "world:alpha".to_string(),
+        ..ManagerState::default()
+    };
+    state.installed.insert(
+        "example.package".to_string(),
+        InstalledPackage {
+            scope_id: "world:alpha".to_string(),
+            ..installed("example.package", "1.0.0", true)
+        },
+    );
+    state.managed_installs.insert(
+        "example.package".to_string(),
+        ManagedInstallRecord {
+            version: "1.0.0".to_string(),
+            dependencies: vec!["host.only".to_string()],
+            dependencies_known: true,
+        },
+    );
+    assert!(managed_install_record(&state, "example.package").is_none());
+
+    let key = managed_install_key("world:alpha", "example.package");
+    state.managed_installs.insert(
+        key,
+        ManagedInstallRecord {
+            version: "1.0.0".to_string(),
+            dependencies: vec!["world.runtime".to_string()],
+            dependencies_known: true,
+        },
+    );
+    assert_eq!(
+        managed_install_record(&state, "example.package")
+            .expect("World-scoped metadata must resolve")
+            .dependencies,
+        vec!["world.runtime"]
+    );
+}
+
+#[test]
+fn test_should_render_explicit_host_and_world_extension_scope_selector() {
+    let state = ManagerState {
+        management_scopes: vec![
+            ManagementScope::host(),
+            ManagementScope {
+                scope_id: "world:alpha".to_string(),
+                label: "Alpha".to_string(),
+                world_id: Some("alpha".to_string()),
+            },
+        ],
+        selected_scope_id: "world:alpha".to_string(),
+        ..ManagerState::default()
+    };
+    let rendered = presentation::build_surface(&state);
+    let selector = rendered
+        .nodes
+        .iter()
+        .find(|node| {
+            node.get("semantic")
+                .and_then(|semantic| semantic.get("id"))
+                .and_then(Value::as_str)
+                == Some("management.extensions.scope-selector")
+        })
+        .expect("scope selector must be rendered");
+    let data = &selector["kind"]["data"];
+    assert_eq!(data["value"], "world:alpha");
+    assert_eq!(data["change_action"], "management.scope");
+    assert_eq!(data["options"][0]["label"], "Host");
+    assert_eq!(data["options"][1]["label"], "World · Alpha");
+}

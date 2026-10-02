@@ -4,21 +4,24 @@ use std::collections::BTreeMap;
 
 use rintawa_artifacts::ArtifactDigest;
 use rintawa_character_library::{
-    CHARACTER_LIBRARY_ACTION_IMPORT, CHARACTER_LIBRARY_ACTION_INSTANTIATE,
-    CHARACTER_LIBRARY_ACTION_REFRESH, CHARACTER_LIBRARY_ACTION_SEARCH,
-    CHARACTER_LIBRARY_ACTION_SELECT, CHARACTER_LIBRARY_ACTION_TOGGLE_CAST,
+    CHARACTER_LIBRARY_ACTION_ADD_TO_WORLD, CHARACTER_LIBRARY_ACTION_IMPORT,
+    CHARACTER_LIBRARY_ACTION_INSTANTIATE, CHARACTER_LIBRARY_ACTION_REFRESH,
+    CHARACTER_LIBRARY_ACTION_SEARCH, CHARACTER_LIBRARY_ACTION_SELECT,
+    CHARACTER_LIBRARY_ACTION_SELECT_WORLD, CHARACTER_LIBRARY_ACTION_TOGGLE_CAST,
     CHARACTER_LIBRARY_ACTION_TOGGLE_IMPORT, CHARACTER_LIBRARY_SURFACE_ID,
     CHARACTER_TEMPLATE_CONTENT_V1, CharacterContentDocument, CharacterContentRecord,
     CharacterLibraryController, CharacterLibraryError, CharacterLibraryGateway,
-    CharacterLibraryGatewayError, CharacterLibraryIntent, CharacterTemplate,
-    MAX_CHARACTER_IMPORT_TEXT_BYTES, MAX_CHARACTER_LIBRARY_ENTRIES,
-    build_character_library_snapshot, cast_member_toggle_node_id,
+    CharacterLibraryGatewayError, CharacterLibraryIntent, CharacterTemplate, CharacterWorldSummary,
+    MAX_CHARACTER_LIBRARY_ENTRIES, build_character_library_snapshot, cast_member_toggle_node_id,
     character_library_surface_contribution, entry_cast_toggle_node_id, entry_select_node_id,
 };
 use rintawa_sdk::{
     contracts::ComponentRef,
     types::{ExtensionInstanceId, RuntimeScopeId},
-    ui::{UiActionEvent, UiActionId, UiActionPayload, UiNodeId, UiNodeKind, UiSurfaceId},
+    ui::{
+        UiActionEvent, UiActionId, UiActionPayload, UiNodeId, UiNodeKind, UiPlacementHint,
+        UiSurfaceId,
+    },
 };
 use rintawa_ui_runtime::{OwnedUiSurfaceContribution, UiRuntime};
 
@@ -256,38 +259,31 @@ fn test_should_fail_closed_for_stale_spoofed_or_invalid_payload_actions() -> any
 }
 
 #[test]
-fn test_should_validate_and_reconcile_tavern_json_import_actions() -> anyhow::Result<()> {
+fn test_should_keep_legacy_tavern_import_out_of_standard_management_surface() -> anyhow::Result<()>
+{
     let mut controller = CharacterLibraryController::new(gateway(&[]));
     controller.refresh()?;
-    let snapshot = build_character_library_snapshot(controller.state());
-    assert!(
-        snapshot
-            .nodes
-            .iter()
-            .all(|node| node.id.as_str() != "import.source"),
-        "advanced import editor must stay hidden in the default Character Gateway"
-    );
+    let initial = build_character_library_snapshot(controller.state());
+    assert!(initial.nodes.iter().all(|node| {
+        !matches!(
+            node.id.as_str(),
+            "toolbar.import" | "import.source" | "cast.create-world"
+        )
+    }));
+
     controller.handle_action(&action(
         controller.state().revision(),
         UiNodeId::new("toolbar.import"),
         CHARACTER_LIBRARY_ACTION_TOGGLE_IMPORT,
         UiActionPayload::None,
     ))?;
-    let snapshot = build_character_library_snapshot(controller.state());
-    let import_node = snapshot
-        .nodes
-        .iter()
-        .find(|node| node.id.as_str() == "import.source")
-        .ok_or_else(|| anyhow::anyhow!("opened import text area must be rendered"))?;
-    assert!(matches!(
-        &import_node.kind,
-        UiNodeKind::TextArea(area)
-            if area.is_enabled
-                && area.change_action.is_none()
-                && area.submit_action.as_ref().is_some_and(
-                    |action| action.as_str() == CHARACTER_LIBRARY_ACTION_IMPORT
-                )
-    ));
+    let opened = build_character_library_snapshot(controller.state());
+    assert!(
+        opened
+            .nodes
+            .iter()
+            .all(|node| node.id.as_str() != "import.source")
+    );
 
     let source =
         String::from(r#"{"spec":"chara_card_v2","spec_version":"2.0","data":{"name":"Alice"}}"#);
@@ -305,15 +301,12 @@ fn test_should_validate_and_reconcile_tavern_json_import_actions() -> anyhow::Re
     );
     assert!(controller.state().import_pending());
     assert_eq!(controller.state().import_source(), source);
-    let pending_snapshot = build_character_library_snapshot(controller.state());
-    assert!(matches!(
-        pending_snapshot
+    assert!(
+        build_character_library_snapshot(controller.state())
             .nodes
             .iter()
-            .find(|node| node.id.as_str() == "import.source")
-            .map(|node| &node.kind),
-        Some(UiNodeKind::TextArea(area)) if !area.is_enabled && area.value.is_empty()
-    ));
+            .all(|node| node.id.as_str() != "import.source")
+    );
 
     assert_eq!(
         controller.handle_action(&action(
@@ -324,42 +317,17 @@ fn test_should_validate_and_reconcile_tavern_json_import_actions() -> anyhow::Re
         )),
         Err(CharacterLibraryError::ImportAlreadyPending)
     );
-
     controller.fail_import("invalid card")?;
     assert!(!controller.state().import_pending());
-    assert_eq!(controller.state().import_source(), source);
     assert_eq!(controller.state().import_status(), Some("invalid card"));
-    let failed_snapshot = build_character_library_snapshot(controller.state());
-    assert!(matches!(
-        failed_snapshot
+    assert!(
+        build_character_library_snapshot(controller.state())
             .nodes
             .iter()
-            .find(|node| node.id.as_str() == "import.source")
-            .map(|node| &node.kind),
-        Some(UiNodeKind::TextArea(area)) if area.is_enabled && area.value.is_empty()
-    ));
-
-    assert_eq!(
-        controller.handle_action(&action(
-            controller.state().revision(),
-            UiNodeId::new("import.source"),
-            CHARACTER_LIBRARY_ACTION_IMPORT,
-            UiActionPayload::Text(String::from("   ")),
-        )),
-        Err(CharacterLibraryError::EmptyImportSource)
-    );
-    assert_eq!(
-        controller.handle_action(&action(
-            controller.state().revision(),
-            UiNodeId::new("import.source"),
-            CHARACTER_LIBRARY_ACTION_IMPORT,
-            UiActionPayload::Text("x".repeat(MAX_CHARACTER_IMPORT_TEXT_BYTES + 1)),
-        )),
-        Err(CharacterLibraryError::ImportSourceTooLarge)
+            .all(|node| node.id.as_str() != "import.source")
     );
     Ok(())
 }
-
 #[test]
 fn test_should_select_imported_item_only_after_validated_refresh() -> anyhow::Result<()> {
     let mut gateway = gateway(&[]);
@@ -441,7 +409,7 @@ fn test_should_bound_every_rendered_text_node_with_long_utf8_content() -> anyhow
 }
 
 #[test]
-fn test_should_render_removable_cast_chips() -> anyhow::Result<()> {
+fn test_should_keep_legacy_cast_state_out_of_standard_management_surface() -> anyhow::Result<()> {
     let mut controller = CharacterLibraryController::new(gateway(&[
         ("id-a", "Alice", "Ada"),
         ("id-b", "Borin", "Bob"),
@@ -453,11 +421,11 @@ fn test_should_render_removable_cast_chips() -> anyhow::Result<()> {
         CHARACTER_LIBRARY_ACTION_TOGGLE_CAST,
         UiActionPayload::None,
     ))?;
+    assert_eq!(controller.state().cast_ids(), &[String::from("id-a")]);
 
     let snapshot = build_character_library_snapshot(controller.state());
-    assert!(snapshot.nodes.iter().any(|node| {
-        node.id == cast_member_toggle_node_id(0)
-            && matches!(&node.kind, UiNodeKind::Button(button) if button.label == "Remove")
+    assert!(snapshot.nodes.iter().all(|node| {
+        node.id != cast_member_toggle_node_id(0) && node.id.as_str() != "cast.create-world"
     }));
 
     controller.handle_action(&action(
@@ -469,9 +437,9 @@ fn test_should_render_removable_cast_chips() -> anyhow::Result<()> {
     assert!(controller.state().cast_ids().is_empty());
     Ok(())
 }
-
 #[test]
-fn test_should_emit_exact_revision_cast_instantiation_intent() -> anyhow::Result<()> {
+fn test_should_keep_exact_revision_legacy_cast_intent_without_rendering_cast_builder()
+-> anyhow::Result<()> {
     let mut controller = CharacterLibraryController::new(gateway(&[("id-a", "Alice", "Ada")]));
     controller.refresh()?;
     let expected_revision = controller
@@ -487,13 +455,12 @@ fn test_should_emit_exact_revision_cast_instantiation_intent() -> anyhow::Result
         CHARACTER_LIBRARY_ACTION_TOGGLE_CAST,
         UiActionPayload::None,
     ))?;
-    let snapshot = build_character_library_snapshot(controller.state());
-    let button = snapshot
-        .nodes
-        .iter()
-        .find(|node| node.id.as_str() == "cast.create-world")
-        .ok_or_else(|| anyhow::anyhow!("cast create button must be rendered"))?;
-    assert!(matches!(button.kind, UiNodeKind::Button(_)));
+    assert!(
+        build_character_library_snapshot(controller.state())
+            .nodes
+            .iter()
+            .all(|node| node.id.as_str() != "cast.create-world")
+    );
 
     let intent = controller.handle_action(&action(
         controller.state().revision(),
@@ -510,6 +477,138 @@ fn test_should_emit_exact_revision_cast_instantiation_intent() -> anyhow::Result
             }],
         }
     );
+    Ok(())
+}
+#[test]
+fn test_should_contribute_characters_as_shared_manage_section() {
+    let contribution = character_library_surface_contribution();
+    assert_eq!(contribution.placement, UiPlacementHint::Settings);
+    assert_eq!(
+        contribution
+            .semantic
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("management.characters@1")
+    );
+    let activity = contribution
+        .activity
+        .expect("management activity must be declared");
+    assert_eq!(activity.id.as_str(), "rintawa.management");
+    assert_eq!(activity.label, "Manage");
+    assert!(
+        contribution
+            .traits
+            .iter()
+            .any(|trait_id| trait_id.as_str() == "activity-section")
+    );
+}
+
+#[test]
+fn test_should_select_existing_world_and_emit_exact_revision_materialization_intent()
+-> anyhow::Result<()> {
+    let mut controller = CharacterLibraryController::new(gateway(&[("id-a", "Alice", "Ada")]));
+    controller.refresh()?;
+    let expected_revision = controller
+        .state()
+        .selected_entry()
+        .ok_or_else(|| anyhow::anyhow!("selected fixture entry must exist"))?
+        .revision
+        .to_string();
+    controller.replace_worlds(vec![
+        CharacterWorldSummary {
+            world_id: String::from("world-b"),
+            title: String::from("Zeta"),
+            active: true,
+        },
+        CharacterWorldSummary {
+            world_id: String::from("world-a"),
+            title: String::from("Alpha"),
+            active: false,
+        },
+    ])?;
+    assert_eq!(controller.state().target_world_id(), Some("world-a"));
+
+    let snapshot = build_character_library_snapshot(controller.state());
+    let world_select = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "details.world-target.select")
+        .ok_or_else(|| anyhow::anyhow!("target World selector must be rendered"))?;
+    assert!(matches!(
+        &world_select.kind,
+        UiNodeKind::Select(select)
+            if select.is_enabled
+                && select.value == "world-a"
+                && select.options.iter().map(|option| option.label.as_str()).collect::<Vec<_>>()
+                    == vec!["Alpha", "Zeta · running"]
+    ));
+    let add_button = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "details.world-target.add")
+        .ok_or_else(|| anyhow::anyhow!("add-to-World button must be rendered"))?;
+    assert!(matches!(
+        &add_button.kind,
+        UiNodeKind::Button(button) if !button.is_enabled
+    ));
+    assert_eq!(
+        controller.handle_action(&action(
+            controller.state().revision(),
+            UiNodeId::new("details.world-target.add"),
+            CHARACTER_LIBRARY_ACTION_ADD_TO_WORLD,
+            UiActionPayload::None,
+        )),
+        Err(CharacterLibraryError::TargetWorldInactive)
+    );
+
+    controller.handle_action(&action(
+        controller.state().revision(),
+        UiNodeId::new("details.world-target.select"),
+        CHARACTER_LIBRARY_ACTION_SELECT_WORLD,
+        UiActionPayload::Text(String::from("world-b")),
+    ))?;
+    let intent = controller.handle_action(&action(
+        controller.state().revision(),
+        UiNodeId::new("details.world-target.add"),
+        CHARACTER_LIBRARY_ACTION_ADD_TO_WORLD,
+        UiActionPayload::None,
+    ))?;
+    assert_eq!(
+        intent,
+        CharacterLibraryIntent::InstantiateInWorld {
+            world_id: String::from("world-b"),
+            template: rintawa_character_library::CharacterCastSelection {
+                template_id: String::from("id-a"),
+                template_revision: expected_revision,
+            },
+        }
+    );
+    assert_eq!(
+        controller.handle_action(&action(
+            controller.state().revision(),
+            UiNodeId::new("details.world-target.select"),
+            CHARACTER_LIBRARY_ACTION_SELECT_WORLD,
+            UiActionPayload::Text(String::from("foreign-world")),
+        )),
+        Err(CharacterLibraryError::UnknownWorldAction)
+    );
+    Ok(())
+}
+
+#[test]
+fn test_should_not_advance_revision_when_world_catalog_is_unchanged() -> anyhow::Result<()> {
+    let mut controller = CharacterLibraryController::new(gateway(&[]));
+    controller.refresh()?;
+    let worlds = vec![CharacterWorldSummary {
+        world_id: String::from("world-a"),
+        title: String::from("Alpha"),
+        active: false,
+    }];
+    controller.replace_worlds(worlds.clone())?;
+    let revision = controller.state().revision();
+    controller.replace_worlds(worlds)?;
+    assert_eq!(controller.state().revision(), revision);
     Ok(())
 }
 

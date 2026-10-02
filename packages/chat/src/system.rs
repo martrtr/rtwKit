@@ -15,28 +15,29 @@ use rintawa_sdk::{
 use crate::{
     ids::{command_entity_id, derived_entity_id, relation_id},
     model::{
-        AddParticipantCommand, AlternativeRequestedEvent, BranchSelectedEvent, ChatWorldIndex,
-        ConversationCreatedEvent, ConversationState, CreateConversationCommand,
-        DeleteMessageCommand, EditMessageCommand, MessageAddedEvent, MessageContent,
-        MessageDeletedEvent, MessageEditedEvent, MessageState, ParticipantAddedEvent,
-        ParticipantBinding, ParticipantBindingRequest, ParticipantIdentity,
+        AddParticipantCommand, AlternativeRequestedEvent, BootstrapConversationCommand,
+        BranchSelectedEvent, ChatWorldIndex, ContentBlock, ConversationCreatedEvent,
+        ConversationState, CreateConversationCommand, DeleteMessageCommand, EditMessageCommand,
+        MessageAddedEvent, MessageContent, MessageDeletedEvent, MessageEditedEvent, MessageState,
+        ParticipantAddedEvent, ParticipantBinding, ParticipantBindingRequest, ParticipantIdentity,
         RequestAlternativeCommand, SelectBranchCommand, SendMessageCommand, validate_blocks,
         validate_participant_name, validate_title,
     },
     schemas::{
         alternative_requested_event_schema_key, branch_selected_event_schema_key,
-        chat_add_participant_command_schema_key, chat_create_conversation_command_schema_key,
-        chat_delete_message_command_schema_key, chat_edit_message_command_schema_key,
-        chat_request_alternative_command_schema_key, chat_select_branch_command_schema_key,
-        chat_send_message_command_schema_key, chat_world_index_schema_key,
-        conversation_created_event_schema_key, conversation_entity_schema_key,
-        conversation_message_schema_key, conversation_participant_schema_key,
-        conversation_state_schema_key, message_added_event_schema_key, message_author_schema_key,
-        message_content_schema_key, message_deleted_event_schema_key,
-        message_edited_event_schema_key, message_entity_schema_key, message_parent_schema_key,
-        message_revision_entity_schema_key, message_revision_schema_key, message_state_schema_key,
-        message_variant_schema_key, participant_added_event_schema_key,
-        participant_entity_schema_key, participant_identity_schema_key,
+        chat_add_participant_command_schema_key, chat_bootstrap_conversation_command_schema_key,
+        chat_create_conversation_command_schema_key, chat_delete_message_command_schema_key,
+        chat_edit_message_command_schema_key, chat_request_alternative_command_schema_key,
+        chat_select_branch_command_schema_key, chat_send_message_command_schema_key,
+        chat_world_index_schema_key, conversation_created_event_schema_key,
+        conversation_entity_schema_key, conversation_message_schema_key,
+        conversation_participant_schema_key, conversation_state_schema_key,
+        message_added_event_schema_key, message_author_schema_key, message_content_schema_key,
+        message_deleted_event_schema_key, message_edited_event_schema_key,
+        message_entity_schema_key, message_parent_schema_key, message_revision_entity_schema_key,
+        message_revision_schema_key, message_state_schema_key, message_variant_schema_key,
+        participant_added_event_schema_key, participant_entity_schema_key,
+        participant_identity_schema_key,
     },
 };
 
@@ -71,6 +72,8 @@ fn evaluate(
     let schema = &request.command.schema;
     if schema == &chat_create_conversation_command_schema_key().map_err(schema_error)? {
         evaluate_create_conversation(request)
+    } else if schema == &chat_bootstrap_conversation_command_schema_key().map_err(schema_error)? {
+        evaluate_bootstrap_conversation(request)
     } else if schema == &chat_add_participant_command_schema_key().map_err(schema_error)? {
         evaluate_add_participant(request)
     } else if schema == &chat_send_message_command_schema_key().map_err(schema_error)? {
@@ -130,6 +133,184 @@ fn evaluate_create_conversation(
         conversation_created_event_schema_key().map_err(schema_error)?,
         &ConversationCreatedEvent { conversation_id },
     )?;
+    Ok(transaction_response(transaction))
+}
+
+fn evaluate_bootstrap_conversation(
+    request: &WorldSystemServiceRequest,
+) -> Result<WorldSystemServiceResponse, EvaluationError> {
+    let command: BootstrapConversationCommand = decode_payload(request)?;
+    validate_title(&command.title).map_err(invalid_model)?;
+    validate_participant_name(&command.character_display_name).map_err(invalid_model)?;
+    require_direct_principal(request)?;
+
+    let greeting = command
+        .greeting
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| ContentBlock::Markdown {
+            markdown: value.to_string(),
+        });
+    if let Some(block) = greeting.as_ref() {
+        validate_blocks(std::slice::from_ref(block)).map_err(invalid_model)?;
+    }
+
+    let world_index_schema = chat_world_index_schema_key().map_err(schema_error)?;
+    if request.reads.is_empty() {
+        return Ok(read_response(vec![
+            WorldSystemReadRequest::Facet {
+                target: WorldSystemFacetTarget::World,
+                schema: world_index_schema,
+            },
+            WorldSystemReadRequest::Entity {
+                entity_id: command.character_entity_id,
+            },
+        ]));
+    }
+
+    expect_any_entity(request, command.character_entity_id)?;
+    let mut world_index: ChatWorldIndex =
+        optional_facet(request, WorldSystemFacetTarget::World, &world_index_schema)?
+            .unwrap_or_default();
+    if !world_index.conversations.is_empty() {
+        return Err(EvaluationError::Rejected(DIAGNOSTIC_INVALID_COMMAND));
+    }
+
+    let conversation_id = command_entity_id(request.command.id);
+    let character_participant_id = derived_entity_id(request.command.id, "bootstrap-character");
+    let greeting_message_id = greeting
+        .as_ref()
+        .map(|_| derived_entity_id(request.command.id, "bootstrap-greeting"));
+    let greeting_revision_id = greeting
+        .as_ref()
+        .map(|_| derived_entity_id(request.command.id, "bootstrap-greeting-revision"));
+
+    world_index.conversations.push(conversation_id);
+    world_index.validate().map_err(invalid_model)?;
+    let message_ids = greeting_message_id.into_iter().collect::<Vec<_>>();
+    let conversation = ConversationState {
+        title: command.title,
+        selected_leaf: greeting_message_id,
+        participant_ids: vec![character_participant_id],
+        message_ids,
+    };
+    conversation.validate().map_err(invalid_model)?;
+
+    let mut transaction = WorldSystemTransaction::new();
+    transaction.push_mutation(WorldSystemMutation::CreateEntity {
+        entity_id: conversation_id,
+        schema: conversation_entity_schema_key().map_err(schema_error)?,
+    });
+    transaction.push_mutation(WorldSystemMutation::CreateEntity {
+        entity_id: character_participant_id,
+        schema: participant_entity_schema_key().map_err(schema_error)?,
+    });
+    push_world_facet(&mut transaction, world_index_schema, &world_index)?;
+    push_facet(
+        &mut transaction,
+        conversation_id,
+        conversation_state_schema_key().map_err(schema_error)?,
+        &conversation,
+    )?;
+    push_facet(
+        &mut transaction,
+        character_participant_id,
+        participant_identity_schema_key().map_err(schema_error)?,
+        &ParticipantIdentity {
+            display_name: command.character_display_name,
+            binding: ParticipantBinding::Entity {
+                entity_id: command.character_entity_id,
+            },
+        },
+    )?;
+    push_relation(
+        &mut transaction,
+        "conversation-participant",
+        conversation_participant_schema_key().map_err(schema_error)?,
+        conversation_id,
+        character_participant_id,
+    );
+    push_event(
+        &mut transaction,
+        conversation_created_event_schema_key().map_err(schema_error)?,
+        &ConversationCreatedEvent { conversation_id },
+    )?;
+    push_event(
+        &mut transaction,
+        participant_added_event_schema_key().map_err(schema_error)?,
+        &ParticipantAddedEvent {
+            conversation_id,
+            participant_id: character_participant_id,
+        },
+    )?;
+
+    if let (Some(block), Some(message_id), Some(revision_id)) =
+        (greeting, greeting_message_id, greeting_revision_id)
+    {
+        transaction.push_mutation(WorldSystemMutation::CreateEntity {
+            entity_id: message_id,
+            schema: message_entity_schema_key().map_err(schema_error)?,
+        });
+        transaction.push_mutation(WorldSystemMutation::CreateEntity {
+            entity_id: revision_id,
+            schema: message_revision_entity_schema_key().map_err(schema_error)?,
+        });
+        push_facet(
+            &mut transaction,
+            message_id,
+            message_state_schema_key().map_err(schema_error)?,
+            &MessageState {
+                conversation_id,
+                author_participant_id: character_participant_id,
+                parent_message_id: None,
+                alternative_of: None,
+                current_revision: revision_id,
+            },
+        )?;
+        push_facet(
+            &mut transaction,
+            revision_id,
+            message_content_schema_key().map_err(schema_error)?,
+            &MessageContent {
+                blocks: vec![block],
+                effective_at: request.command.effective_at,
+            },
+        )?;
+        push_relation(
+            &mut transaction,
+            "conversation-message",
+            conversation_message_schema_key().map_err(schema_error)?,
+            conversation_id,
+            message_id,
+        );
+        push_relation(
+            &mut transaction,
+            "message-author",
+            message_author_schema_key().map_err(schema_error)?,
+            message_id,
+            character_participant_id,
+        );
+        push_relation(
+            &mut transaction,
+            "message-revision",
+            message_revision_schema_key().map_err(schema_error)?,
+            message_id,
+            revision_id,
+        );
+        push_event(
+            &mut transaction,
+            message_added_event_schema_key().map_err(schema_error)?,
+            &MessageAddedEvent {
+                conversation_id,
+                message_id,
+                revision_id,
+                participant_id: character_participant_id,
+                parent_message_id: None,
+                alternative_of: None,
+            },
+        )?;
+    }
     Ok(transaction_response(transaction))
 }
 

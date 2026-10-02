@@ -16,15 +16,15 @@ pub use controller::{
 };
 pub use model::{
     MAX_WORLD_CATALOG_ENTRIES, MAX_WORLD_DESCRIPTION_BYTES, MAX_WORLD_SESSION_DIAGNOSTIC_BYTES,
-    MAX_WORLD_TITLE_BYTES, WorldCatalogAssetRef, WorldCatalogEntry, WorldManagerState,
-    WorldSessionGateway, WorldSessionGatewayError, WorldSessionRecord, WorldSortColumn,
-    WorldSortDirection,
+    MAX_WORLD_TITLE_BYTES, WorldCatalogAssetRef, WorldCatalogEntry, WorldCreatorOption,
+    WorldImportResourceRef, WorldManagerState, WorldSessionGateway, WorldSessionGatewayError,
+    WorldSessionRecord, WorldSortColumn, WorldSortDirection,
 };
 pub use ui::{
-    WORLD_MANAGER_ACTION_CREATE, WORLD_MANAGER_ACTION_DELETE, WORLD_MANAGER_ACTION_OPEN,
-    WORLD_MANAGER_ACTION_REFRESH, WORLD_MANAGER_ACTION_RENAME, WORLD_MANAGER_ACTION_RENAME_DRAFT,
-    WORLD_MANAGER_ACTION_SELECT, WORLD_MANAGER_ACTION_SORT, WORLD_MANAGER_ACTION_TOGGLE_ACTIVE,
-    WORLD_MANAGER_ACTIVITY_ID, WORLD_MANAGER_SURFACE_ID, build_world_manager_snapshot,
-    world_delete_node_id, world_manager_surface_contribution, world_open_node_id,
-    world_toggle_node_id,
+    WORLD_MANAGER_ACTION_CREATE, WORLD_MANAGER_ACTION_DELETE, WORLD_MANAGER_ACTION_IMPORT_RESOURCE,
+    WORLD_MANAGER_ACTION_OPEN, WORLD_MANAGER_ACTION_REFRESH, WORLD_MANAGER_ACTION_RENAME,
+    WORLD_MANAGER_ACTION_RENAME_DRAFT, WORLD_MANAGER_ACTION_SELECT, WORLD_MANAGER_ACTION_SORT,
+    WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_ACTIVITY_ID, WORLD_MANAGER_SURFACE_ID,
+    build_world_manager_snapshot, creator_import_node_id, world_delete_node_id,
+    world_manager_surface_contribution, world_open_node_id, world_toggle_node_id,
 };

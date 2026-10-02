@@ -14,4 +14,7 @@ crate-type = ["cdylib"]
 serde_json.workspace = true
 wit-bindgen = "0.57.1"
 rintawa-sdk.workspace = true
+rintawa-artifacts.workspace = true
+rintawa-world-creator-contracts.workspace = true
 rintawa-character-library = { path = ".." }
+rintawa-chat = { path = "../../chat" }

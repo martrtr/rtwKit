@@ -4,20 +4,21 @@ use rintawa_sdk::{
     contracts::ComponentRef,
     types::{ExtensionInstanceId, RuntimeScopeId},
     ui::{
-        UiActionEvent, UiActionId, UiActionPayload, UiNodeId, UiNodeKind, UiSplitAxis, UiSurfaceId,
+        UiActionEvent, UiActionId, UiActionPayload, UiActionUserResourceRef, UiNodeId, UiNodeKind,
+        UiSplitAxis, UiSurfaceId,
     },
     world::WorldId,
 };
 use rintawa_ui_runtime::{OwnedUiSurfaceContribution, UiRuntime};
 use rintawa_world_manager::{
     MAX_WORLD_CATALOG_ENTRIES, MAX_WORLD_DESCRIPTION_BYTES, WORLD_MANAGER_ACTION_CREATE,
-    WORLD_MANAGER_ACTION_DELETE, WORLD_MANAGER_ACTION_OPEN, WORLD_MANAGER_ACTION_RENAME,
-    WORLD_MANAGER_ACTION_RENAME_DRAFT, WORLD_MANAGER_ACTION_SELECT, WORLD_MANAGER_ACTION_SORT,
-    WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_SURFACE_ID, WorldCatalogAssetRef,
-    WorldManagerActionOutcome, WorldManagerController, WorldManagerError, WorldSessionGateway,
-    WorldSessionGatewayError, WorldSessionRecord, build_world_manager_snapshot,
-    world_delete_node_id, world_manager_surface_contribution, world_open_node_id,
-    world_toggle_node_id,
+    WORLD_MANAGER_ACTION_DELETE, WORLD_MANAGER_ACTION_IMPORT_RESOURCE, WORLD_MANAGER_ACTION_OPEN,
+    WORLD_MANAGER_ACTION_RENAME, WORLD_MANAGER_ACTION_RENAME_DRAFT, WORLD_MANAGER_ACTION_SELECT,
+    WORLD_MANAGER_ACTION_SORT, WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_SURFACE_ID,
+    WorldCatalogAssetRef, WorldCreatorOption, WorldManagerActionOutcome, WorldManagerController,
+    WorldManagerError, WorldSessionGateway, WorldSessionGatewayError, WorldSessionRecord,
+    build_world_manager_snapshot, creator_import_node_id, world_delete_node_id,
+    world_manager_surface_contribution, world_open_node_id, world_toggle_node_id,
 };
 
 #[derive(Default)]
@@ -819,5 +820,107 @@ fn test_should_report_accepted_create_with_invalid_summary_distinctly() -> anyho
     );
     assert_eq!(controller.gateway().create_calls, 1);
     assert!(controller.state().worlds().is_empty());
+    Ok(())
+}
+
+#[test]
+fn test_should_reconcile_identical_creator_discovery_without_advancing_revision()
+-> anyhow::Result<()> {
+    let mut controller = WorldManagerController::new(RecordingGateway::default());
+    controller.refresh()?;
+    let creators = vec![WorldCreatorOption {
+        key: String::from("provider-0"),
+        label: String::from("Import Character"),
+        description: String::from("Tavern V2/V3"),
+        accepted_media_types: vec![String::from("application/json")],
+        accepted_extensions: vec![String::from(".json")],
+        max_bytes: 8 * 1024 * 1024,
+        icon_slot: Some(String::from("world.import.character")),
+    }];
+    controller.replace_creators(creators.clone())?;
+    let revision = controller.state().revision();
+    controller.replace_creators(creators)?;
+    assert_eq!(controller.state().revision(), revision);
+    Ok(())
+}
+
+#[test]
+fn test_should_route_exact_resource_to_discovered_creator_and_reject_spoofed_picker()
+-> anyhow::Result<()> {
+    let mut controller = WorldManagerController::new(RecordingGateway::default());
+    controller.refresh()?;
+    controller.replace_creators(vec![WorldCreatorOption {
+        key: String::from("provider-0"),
+        label: String::from("Import Character"),
+        description: String::from("Tavern V2/V3"),
+        accepted_media_types: vec![String::from("application/json"), String::from("image/png")],
+        accepted_extensions: vec![String::from(".json"), String::from(".png")],
+        max_bytes: 8 * 1024 * 1024,
+        icon_slot: Some(String::from("world.import.character")),
+    }])?;
+    let picker = creator_import_node_id("provider-0");
+    let reference = UiActionUserResourceRef {
+        id: String::from("resource-1"),
+        size: 4096,
+        media_type: String::from("application/json"),
+        name: Some(String::from("alice.json")),
+    };
+    let event = action(
+        controller.state().revision(),
+        picker.clone(),
+        WORLD_MANAGER_ACTION_IMPORT_RESOURCE,
+        UiActionPayload::Resource(reference.clone()),
+    );
+    assert_eq!(
+        controller.handle_action(&event)?,
+        WorldManagerActionOutcome::ImportWorld {
+            creator_key: String::from("provider-0"),
+            resource: rintawa_world_manager::WorldImportResourceRef {
+                id: reference.id,
+                size: reference.size,
+                media_type: reference.media_type,
+                name: reference.name,
+            },
+        }
+    );
+    let spoofed = action(
+        controller.state().revision(),
+        UiNodeId::new("creator.provider-999.import"),
+        WORLD_MANAGER_ACTION_IMPORT_RESOURCE,
+        UiActionPayload::Resource(UiActionUserResourceRef {
+            id: String::from("resource-2"),
+            size: 1,
+            media_type: String::from("application/json"),
+            name: Some(String::from("spoof.json")),
+        }),
+    );
+    assert_eq!(
+        controller.handle_action(&spoofed),
+        Err(WorldManagerError::WrongActionNode)
+    );
+    let snapshot = build_world_manager_snapshot(controller.state());
+    assert!(
+        snapshot.nodes.iter().any(|node| {
+            node.id == picker && matches!(node.kind, UiNodeKind::ResourcePicker(_))
+        })
+    );
+    assert!(!snapshot.nodes.iter().any(|node| {
+        matches!(&node.kind, UiNodeKind::Button(button) if button.label == "Blank World")
+    }));
+
+    let ui = UiRuntime::new();
+    let instance_id = ExtensionInstanceId::new("world-manager-creator");
+    let owner = ComponentRef::new(instance_id.clone(), "ui");
+    ui.register_instance(
+        instance_id.clone(),
+        RuntimeScopeId::new("host"),
+        vec![OwnedUiSurfaceContribution {
+            owner: owner.clone(),
+            contribution: world_manager_surface_contribution(),
+        }],
+        Vec::new(),
+    )?;
+    ui.set_instance_active(&instance_id, true)?;
+    ui.mount_surface(&owner, snapshot)?;
     Ok(())
 }

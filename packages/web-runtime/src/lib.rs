@@ -35,7 +35,10 @@ const NETWORK_WRITE_BYTES: usize = 64 * 1024;
 const WS_PATH: &str = "/__rintawa/ws";
 const PRESENTED_ASSET_PATH_PREFIX: &str = "/__rintawa/asset/";
 const IMPORT_ASSET_PATH: &str = "/__rintawa/import-asset";
+const IMPORT_RESOURCE_PATH: &str = "/__rintawa/import-resource";
+const USER_RESOURCE_NAME_HEADER: &str = "x-rintawa-resource-name";
 const MAX_PICKED_ASSET_BYTES: usize = 1024 * 1024;
+const MAX_PICKED_RESOURCE_BYTES: usize = 8 * 1024 * 1024;
 const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 #[derive(Debug, Deserialize)]
@@ -804,6 +807,15 @@ fn process_http_request(component_handle: u64, client_id: u64) -> bool {
             request.headers,
         );
     }
+    if request.method == Some("POST") && request_path == IMPORT_RESOURCE_PATH {
+        return process_resource_import_request(
+            component_handle,
+            client_id,
+            &inbound,
+            parsed,
+            request.headers,
+        );
+    }
     if request.method != Some("GET") {
         queue_http_response(
             component_handle,
@@ -1005,6 +1017,76 @@ fn process_asset_import_request(
             400,
             "text/plain; charset=utf-8",
             b"asset import rejected",
+        ),
+    }
+    true
+}
+
+fn process_resource_import_request(
+    component_handle: u64,
+    client_id: u64,
+    inbound: &[u8],
+    body_offset: usize,
+    headers: &[httparse::Header<'_>],
+) -> bool {
+    let host = request_header(headers, "host");
+    let origin = request_header(headers, "origin");
+    if !host.is_some_and(|host| websocket_origin_allowed(host, origin)) {
+        queue_http_response(
+            component_handle,
+            client_id,
+            400,
+            "text/plain; charset=utf-8",
+            b"invalid origin",
+        );
+        return true;
+    }
+    let Some(content_length) =
+        request_header(headers, "content-length").and_then(|value| value.parse::<usize>().ok())
+    else {
+        queue_http_response(
+            component_handle,
+            client_id,
+            400,
+            "text/plain; charset=utf-8",
+            b"missing content length",
+        );
+        return true;
+    };
+    if content_length == 0 || content_length > MAX_PICKED_RESOURCE_BYTES {
+        queue_http_response(
+            component_handle,
+            client_id,
+            413,
+            "text/plain; charset=utf-8",
+            b"resource too large",
+        );
+        return true;
+    }
+    let required = body_offset.saturating_add(content_length);
+    if inbound.len() < required {
+        return false;
+    }
+    let media_type = request_header(headers, "content-type").unwrap_or("");
+    let name = request_header(headers, USER_RESOURCE_NAME_HEADER);
+    let bytes = &inbound[body_offset..required];
+    match rintawa::engine::user_resources::import_resource(bytes, media_type, name) {
+        Ok(reference) => {
+            let body = serde_json::to_vec(&json!({
+                "id": reference.id,
+                "size": reference.size,
+                "media_type": reference.media_type,
+                "name": reference.name,
+            }))
+            .unwrap_or_default();
+            queue_http_response(component_handle, client_id, 200, "application/json", &body);
+        }
+        Err(_) => queue_http_response(
+            component_handle,
+            client_id,
+            400,
+            "text/plain; charset=utf-8",
+            b"resource import rejected",
         ),
     }
     true

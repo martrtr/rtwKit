@@ -31,6 +31,7 @@ const MESSAGE_REVISION_RELATION: &str = "rintawa.chat.message-has-revision";
 const MESSAGE_VARIANT_RELATION: &str = "rintawa.chat.message-variant";
 
 const CREATE_CONVERSATION_COMMAND: &str = "rintawa.chat.create-conversation";
+const BOOTSTRAP_CONVERSATION_COMMAND: &str = "rintawa.chat.bootstrap-conversation";
 const ADD_PARTICIPANT_COMMAND: &str = "rintawa.chat.add-participant";
 const SEND_MESSAGE_COMMAND: &str = "rintawa.chat.send-message";
 const EDIT_MESSAGE_COMMAND: &str = "rintawa.chat.edit-message";
@@ -119,6 +120,11 @@ pub fn chat_all_world_schemas() -> Result<Vec<WorldSchemaContribution>, ChatSche
             create_conversation_schema(),
         )?,
         contribution(
+            BOOTSTRAP_CONVERSATION_COMMAND,
+            SchemaKind::Command,
+            bootstrap_conversation_schema(),
+        )?,
+        contribution(
             ADD_PARTICIPANT_COMMAND,
             SchemaKind::Command,
             add_participant_schema(),
@@ -171,6 +177,11 @@ pub fn chat_all_world_schemas() -> Result<Vec<WorldSchemaContribution>, ChatSche
 /// Returns the create-conversation command schema key.
 pub fn chat_create_conversation_command_schema_key() -> Result<SchemaKey, ChatSchemaError> {
     key(CREATE_CONVERSATION_COMMAND)
+}
+
+/// Returns the new-World primary-conversation bootstrap command schema key.
+pub fn chat_bootstrap_conversation_command_schema_key() -> Result<SchemaKey, ChatSchemaError> {
+    key(BOOTSTRAP_CONVERSATION_COMMAND)
 }
 
 /// Returns the add-participant command schema key.
@@ -535,6 +546,39 @@ fn create_conversation_schema() -> Value {
             "title": {
                 "anyOf": [
                     { "type": "string", "maxLength": MAX_CHAT_TITLE_BYTES },
+                    { "type": "null" }
+                ]
+            }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn bootstrap_conversation_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": [
+            "title",
+            "character-entity-id",
+            "character-display-name",
+            "greeting"
+        ],
+        "properties": {
+            "title": {
+                "anyOf": [
+                    { "type": "string", "maxLength": MAX_CHAT_TITLE_BYTES },
+                    { "type": "null" }
+                ]
+            },
+            "character-entity-id": uuid_schema(),
+            "character-display-name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": MAX_PARTICIPANT_NAME_BYTES
+            },
+            "greeting": {
+                "anyOf": [
+                    { "type": "string", "maxLength": MAX_MESSAGE_BLOCK_TEXT_BYTES },
                     { "type": "null" }
                 ]
             }

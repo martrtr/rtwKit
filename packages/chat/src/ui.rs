@@ -41,6 +41,8 @@ pub const CHAT_ACTION_SEND: &str = "rintawa.chat.send";
 pub const CHAT_ACTION_ATTACH_ASSET: &str = "rintawa.chat.attach-asset-ui";
 /// Semantic action removing one package-local pending composer attachment.
 pub const CHAT_ACTION_REMOVE_ATTACHMENT: &str = "rintawa.chat.remove-attachment-ui";
+/// Semantic action toggling the compact participant popover for the selected conversation.
+pub const CHAT_ACTION_TOGGLE_PARTICIPANTS: &str = "rintawa.chat.toggle-participants";
 
 /// Package-local composer attachment backed by one immutable Host asset reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,13 +61,13 @@ const HEADER_META_NODE: &str = "header.meta";
 const HEADER_ACTIONS_NODE: &str = "header.actions";
 const CAST_NODE: &str = "cast";
 const SHOW_CONVERSATIONS_NODE: &str = "header.conversations";
-const REFRESH_NODE: &str = "header.refresh";
 const BODY_NODE: &str = "body";
 const NAVIGATION_NODE: &str = "navigation";
 const CONVERSATION_NODE: &str = "conversation";
 const TIMELINE_NODE: &str = "timeline";
 const COMPOSER_NODE: &str = "composer";
 const COMPOSER_SHELL_NODE: &str = "composer.shell";
+const COMPOSER_INPUT_ROW_NODE: &str = "composer.input-row";
 const COMPOSER_TOOLS_NODE: &str = "composer.tools";
 const COMPOSER_ATTACH_NODE: &str = "composer.attach";
 const COMPOSER_ATTACHMENTS_NODE: &str = "composer.attachments";
@@ -139,6 +141,7 @@ pub fn build_chat_snapshot(
     status: Option<&str>,
     editing_message_id: Option<EntityId>,
     attachments: &[ChatComposerAttachment],
+    participants_open: bool,
 ) -> UiSurfaceSnapshot {
     let selected = view.and_then(|view| view.selected_conversation_id);
     let has_multiple = view.is_some_and(|view| view.conversations.len() > 1);
@@ -175,9 +178,9 @@ pub fn build_chat_snapshot(
             .with_trait("chat-navigation-action"),
         );
     }
-    header_actions.push(REFRESH_NODE.into());
-
-    let show_cast = selected.is_some() && view.is_some_and(|view| !view.participants.is_empty());
+    let has_participants =
+        selected.is_some() && view.is_some_and(|view| !view.participants.is_empty());
+    let show_cast = has_participants && participants_open;
     let mut root_children = vec![HEADER_NODE.into()];
     if show_cast {
         root_children.push(CAST_NODE.into());
@@ -203,7 +206,7 @@ pub fn build_chat_snapshot(
         .with_trait("chat-header"),
         UiNode::new(
             TITLE_GROUP_NODE,
-            UiNodeKind::Column(UiContainerNode {
+            UiNodeKind::Row(UiContainerNode {
                 children: vec![TITLE_NODE.into(), HEADER_META_NODE.into()],
             }),
         )
@@ -211,9 +214,21 @@ pub fn build_chat_snapshot(
         text_node(TITLE_NODE, title)
             .with_trait("page-title")
             .with_trait("chat-title"),
-        text_node(HEADER_META_NODE, meta)
-            .with_trait("muted")
-            .with_trait("chat-header-meta"),
+        if has_participants && visible_status.is_none() {
+            button_node(
+                HEADER_META_NODE,
+                meta,
+                CHAT_ACTION_TOGGLE_PARTICIPANTS,
+                true,
+                UiButtonAppearance::Subtle,
+            )
+            .with_trait("chat-header-meta")
+            .with_trait("chat-participants-toggle")
+        } else {
+            text_node(HEADER_META_NODE, meta)
+                .with_trait("muted")
+                .with_trait("chat-header-meta")
+        },
         UiNode::new(
             HEADER_ACTIONS_NODE,
             UiNodeKind::Row(UiContainerNode {
@@ -222,14 +237,6 @@ pub fn build_chat_snapshot(
         )
         .with_trait("chat-header-actions")
         .with_trait("command-set"),
-        button_node(
-            REFRESH_NODE,
-            "Refresh",
-            CHAT_ACTION_REFRESH,
-            true,
-            UiButtonAppearance::Subtle,
-        )
-        .with_trait("chat-header-action"),
     ]);
 
     if show_cast && let Some(view) = view {
@@ -361,6 +368,7 @@ fn append_cast(nodes: &mut Vec<UiNode>, view: &ChatConversationView) {
         UiNode::new(CAST_NODE, UiNodeKind::Row(UiContainerNode { children }))
             .with_semantic(semantic("rintawa.chat.participants"))
             .with_trait("chat-cast")
+            .with_trait("chat-participant-popover")
             .with_trait("media-collection"),
     );
 }
@@ -450,13 +458,21 @@ fn append_conversation(
             UiNodeKind::Column(UiContainerNode {
                 children: vec![
                     COMPOSER_ATTACHMENTS_NODE.into(),
-                    COMPOSER_TOOLS_NODE.into(),
-                    COMPOSER_NODE.into(),
+                    COMPOSER_INPUT_ROW_NODE.into(),
                 ],
             }),
         )
         .with_semantic(semantic("rintawa.chat.composer"))
         .with_trait("chat-composer-shell"),
+    );
+    nodes.push(
+        UiNode::new(
+            COMPOSER_INPUT_ROW_NODE,
+            UiNodeKind::Row(UiContainerNode {
+                children: vec![COMPOSER_TOOLS_NODE.into(), COMPOSER_NODE.into()],
+            }),
+        )
+        .with_trait("chat-composer-input-row"),
     );
     nodes.push(
         UiNode::new(
@@ -473,7 +489,7 @@ fn append_conversation(
         UiNode::new(
             COMPOSER_ATTACH_NODE,
             UiNodeKind::AssetPicker(UiAssetPickerNode {
-                label: String::from("Image"),
+                label: String::from("Attach image"),
                 accepted_media_types: vec![
                     String::from("image/png"),
                     String::from("image/jpeg"),
@@ -485,7 +501,9 @@ fn append_conversation(
             }),
         )
         .with_trait("chat-attach-picker")
-        .with_trait("composer-tool"),
+        .with_trait("composer-tool")
+        .with_trait("icon-only")
+        .with_trait("icon-action-attach"),
     );
     append_pending_attachments(nodes, attachments);
     nodes.push(
@@ -506,6 +524,8 @@ fn append_conversation(
         .with_semantic(semantic("rintawa.chat.composer"))
         .with_trait("chat-composer")
         .with_trait("multiline-composer")
+        .with_trait("submit-icon-only")
+        .with_trait("icon-action-send")
         .with_trait("clear-on-submit")
         .with_trait(if attachments.is_empty() {
             "requires-text-submit"
@@ -878,7 +898,7 @@ fn content_node(id: UiNodeId, block: &ContentBlock) -> UiNode {
                         .filter(|value| !value.trim().is_empty())
                         .unwrap_or("Chat image")
                         .to_string(),
-                    width: Some(420),
+                    width: None,
                     height: None,
                 }),
             )

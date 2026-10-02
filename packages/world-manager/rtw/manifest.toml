@@ -11,4 +11,4 @@ entry = "runtime.wasm"
 required = true
 
 [components.permissions]
-runtime = ["world-session-read", "world-session-write"]
+runtime = ["background-task", "world-session-read", "world-session-write"]

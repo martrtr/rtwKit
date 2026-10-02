@@ -5,6 +5,7 @@ members = [
     "tools/componentize",
     "packages/web-runtime",
     "crates/shell-contracts",
+    "crates/world-creator-contracts",
     "packages/package-manager",
     "packages/character-library",
     "packages/character-library/content-handler",
@@ -28,6 +29,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 rintawa-shell-contracts = { path = "crates/shell-contracts" }
+rintawa-world-creator-contracts = { path = "crates/world-creator-contracts" }
 toml = "0.9"
 rintawa-artifacts = { git = "https://github.com/martrtr/rintawa.git", rev = "618d877" }
 rintawa-sdk = { git = "https://github.com/martrtr/rintawa.git", rev = "618d877" }

@@ -44,6 +44,7 @@ fn test_should_show_browser_when_multiple_conversations_need_selection() {
         None,
         None,
         &[],
+        false,
     );
 
     assert!(has_node(&snapshot, "navigation"));
@@ -80,6 +81,7 @@ fn test_should_open_single_conversation_without_browser() {
         None,
         None,
         &[],
+        false,
     );
 
     assert!(!has_node(&snapshot, "navigation"));
@@ -102,12 +104,52 @@ fn test_should_offer_browser_return_from_selected_multi_conversation() {
         None,
         None,
         &[],
+        false,
     );
 
     assert!(has_node(&snapshot, "header.conversations"));
     assert!(has_node(&snapshot, "timeline"));
     assert!(has_node(&snapshot, "composer"));
     assert!(!has_node(&snapshot, "navigation"));
+}
+
+#[test]
+fn test_should_render_participants_only_in_explicit_popover() {
+    let conversation = EntityId::new();
+    let participant = EntityId::new();
+    let chat = ChatConversationView {
+        conversations: vec![summary(conversation, "Tavern")],
+        selected_conversation_id: Some(conversation),
+        selected_leaf: None,
+        participants: vec![ChatParticipantView {
+            id: participant,
+            display_name: String::from("Narrator"),
+            linked_entity: None,
+            can_send: false,
+        }],
+        messages: Vec::new(),
+    };
+
+    let closed = build_chat_snapshot(4, Some("world"), Some(&chat), None, None, &[], false);
+    assert!(!has_node(&closed, "cast"));
+    let header_meta = closed
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "header.meta")
+        .expect("participant summary control");
+    assert!(matches!(header_meta.kind, UiNodeKind::Button(_)));
+
+    let open = build_chat_snapshot(5, Some("world"), Some(&chat), None, None, &[], true);
+    let cast = open
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "cast")
+        .expect("participant popover");
+    assert!(
+        cast.traits
+            .iter()
+            .any(|value| value.as_str() == "chat-participant-popover")
+    );
 }
 
 #[test]
@@ -147,7 +189,15 @@ fn test_should_render_sillytavern_style_message_structure_and_composer_shell() {
             effective_at: None,
         }],
     };
-    let snapshot = build_chat_snapshot(4, Some("world"), Some(&chat), Some("Ready"), None, &[]);
+    let snapshot = build_chat_snapshot(
+        4,
+        Some("world"),
+        Some(&chat),
+        Some("Ready"),
+        None,
+        &[],
+        false,
+    );
     let message_node = snapshot
         .nodes
         .iter()
@@ -190,6 +240,22 @@ fn test_should_render_sillytavern_style_message_structure_and_composer_shell() {
             .any(|node| node.id.as_str() == "composer.shell"
                 && matches!(node.kind, UiNodeKind::Column(_)))
     );
+    let input_row = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "composer.input-row")
+        .expect("composer input row");
+    let UiNodeKind::Row(input_row) = &input_row.kind else {
+        panic!("composer input row must be horizontal");
+    };
+    assert_eq!(
+        input_row
+            .children
+            .iter()
+            .map(|child| child.as_str())
+            .collect::<Vec<_>>(),
+        vec!["composer.tools", "composer"]
+    );
     let timeline = snapshot
         .nodes
         .iter()
@@ -226,7 +292,15 @@ fn test_should_render_sillytavern_style_message_structure_and_composer_shell() {
         .find(|node| node.id.as_str() == "composer.attach")
         .expect("attachment picker");
     assert!(matches!(attach.kind, UiNodeKind::AssetPicker(_)));
-    let editing = build_chat_snapshot(5, Some("world"), Some(&chat), None, Some(message), &[]);
+    let editing = build_chat_snapshot(
+        5,
+        Some("world"),
+        Some(&chat),
+        None,
+        Some(message),
+        &[],
+        false,
+    );
     assert!(has_node(&editing, "message.0.edit-input"));
     assert!(has_node(&editing, "message.0.edit-cancel"));
     assert!(!has_node(&editing, "message.0.delete"));

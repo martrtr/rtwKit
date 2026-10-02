@@ -35,6 +35,7 @@ capabilities = [
   "rintawa.ui.input.text@1",
   "rintawa.ui.input.text-area@1",
   "rintawa.ui.input.asset@1",
+  "rintawa.ui.input.resource@1",
   "rintawa.ui.layout.split@1",
   "rintawa.ui.layout.row@1",
   "rintawa.ui.layout.column@1",

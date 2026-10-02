@@ -1,0 +1,13 @@
+[package]
+name = "rintawa-world-creator-contracts"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Versioned contracts for discoverable World creator providers"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2"

@@ -15,9 +15,11 @@ import remarkGfm from "remark-gfm";
 import type { UiActionEvent, UiPresentationSurface } from "../bridge";
 import type {
   UiActionAssetRef,
+  UiActionUserResourceRef,
   UiAssetImageNode,
   UiAssetPickerNode,
   UiNode,
+  UiResourcePickerNode,
   UiTextInputNode,
 } from "../bridge/types";
 import { InterfaceIcon } from "../icons/InterfaceIcon";
@@ -45,8 +47,18 @@ function PortableListContainer({
   const stickToEnd = node.traits?.includes("stick-to-end") ?? false;
   useLayoutEffect(() => {
     const element = container.current;
-    if (stickToEnd && pinnedToEnd.current && element)
-      element.scrollTop = element.scrollHeight;
+    if (!stickToEnd || !element) return undefined;
+
+    const scrollToEndIfPinned = () => {
+      if (pinnedToEnd.current) element.scrollTop = element.scrollHeight;
+    };
+    scrollToEndIfPinned();
+
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const resizeObserver = new ResizeObserver(scrollToEndIfPinned);
+    resizeObserver.observe(element);
+    for (const child of element.children) resizeObserver.observe(child);
+    return () => resizeObserver.disconnect();
   }, [content, stickToEnd]);
   return (
     <div
@@ -104,6 +116,25 @@ function nodePresentationAttributes(node: UiNode): NodePresentationAttributes {
   };
 }
 
+function actionIconSlot(
+  presentationAttributes: NodePresentationAttributes,
+): string | null {
+  const traits = presentationAttributes["data-ui-traits"]?.split(/\s+/) ?? [];
+  const iconTrait = traits.find((trait) => trait.startsWith("icon-action-"));
+  if (!iconTrait) return null;
+  const action = iconTrait.slice("icon-action-".length);
+  return action.length > 0 ? `action.${action}` : null;
+}
+
+function hasPresentationTrait(
+  presentationAttributes: NodePresentationAttributes,
+  trait: string,
+): boolean {
+  return (
+    presentationAttributes["data-ui-traits"]?.split(/\s+/) ?? []
+  ).includes(trait);
+}
+
 function actionEvent(
   surface: UiPresentationSurface,
   nodeId: string,
@@ -125,6 +156,28 @@ function actionEvent(
             ? { type: "text", value }
             : { type: "asset", value },
   };
+}
+
+function resourceActionEvent(
+  surface: UiPresentationSurface,
+  nodeId: string,
+  actionId: string,
+  value: UiActionUserResourceRef,
+): UiActionEvent {
+  return {
+    owner_instance_id: surface.owner.instance_id,
+    surface_id: surface.snapshot.surface_id,
+    node_id: nodeId,
+    action_id: actionId,
+    surface_revision: surface.snapshot.revision,
+    payload: { type: "resource", value },
+  };
+}
+
+function fileExtension(name: string): string | null {
+  const index = name.lastIndexOf(".");
+  if (index <= 0 || index === name.length - 1) return null;
+  return name.slice(index).toLowerCase();
 }
 
 function TextControl({
@@ -210,10 +263,25 @@ function TextControl({
             type="button"
             className="rintawa-button rintawa-textarea-submit"
             data-appearance="default"
+            data-icon-only={
+              hasPresentationTrait(presentationAttributes, "submit-icon-only")
+                ? "true"
+                : undefined
+            }
+            aria-label={data.submit_label ?? "Submit"}
+            title={data.submit_label ?? "Submit"}
             disabled={!canSubmit}
             onClick={submit}
           >
-            {data.submit_label ?? "Submit"}
+            {hasPresentationTrait(presentationAttributes, "submit-icon-only") &&
+            actionIconSlot(presentationAttributes) ? (
+              <InterfaceIcon
+                slot={actionIconSlot(presentationAttributes)}
+                size={20}
+              />
+            ) : (
+              (data.submit_label ?? "Submit")
+            )}
           </button>
         ) : null}
       </div>
@@ -360,13 +428,147 @@ function AssetPicker({
         type="button"
         className="rintawa-button rintawa-asset-picker-button"
         data-appearance="subtle"
+        data-icon-only={
+          hasPresentationTrait(presentationAttributes, "icon-only")
+            ? "true"
+            : undefined
+        }
+        aria-label={busy ? `${data.label}…` : data.label}
+        title={busy ? `${data.label}…` : data.label}
         disabled={!data.is_enabled || busy}
         onClick={() => inputRef.current?.click()}
       >
-        {busy ? "Attaching…" : data.label}
+        {hasPresentationTrait(presentationAttributes, "icon-only") &&
+        actionIconSlot(presentationAttributes) ? (
+          <InterfaceIcon
+            slot={actionIconSlot(presentationAttributes)}
+            size={20}
+          />
+        ) : busy ? (
+          `${data.label}…`
+        ) : (
+          data.label
+        )}
       </button>
       {error ? (
         <span className="rintawa-asset-picker-error">{error}</span>
+      ) : null}
+    </div>
+  );
+}
+
+function ResourcePicker({
+  nodeId,
+  data,
+  surface,
+  onAction,
+  presentationAttributes,
+}: {
+  nodeId: string;
+  data: UiResourcePickerNode;
+  surface: UiPresentationSurface;
+  onAction: (event: UiActionEvent) => void;
+  presentationAttributes: NodePresentationAttributes;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const importFile = async (file: File) => {
+    setError(null);
+    const extension = fileExtension(file.name);
+    const acceptedByType = data.accepted_media_types.includes(file.type);
+    const acceptedByExtension =
+      extension !== null && data.accepted_extensions.includes(extension);
+    if (!acceptedByType && !acceptedByExtension) {
+      setError("Unsupported file type");
+      return;
+    }
+    if (file.size <= 0 || file.size > data.max_bytes) {
+      setError(
+        `File must be at most ${Math.ceil(data.max_bytes / 1024 / 1024)} MiB`,
+      );
+      return;
+    }
+    const mediaType = file.type || "application/octet-stream";
+    setBusy(true);
+    try {
+      const response = await fetch("/__rintawa/import-resource", {
+        method: "POST",
+        headers: {
+          "Content-Type": mediaType,
+          "X-Rintawa-Resource-Name": file.name,
+        },
+        body: file,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const value = (await response.json()) as Partial<UiActionUserResourceRef>;
+      if (
+        typeof value.id !== "string" ||
+        value.id.length === 0 ||
+        typeof value.size !== "number" ||
+        value.size !== file.size ||
+        value.media_type !== mediaType ||
+        value.name !== file.name
+      ) {
+        throw new Error("Invalid resource import response");
+      }
+      onAction(
+        resourceActionEvent(surface, nodeId, data.change_action, {
+          id: value.id,
+          size: value.size,
+          media_type: value.media_type,
+          name: value.name,
+        }),
+      );
+      if (inputRef.current) inputRef.current.value = "";
+    } catch {
+      setError("Could not import this file");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const accept = [
+    ...data.accepted_media_types,
+    ...data.accepted_extensions,
+  ].join(",");
+  return (
+    <div {...presentationAttributes} className="rintawa-resource-picker">
+      <input
+        ref={inputRef}
+        className="rintawa-resource-picker-input"
+        type="file"
+        accept={accept}
+        disabled={!data.is_enabled || busy}
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          if (file) void importFile(file);
+        }}
+      />
+      <button
+        type="button"
+        className="rintawa-button rintawa-resource-picker-button"
+        data-appearance="default"
+        aria-label={busy ? `${data.label}…` : data.label}
+        title={busy ? `${data.label}…` : data.label}
+        disabled={!data.is_enabled || busy}
+        onClick={() => inputRef.current?.click()}
+      >
+        {hasPresentationTrait(presentationAttributes, "icon-only") &&
+        actionIconSlot(presentationAttributes) ? (
+          <InterfaceIcon
+            slot={actionIconSlot(presentationAttributes)}
+            size={20}
+          />
+        ) : busy ? (
+          `${data.label}…`
+        ) : (
+          data.label
+        )}
+      </button>
+      {error ? (
+        <span className="rintawa-resource-picker-error">{error}</span>
       ) : null}
     </div>
   );
@@ -567,6 +769,16 @@ function NodeRenderer({
     case "asset-picker":
       return (
         <AssetPicker
+          nodeId={node.id}
+          data={kind.data}
+          surface={surface}
+          onAction={onAction}
+          presentationAttributes={presentationAttributes}
+        />
+      );
+    case "resource-picker":
+      return (
+        <ResourcePicker
           nodeId={node.id}
           data={kind.data}
           surface={surface}

@@ -4,12 +4,13 @@ use rintawa_sdk::{
     contracts::{ContractKey, ContractVersion},
     ui::{
         UI_CAPABILITY_ASSET_IMAGE, UI_CAPABILITY_BUTTON, UI_CAPABILITY_COLUMN,
-        UI_CAPABILITY_DATA_GRID, UI_CAPABILITY_ICON, UI_CAPABILITY_ROW, UI_CAPABILITY_SPLIT,
-        UI_CAPABILITY_TEXT, UI_CAPABILITY_TEXT_INPUT, UiActionId, UiActivityContribution,
-        UiAssetImageNode, UiButtonAppearance, UiButtonNode, UiContainerNode, UiDataGridColumn,
-        UiDataGridNode, UiDataGridSortDirection, UiIconNode, UiIconSlotId, UiNode, UiNodeId,
-        UiNodeKind, UiPlacementHint, UiSplitAxis, UiSplitNode, UiSurfaceContribution, UiSurfaceId,
-        UiSurfaceSnapshot, UiTextInputNode, UiTextNode,
+        UI_CAPABILITY_DATA_GRID, UI_CAPABILITY_ICON, UI_CAPABILITY_RESOURCE_PICKER,
+        UI_CAPABILITY_ROW, UI_CAPABILITY_SPLIT, UI_CAPABILITY_TEXT, UI_CAPABILITY_TEXT_INPUT,
+        UiActionId, UiActivityContribution, UiAssetImageNode, UiButtonAppearance, UiButtonNode,
+        UiContainerNode, UiDataGridColumn, UiDataGridNode, UiDataGridSortDirection, UiIconNode,
+        UiIconSlotId, UiNode, UiNodeId, UiNodeKind, UiPlacementHint, UiResourcePickerNode,
+        UiSplitAxis, UiSplitNode, UiSurfaceContribution, UiSurfaceId, UiSurfaceSnapshot,
+        UiTextInputNode, UiTextNode,
     },
     world::WorldId,
 };
@@ -22,6 +23,8 @@ pub const WORLD_MANAGER_SURFACE_ID: &str = "rintawa.world-manager.main";
 pub const WORLD_MANAGER_ACTIVITY_ID: &str = "rintawa.world-manager";
 /// Semantic action used by the Add World control.
 pub const WORLD_MANAGER_ACTION_CREATE: &str = "rintawa.world-manager.create";
+/// Semantic action routing one selected ephemeral file to an exact creator provider.
+pub const WORLD_MANAGER_ACTION_IMPORT_RESOURCE: &str = "rintawa.world-manager.import-resource";
 /// Semantic action used by the explicit catalog refresh control.
 pub const WORLD_MANAGER_ACTION_REFRESH: &str = "rintawa.world-manager.refresh";
 /// Semantic action selecting one World row for contextual launcher actions.
@@ -43,6 +46,8 @@ const ROOT_NODE: &str = "root";
 const HEADER_NODE: &str = "header";
 const TITLE_NODE: &str = "title";
 const TOOLBAR_NODE: &str = "toolbar";
+const IMPORTERS_NODE: &str = "toolbar.importers";
+const IMPORT_STATUS_NODE: &str = "toolbar.import-status";
 pub(crate) const CREATE_NODE: &str = "toolbar.create";
 pub(crate) const REFRESH_NODE: &str = "toolbar.refresh";
 pub(crate) const CATALOG_GRID_NODE: &str = "catalog.grid";
@@ -73,6 +78,7 @@ pub fn world_manager_surface_contribution() -> UiSurfaceContribution {
         .requiring_capability(UI_CAPABILITY_DATA_GRID)
         .requiring_capability(UI_CAPABILITY_ICON)
         .requiring_capability(UI_CAPABILITY_ASSET_IMAGE)
+        .requiring_capability(UI_CAPABILITY_RESOURCE_PICKER)
         .requiring_capability(UI_CAPABILITY_TEXT)
         .requiring_capability(UI_CAPABILITY_TEXT_INPUT)
         .requiring_capability(UI_CAPABILITY_BUTTON)
@@ -93,13 +99,30 @@ pub fn world_delete_node_id(world_id: WorldId) -> UiNodeId {
     UiNodeId::new(format!("world.{world_id}.delete"))
 }
 
+/// Returns the stable resource-picker node identity for one discovered creator provider.
+pub fn creator_import_node_id(creator_key: &str) -> UiNodeId {
+    UiNodeId::new(format!("creator.{creator_key}.import"))
+}
+
 /// Renders the current World Manager state as a game-style media collection plus contextual actions.
 pub fn build_world_manager_snapshot(state: &WorldManagerState) -> UiSurfaceSnapshot {
+    let mut toolbar_children = Vec::new();
+    if state.creators().is_empty() {
+        toolbar_children.push(CREATE_NODE.into());
+    } else {
+        toolbar_children.push(IMPORTERS_NODE.into());
+    }
+    toolbar_children.push(REFRESH_NODE.into());
+    let mut root_children = vec![HEADER_NODE.into()];
+    if state.import_status().is_some() {
+        root_children.push(IMPORT_STATUS_NODE.into());
+    }
+    root_children.push(WORKSPACE_NODE.into());
     let mut nodes = vec![
         UiNode::new(
             ROOT_NODE,
             UiNodeKind::Column(UiContainerNode {
-                children: vec![HEADER_NODE.into(), WORKSPACE_NODE.into()],
+                children: root_children,
             }),
         )
         .with_semantic(semantic("management.worlds.launcher"))
@@ -115,17 +138,10 @@ pub fn build_world_manager_snapshot(state: &WorldManagerState) -> UiSurfaceSnaps
         UiNode::new(
             TOOLBAR_NODE,
             UiNodeKind::Row(UiContainerNode {
-                children: vec![CREATE_NODE.into(), REFRESH_NODE.into()],
+                children: toolbar_children,
             }),
         )
         .with_trait("command-set"),
-        button_node(
-            CREATE_NODE,
-            "Add World",
-            WORLD_MANAGER_ACTION_CREATE,
-            true,
-            UiButtonAppearance::Primary,
-        ),
         button_node(
             REFRESH_NODE,
             "Refresh",
@@ -134,6 +150,52 @@ pub fn build_world_manager_snapshot(state: &WorldManagerState) -> UiSurfaceSnaps
             UiButtonAppearance::Subtle,
         ),
     ];
+
+    if state.creators().is_empty() {
+        nodes.push(button_node(
+            CREATE_NODE,
+            "Blank World",
+            WORLD_MANAGER_ACTION_CREATE,
+            true,
+            UiButtonAppearance::Subtle,
+        ));
+    } else {
+        let mut importer_children = Vec::with_capacity(state.creators().len());
+        for creator in state.creators() {
+            let node_id = creator_import_node_id(&creator.key);
+            importer_children.push(node_id.clone());
+            nodes.push(
+                UiNode::new(
+                    node_id,
+                    UiNodeKind::ResourcePicker(UiResourcePickerNode {
+                        label: creator.label.clone(),
+                        accepted_media_types: creator.accepted_media_types.clone(),
+                        accepted_extensions: creator.accepted_extensions.clone(),
+                        max_bytes: creator.max_bytes,
+                        change_action: UiActionId::new(WORLD_MANAGER_ACTION_IMPORT_RESOURCE),
+                        is_enabled: true,
+                    }),
+                )
+                .with_trait("world-import-picker"),
+            );
+        }
+        nodes.push(
+            UiNode::new(
+                IMPORTERS_NODE,
+                UiNodeKind::Row(UiContainerNode {
+                    children: importer_children,
+                }),
+            )
+            .with_trait("world-importers"),
+        );
+    }
+    if let Some(status) = state.import_status() {
+        nodes.push(
+            text_node(IMPORT_STATUS_NODE, status)
+                .with_trait("muted")
+                .with_trait("world-import-status"),
+        );
+    }
 
     let catalog_pane = build_catalog_pane(&mut nodes, state);
     let inspector = build_inspector(&mut nodes, state);
@@ -259,7 +321,11 @@ fn build_catalog_pane(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiN
         nodes.push(
             text_node(
                 EMPTY_NODE,
-                "No Worlds yet. Use Add World to create your first World.",
+                if state.creators().is_empty() {
+                    "No Worlds yet. Create a Blank World or install an importer."
+                } else {
+                    "No Worlds yet. Import a supported file to create your first World."
+                },
             )
             .with_trait("empty-state"),
         );

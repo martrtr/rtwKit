@@ -9,12 +9,16 @@ use thiserror::Error;
 use crate::{
     MAX_WORLD_CATALOG_ENTRIES, MAX_WORLD_DESCRIPTION_BYTES, MAX_WORLD_SESSION_DIAGNOSTIC_BYTES,
     MAX_WORLD_TITLE_BYTES, WORLD_MANAGER_ACTION_CREATE, WORLD_MANAGER_ACTION_DELETE,
-    WORLD_MANAGER_ACTION_OPEN, WORLD_MANAGER_ACTION_REFRESH, WORLD_MANAGER_ACTION_RENAME,
-    WORLD_MANAGER_ACTION_RENAME_DRAFT, WORLD_MANAGER_ACTION_SELECT, WORLD_MANAGER_ACTION_SORT,
-    WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_SURFACE_ID, WorldCatalogEntry,
-    WorldManagerState, WorldSessionGateway, WorldSessionGatewayError, WorldSessionRecord,
-    WorldSortColumn, WorldSortDirection,
-    ui::{CATALOG_GRID_NODE, CREATE_NODE, REFRESH_NODE, RENAME_INPUT_NODE, RENAME_SAVE_NODE},
+    WORLD_MANAGER_ACTION_IMPORT_RESOURCE, WORLD_MANAGER_ACTION_OPEN, WORLD_MANAGER_ACTION_REFRESH,
+    WORLD_MANAGER_ACTION_RENAME, WORLD_MANAGER_ACTION_RENAME_DRAFT, WORLD_MANAGER_ACTION_SELECT,
+    WORLD_MANAGER_ACTION_SORT, WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_SURFACE_ID,
+    WorldCatalogEntry, WorldCreatorOption, WorldImportResourceRef, WorldManagerState,
+    WorldSessionGateway, WorldSessionGatewayError, WorldSessionRecord, WorldSortColumn,
+    WorldSortDirection,
+    ui::{
+        CATALOG_GRID_NODE, CREATE_NODE, REFRESH_NODE, RENAME_INPUT_NODE, RENAME_SAVE_NODE,
+        creator_import_node_id,
+    },
     world_delete_node_id, world_open_node_id, world_toggle_node_id,
 };
 
@@ -86,12 +90,19 @@ pub enum WorldManagerError {
 pub type WorldManagerResult<T> = Result<T, WorldManagerError>;
 
 /// Semantic side effect requested by one validated World Manager action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorldManagerActionOutcome {
     /// No shell-level navigation is required.
     None,
     /// Bring this World into the caller's foreground presentation session.
     OpenWorld(WorldId),
+    /// Route one ephemeral user-selected resource to an exact creator provider.
+    ImportWorld {
+        /// Session-local creator provider key.
+        creator_key: String,
+        /// Exact Host-issued ephemeral resource reference.
+        resource: WorldImportResourceRef,
+    },
 }
 
 /// Stateful World Manager controller parameterized by a runtime adapter.
@@ -152,6 +163,8 @@ where
             rename_draft,
             sort_column: self.state.sort_column,
             sort_direction: self.state.sort_direction,
+            creators: self.state.creators.clone(),
+            import_status: self.state.import_status.clone(),
             revision,
         };
         Ok(())
@@ -202,6 +215,8 @@ where
             rename_draft,
             sort_column: self.state.sort_column,
             sort_direction: self.state.sort_direction,
+            creators: self.state.creators.clone(),
+            import_status: self.state.import_status.clone(),
             revision,
         };
         Ok(world_id)
@@ -241,8 +256,43 @@ where
             rename_draft: self.state.rename_draft.clone(),
             sort_column: self.state.sort_column,
             sort_direction: self.state.sort_direction,
+            creators: self.state.creators.clone(),
+            import_status: self.state.import_status.clone(),
             revision,
         };
+        Ok(())
+    }
+
+    /// Replaces creator/import descriptors discovered by the runtime adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorldManagerError::RevisionOverflow`] when presentation cannot advance.
+    pub fn replace_creators(
+        &mut self,
+        creators: Vec<WorldCreatorOption>,
+    ) -> WorldManagerResult<()> {
+        if self.state.creators == creators && self.state.import_status.is_none() {
+            return Ok(());
+        }
+        let revision = next_revision(self.state.revision)?;
+        self.state.creators = creators;
+        self.state.import_status = None;
+        self.state.revision = revision;
+        Ok(())
+    }
+
+    /// Records a bounded creator/import diagnostic after a provider call fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorldManagerError::DiagnosticTooLarge`] or revision overflow.
+    pub fn set_import_status(&mut self, status: String) -> WorldManagerResult<()> {
+        if status.len() > MAX_WORLD_SESSION_DIAGNOSTIC_BYTES {
+            return Err(WorldManagerError::DiagnosticTooLarge);
+        }
+        self.state.import_status = Some(status);
+        self.state.revision = next_revision(self.state.revision)?;
         Ok(())
     }
 
@@ -343,6 +393,8 @@ where
             rename_draft: title,
             sort_column: self.state.sort_column,
             sort_direction: self.state.sort_direction,
+            creators: self.state.creators.clone(),
+            import_status: self.state.import_status.clone(),
             revision,
         };
         Ok(())
@@ -385,6 +437,8 @@ where
             rename_draft,
             sort_column: self.state.sort_column,
             sort_direction: self.state.sort_direction,
+            creators: self.state.creators.clone(),
+            import_status: self.state.import_status.clone(),
             revision,
         };
         Ok(())
@@ -417,6 +471,29 @@ where
             });
         }
         match event.action_id.as_str() {
+            WORLD_MANAGER_ACTION_IMPORT_RESOURCE => {
+                let UiActionPayload::Resource(reference) = &event.payload else {
+                    return Err(WorldManagerError::InvalidActionPayload);
+                };
+                let creator = self
+                    .state
+                    .creators
+                    .iter()
+                    .find(|creator| creator_import_node_id(&creator.key) == event.node_id)
+                    .ok_or(WorldManagerError::WrongActionNode)?;
+                if reference.size == 0 || reference.size > creator.max_bytes {
+                    return Err(WorldManagerError::InvalidActionPayload);
+                }
+                Ok(WorldManagerActionOutcome::ImportWorld {
+                    creator_key: creator.key.clone(),
+                    resource: WorldImportResourceRef {
+                        id: reference.id.clone(),
+                        size: reference.size,
+                        media_type: reference.media_type.clone(),
+                        name: reference.name.clone(),
+                    },
+                })
+            }
             WORLD_MANAGER_ACTION_REFRESH => {
                 require_no_payload(event)?;
                 if event.node_id.as_str() != REFRESH_NODE {

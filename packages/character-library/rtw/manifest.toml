@@ -21,7 +21,10 @@ required = true
 runtime = [
     "user-content-read",
     "user-content-write",
+    "user-resource-read",
+    "asset-import",
     "background-task",
+    "world-session-read",
     "world-session-write",
     "world-command-submit",
     "composition-read",

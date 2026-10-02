@@ -13,11 +13,12 @@ use crate::{
     model::{BUILTIN_REPOSITORY, CatalogPackage},
     runtime::{
         ActionTarget, CachedImage, InstalledPackage, InstalledSortColumn, MAX_CARD_AUTHORS_BYTES,
-        MAX_CARD_DESCRIPTION_BYTES, MAX_EMBEDDED_IMAGE_BASE64_BYTES, MAX_INSTALLED_RESULTS,
-        MAX_SEARCH_RESULTS, ManagerState, PendingInstall, SortDirection, View,
-        dependency_blockers_locked, dependency_issues_for_enable_locked, filtered_catalog_packages,
-        installed_has_catalog_update, installed_provider, installed_status, repository_label,
-        truncate_display_text, visible_installed_packages,
+        MAX_CARD_DESCRIPTION_BYTES, MAX_EMBEDDED_IMAGE_BASE64_BYTES, MAX_FILE_IMPORT_BYTES,
+        MAX_INSTALLED_RESULTS, MAX_SEARCH_RESULTS, ManagerState, PendingInstall, SortDirection,
+        View, dependency_blockers_locked, dependency_issues_for_enable_locked,
+        filtered_catalog_packages, installed_has_catalog_update, installed_provider,
+        installed_status, managed_install_record, repository_label, truncate_display_text,
+        visible_installed_packages,
     },
 };
 
@@ -315,6 +316,25 @@ impl UiBuilder {
         id
     }
 
+    fn resource_picker(&mut self, label: &str, action: &str, enabled: bool) -> String {
+        let id = self.id("resource-picker");
+        self.nodes.push(json!({
+            "id": id,
+            "kind": {
+                "type": "resource-picker",
+                "data": {
+                    "label": label,
+                    "accepted_media_types": ["application/octet-stream", "application/zip"],
+                    "accepted_extensions": [".rtw"],
+                    "max_bytes": MAX_FILE_IMPORT_BYTES,
+                    "change_action": action,
+                    "is_enabled": enabled
+                }
+            }
+        }));
+        id
+    }
+
     fn named_split(&mut self, id: &str, axis: &str, panes: Vec<(String, u32)>) -> String {
         self.split_with_id(id.to_string(), axis, panes)
     }
@@ -429,13 +449,15 @@ pub(super) fn build_surface(state: &ManagerState) -> RenderedSurface {
     let mut ui = UiBuilder::new();
 
     if let Some(pending) = state.pending_install.as_ref() {
+        let scope = build_management_scope_bar(&mut ui, state, false);
         let title = ui.markdown(format!("## {}", message(Message::InstallationReview)));
         let pending = build_pending_install(&mut ui, pending);
         let status = ui.text(state.status.clone());
         let content = ui.column(vec![title, pending, status]);
-        return ui.finish(vec![content]);
+        return ui.finish(vec![scope, content]);
     }
 
+    let scope = build_management_scope_bar(&mut ui, state, true);
     let workspace = match state.view {
         View::Browse => build_browse(&mut ui, state),
         View::Installed => build_installed(&mut ui, state),
@@ -450,7 +472,71 @@ pub(super) fn build_surface(state: &ManagerState) -> RenderedSurface {
             ui.column(vec![direct_url, status])
         }
     };
-    ui.finish(vec![workspace])
+    ui.finish(vec![scope, workspace])
+}
+
+fn build_management_scope_bar(
+    ui: &mut UiBuilder,
+    state: &ManagerState,
+    is_enabled: bool,
+) -> String {
+    let title = ui.text("Configure extensions for");
+    let options = state.management_scopes.iter().map(|scope| {
+        let label = match scope.world_id.as_deref() {
+            Some(_) => format!("World · {}", scope.label),
+            None => String::from("Host"),
+        };
+        (scope.scope_id.clone(), label)
+    });
+    let selector = ui.select(
+        &state.selected_scope_id,
+        options,
+        "management.scope",
+        is_enabled,
+        None,
+    );
+    let selector = ui.presentation_semantic(
+        selector,
+        "management.extensions.scope-selector",
+        &["management-scope-select"],
+    );
+    let help = state
+        .management_scopes
+        .iter()
+        .find(|scope| scope.scope_id == state.selected_scope_id)
+        .map(|scope| match scope.world_id.as_deref() {
+            Some(_) => String::from(
+                "Only this World composition is changed. Installed artifacts remain shared by the Host.",
+            ),
+            None => String::from(
+                "Host extensions run outside individual Worlds. Choose a World to manage its composition.",
+            ),
+        })
+        .unwrap_or_else(|| String::from("Choose a composition scope."));
+    let help = ui.text(help);
+    let help = ui.presentation_semantic(
+        help,
+        "management.extensions.scope-help",
+        &["muted", "management-scope-help"],
+    );
+    let file_import = ui.resource_picker("Install RTW…", "package.file-import", is_enabled);
+    let file_import = ui.presentation_semantic(
+        file_import,
+        "management.extensions.file-import",
+        &["management-file-import"],
+    );
+    let controls = ui.row(vec![title, selector, file_import]);
+    let controls = ui.presentation_semantic(
+        controls,
+        "management.extensions.scope-controls",
+        &["management-scope-controls"],
+    );
+    let bar = ui.column(vec![controls, help]);
+    ui.presentation_semantic(
+        bar,
+        "management.extensions.scope",
+        &["management-scope-bar"],
+    )
 }
 
 fn build_pending_install(ui: &mut UiBuilder, pending: &PendingInstall) -> String {
@@ -1107,7 +1193,7 @@ fn build_installed_commands(
             package.instance_id, package.scope_id
         )));
 
-        let dependencies = match state.managed_installs.get(&package.subject) {
+        let dependencies = match managed_install_record(state, &package.subject) {
             Some(record) if record.dependencies_known && record.dependencies.is_empty() => {
                 "Dependencies: none".to_string()
             }

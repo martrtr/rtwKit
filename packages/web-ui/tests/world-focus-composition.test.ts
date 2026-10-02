@@ -56,6 +56,30 @@ function presentation(entrySurfaceId: string): UiLayerPresentationState {
 }
 
 describe("focused world composition", () => {
+  test("keeps shared Manage visible while a World is focused", () => {
+    const manage = activitySurface("rintawa.management", { kind: "layer-local" });
+    manage.contribution.activity = {
+      id: "rintawa.management",
+      label: "Manage",
+      icon_slot: "activity.management",
+    };
+    manage.contribution.traits = ["activity-section"];
+    const chat = activitySurface(
+      "rintawa.chat.main",
+      { kind: "focused-world", world_id: "world-a" },
+      false,
+    );
+
+    const activities = deriveGlobalActivities(
+      [manage, chat],
+      STANDARD_EXPERIENCE_PACK,
+    );
+
+    expect(activities.map((activity) => activity.id)).toContain(
+      "rintawa.management",
+    );
+  });
+
   test("keeps world-local activities out of the global launcher", () => {
     const worlds = activitySurface("worlds", { kind: "layer-local" });
     const chat = activitySurface("chat", {

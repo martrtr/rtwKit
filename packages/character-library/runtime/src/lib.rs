@@ -6,14 +6,15 @@
 
 use std::{cell::RefCell, collections::BTreeSet};
 
+mod creator;
 mod import;
 mod materialization;
 
 use rintawa_character_library::{
     CHARACTER_LIBRARY_SURFACE_ID, CHARACTER_TEMPLATE_CONTENT_V1, CharacterContentDocument,
     CharacterContentRecord, CharacterLibraryController, CharacterLibraryGateway,
-    CharacterLibraryGatewayError, CharacterLibraryIntent, build_character_library_snapshot,
-    character_library_surface_contribution,
+    CharacterLibraryGatewayError, CharacterLibraryIntent, CharacterWorldSummary,
+    build_character_library_snapshot, character_library_surface_contribution,
 };
 use rintawa_sdk::ui::{UiActionEvent, UiNodeId, UiPatch, UiPatchBatch, UiPlacementHint};
 
@@ -77,6 +78,7 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
         PRESENTATION.with(|slot| {
             *slot.borrow_mut() = PresentationState::default();
         });
+        creator::stop();
         if let Some(error) = REGISTRATION_ERROR.with(|slot| slot.borrow().clone()) {
             log_error(&error);
             return;
@@ -93,6 +95,9 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
         };
         if context.world_id.is_some() {
             return;
+        }
+        if let Err(error) = creator::start() {
+            log_error(&error);
         }
 
         let mut controller = CharacterLibraryController::new(WitCharacterLibraryGateway);
@@ -111,6 +116,7 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
     }
 
     fn stop() {
+        creator::stop();
         import::stop();
         STATE.with(|slot| {
             *slot.borrow_mut() = None;
@@ -161,7 +167,8 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
                     log_error(&error);
                 }
             }
-            intent @ CharacterLibraryIntent::InstantiateCast { .. } => {
+            intent @ (CharacterLibraryIntent::InstantiateCast { .. }
+            | CharacterLibraryIntent::InstantiateInWorld { .. }) => {
                 if let Err(error) = materialization::execute_intent(intent) {
                     log_error(&error);
                     return;
@@ -174,12 +181,39 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
     }
 
     fn handle_service(contract: String, version: u32, payload: Vec<u8>) -> Vec<u8> {
+        if creator::handles(&contract, version) {
+            return creator::handle(&payload);
+        }
         materialization::handle_world_system_service(&contract, version, &payload)
     }
 }
 
 impl exports::rintawa::engine::task_handler::Guest for CharacterLibraryRuntime {
     fn on_task(handle: u64) {
+        match creator::on_task(handle) {
+            creator::CreatorTaskOutcome::Pending => return,
+            creator::CreatorTaskOutcome::CatalogChanged => {
+                let refresh = STATE.with(|slot| {
+                    let mut state = slot.borrow_mut();
+                    let controller = state.as_mut().ok_or_else(|| {
+                        String::from(
+                            "Character creator published content while library runtime is inactive",
+                        )
+                    })?;
+                    controller.refresh().map_err(|error| {
+                        format!("Character creator catalog reconciliation failed: {error}")
+                    })
+                });
+                if let Err(error) = refresh {
+                    log_error(&error);
+                }
+                if let Err(error) = render_surface() {
+                    log_error(&error);
+                }
+                return;
+            }
+            creator::CreatorTaskOutcome::Ignored => {}
+        }
         let terminal = match import::poll(handle) {
             import::ImportPoll::Ignored | import::ImportPoll::Pending => false,
             import::ImportPoll::Succeeded(imported_id) => {
@@ -227,6 +261,7 @@ fn mark_import_failed(diagnostic: &str) -> Result<(), String> {
 }
 
 fn register_runtime() -> Result<(), String> {
+    creator::register()?;
     materialization::register_world_materialization()?;
     register_surface()
 }
@@ -286,6 +321,7 @@ fn register_surface() -> Result<(), String> {
 }
 
 fn render_surface() -> Result<(), String> {
+    refresh_world_catalog()?;
     let snapshot = STATE.with(|slot| {
         let state = slot.borrow();
         let controller = state
@@ -323,6 +359,27 @@ fn render_surface() -> Result<(), String> {
         };
     });
     Ok(())
+}
+
+fn refresh_world_catalog() -> Result<(), String> {
+    let worlds = rintawa::engine::world_sessions::list_worlds()
+        .map_err(|error| format!("Character management World catalog read failed: {error:?}"))?
+        .into_iter()
+        .map(|world| CharacterWorldSummary {
+            world_id: world.world_id,
+            title: world.title,
+            active: world.active,
+        })
+        .collect::<Vec<_>>();
+    STATE.with(|slot| {
+        let mut state = slot.borrow_mut();
+        let controller = state.as_mut().ok_or_else(|| {
+            String::from("Character Library cannot refresh Worlds while inactive")
+        })?;
+        controller
+            .replace_worlds(worlds)
+            .map_err(|error| format!("Character management World catalog update failed: {error}"))
+    })
 }
 
 fn patch_snapshot(

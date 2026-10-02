@@ -15,4 +15,5 @@ rintawa-shell-contracts.workspace = true
 serde_json.workspace = true
 wit-bindgen = "0.57.1"
 rintawa-sdk.workspace = true
+rintawa-world-creator-contracts.workspace = true
 rintawa-world-manager = { path = ".." }

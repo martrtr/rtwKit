@@ -277,6 +277,25 @@ pub struct CreateConversationCommand {
     pub title: Option<String>,
 }
 
+/// Atomically creates the first conversation for a newly provisioned chat-oriented World.
+///
+/// This command exists for World creator/provider workflows. It links one existing World
+/// entity as a distinct conversation participant and may seed that entity's imported greeting.
+/// The Chat runtime adds its own principal-bound local participant when it first opens the
+/// conversation, so creator packages never impersonate or pre-bind another runtime principal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct BootstrapConversationCommand {
+    /// Optional human-facing conversation title.
+    pub title: Option<String>,
+    /// Existing World entity represented by the imported/created character participant.
+    pub character_entity_id: EntityId,
+    /// Human-facing character participant name.
+    pub character_display_name: String,
+    /// Optional imported initial greeting stored as Markdown when non-empty.
+    pub greeting: Option<String>,
+}
+
 /// Adds one conversation-local participant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]

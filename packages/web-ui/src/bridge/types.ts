@@ -13,6 +13,7 @@ export const UI_CAPABILITIES = [
   "rintawa.ui.input.text@1",
   "rintawa.ui.input.text-area@1",
   "rintawa.ui.input.asset@1",
+  "rintawa.ui.input.resource@1",
   "rintawa.ui.layout.split@1",
   "rintawa.ui.layout.row@1",
   "rintawa.ui.layout.column@1",
@@ -33,8 +34,7 @@ export interface ContractKey {
 }
 
 export type UiPresentationContext =
-  | { kind: "layer-local" }
-  | { kind: "focused-world"; world_id: string };
+  { kind: "layer-local" } | { kind: "focused-world"; world_id: string };
 
 export interface WorldPresentationDescriptor {
   entry_surface_id: string;
@@ -154,6 +154,22 @@ export interface UiAssetPickerNode {
   is_enabled: boolean;
 }
 
+export interface UiResourcePickerNode {
+  label: string;
+  accepted_media_types: string[];
+  accepted_extensions: string[];
+  max_bytes: number;
+  change_action: string;
+  is_enabled: boolean;
+}
+
+export interface UiActionUserResourceRef {
+  id: string;
+  size: number;
+  media_type: string;
+  name: string | null;
+}
+
 export interface UiActionAssetRef {
   digest: string;
   size: number;
@@ -199,6 +215,7 @@ export type UiNodeKind =
   | { type: "text-input"; data: UiTextInputNode }
   | { type: "text-area"; data: UiTextAreaNode }
   | { type: "asset-picker"; data: UiAssetPickerNode }
+  | { type: "resource-picker"; data: UiResourcePickerNode }
   | { type: "split"; data: UiSplitNode }
   | { type: "row"; data: UiContainerNode }
   | { type: "column"; data: UiContainerNode }
@@ -230,7 +247,8 @@ export type UiActionPayload =
   | { type: "none" }
   | { type: "text"; value: string }
   | { type: "boolean"; value: boolean }
-  | { type: "asset"; value: UiActionAssetRef };
+  | { type: "asset"; value: UiActionAssetRef }
+  | { type: "resource"; value: UiActionUserResourceRef };
 
 export interface UiActionEvent {
   owner_instance_id: string;
@@ -254,7 +272,8 @@ export interface RendererActionMessage {
   event: UiActionEvent;
 }
 
-export type RendererToHostMessage = RendererHelloMessage | RendererActionMessage;
+export type RendererToHostMessage =
+  RendererHelloMessage | RendererActionMessage;
 
 export interface HostStateMessage {
   type: "state";

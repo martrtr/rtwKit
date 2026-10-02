@@ -48,6 +48,17 @@ pub struct CharacterLibraryEntry {
     pub template: CharacterTemplate,
 }
 
+/// One persistent World available as a target for Character materialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CharacterWorldSummary {
+    /// Canonical persistent World identity.
+    pub world_id: String,
+    /// Human-facing World title owned by the Host catalog.
+    pub title: String,
+    /// Whether the World runtime is currently active.
+    pub active: bool,
+}
+
 /// Current validated Character Library state.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CharacterLibraryState {
@@ -60,6 +71,8 @@ pub struct CharacterLibraryState {
     pub(crate) import_pending: bool,
     pub(crate) search_query: String,
     pub(crate) import_open: bool,
+    pub(crate) worlds: Vec<CharacterWorldSummary>,
+    pub(crate) target_world_id: Option<String>,
 }
 
 impl CharacterLibraryState {
@@ -116,6 +129,16 @@ impl CharacterLibraryState {
     /// Returns whether the advanced Tavern import panel is currently visible.
     pub const fn import_open(&self) -> bool {
         self.import_open
+    }
+
+    /// Returns persistent Worlds available for materializing the selected template.
+    pub fn worlds(&self) -> &[CharacterWorldSummary] {
+        &self.worlds
+    }
+
+    /// Returns the currently selected target World identity.
+    pub fn target_world_id(&self) -> Option<&str> {
+        self.target_world_id.as_deref()
     }
 }
 
@@ -237,6 +260,15 @@ pub enum CharacterLibraryError {
     /// World materialization was requested without any selected CharacterTemplate.
     #[error("Character cast is empty")]
     EmptyCast,
+    /// Target World selection does not correspond to the current Host catalog.
+    #[error("unknown Character target World")]
+    UnknownWorldAction,
+    /// Character materialization was requested without a selected target World.
+    #[error("no target World is selected")]
+    MissingTargetWorld,
+    /// Character materialization targets a World whose runtime is currently stopped.
+    #[error("target World is not active")]
+    TargetWorldInactive,
     /// Row selection does not correspond to the current catalog.
     #[error("Character Library action references an unknown catalog row")]
     UnknownEntryAction,

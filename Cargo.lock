@@ -363,8 +363,11 @@ dependencies = [
 name = "rintawa-character-library-runtime"
 version = "0.0.1"
 dependencies = [
+ "rintawa-artifacts",
  "rintawa-character-library",
+ "rintawa-chat",
  "rintawa-sdk",
+ "rintawa-world-creator-contracts",
  "serde_json",
  "wit-bindgen",
 ]
@@ -450,6 +453,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rintawa-world-creator-contracts"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "rintawa-world-manager"
 version = "0.0.1"
 dependencies = [
@@ -465,6 +477,7 @@ version = "0.0.1"
 dependencies = [
  "rintawa-sdk",
  "rintawa-shell-contracts",
+ "rintawa-world-creator-contracts",
  "rintawa-world-manager",
  "serde_json",
  "wit-bindgen",

@@ -38,7 +38,16 @@
       "web.collection.thumbnail-size": "4rem",
       "web.chat.max-width": "64rem",
       "web.chat.avatar-size": "3rem",
-      "web.chat.composer-min-height": "3.25rem"
+      "web.chat.composer-min-height": "3.25rem",
+      "web.chat.message-max-width": "64rem",
+      "web.chat.message-background": "transparent",
+      "web.chat.message-local-background": "color-mix(in srgb, var(--rintawa-ui-color-accent) 3%, transparent)",
+      "web.chat.message-border": "color-mix(in srgb, var(--rintawa-web-color-border) 72%, transparent)",
+      "web.chat.message-radius": "0rem",
+      "web.chat.message-spacing": "0rem",
+      "web.chat.message-border-width": "0 0 1px 0",
+      "web.chat.message-local-margin-left": "0",
+      "web.chat.message-local-margin-right": "auto"
     },
     "icons": {
       "activity.extensions": "packages",
@@ -50,6 +59,8 @@
       "action.settings": "settings",
       "action.search": "search",
       "action.more": "dots",
+      "action.attach": "paperclip",
+      "action.send": "send",
       "status.warning": "warning",
       "status.success": "check",
       "repository.generic": "database",

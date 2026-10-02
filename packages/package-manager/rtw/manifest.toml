@@ -11,4 +11,5 @@ entry = "runtime.wasm"
 required = true
 
 [components.permissions]
-runtime = ["background-task", "http-fetch", "artifact-import", "composition-read", "composition-write", "runtime-policy-read", "runtime-policy-write"]
+runtime = ["background-task", "http-fetch", "artifact-import",
+    "user-resource-read", "composition-read", "composition-write", "runtime-policy-read", "runtime-policy-write", "world-session-read"]

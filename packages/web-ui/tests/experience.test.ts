@@ -48,6 +48,39 @@ describe("web experience packs", () => {
     expect(
       themeCssVariables(STANDARD_EXPERIENCE_PACK)["--rintawa-web-section-nav-width"],
     ).toBe("12rem");
+    expect(
+      themeCssVariables(STANDARD_EXPERIENCE_PACK)["--rintawa-web-chat-message-radius"],
+    ).toBe("0rem");
+  });
+
+  test("can theme flat chat articles into narrower classic message cards", () => {
+    const custom = mergeExperiencePack(STANDARD_EXPERIENCE_PACK, {
+      format: "rintawa.web.experience-pack@1",
+      id: "demo.bubbles",
+      name: "Bubbles",
+      extends: "rintawa.web.standard",
+      theme: {
+        tokens: {
+          "web.chat.message-max-width": "42rem",
+          "web.chat.message-background": "#202126",
+          "web.chat.message-local-background": "#252a38",
+          "web.chat.message-border-width": "1px",
+          "web.chat.message-radius": "1rem",
+          "web.chat.message-spacing": "0.35rem",
+          "web.chat.message-local-margin-left": "auto",
+          "web.chat.message-local-margin-right": "0",
+        },
+      },
+    });
+    const variables = themeCssVariables(custom);
+    expect(variables["--rintawa-web-chat-message-max-width"]).toBe("42rem");
+    expect(variables["--rintawa-web-chat-message-background"]).toBe("#202126");
+    expect(variables["--rintawa-web-chat-message-local-background"]).toBe("#252a38");
+    expect(variables["--rintawa-web-chat-message-border-width"]).toBe("1px");
+    expect(variables["--rintawa-web-chat-message-radius"]).toBe("1rem");
+    expect(variables["--rintawa-web-chat-message-spacing"]).toBe("0.35rem");
+    expect(variables["--rintawa-web-chat-message-local-margin-left"]).toBe("auto");
+    expect(variables["--rintawa-web-chat-message-local-margin-right"]).toBe("0");
   });
 
   test("can prepend a semantic layout override without copying default rules", () => {

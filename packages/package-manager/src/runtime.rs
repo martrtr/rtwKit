@@ -33,6 +33,7 @@ const MANAGED_INSTALLS_PREFERENCE: &str = "managed-installs.v1";
 const MAX_REPOSITORIES: usize = 16;
 const MAX_REGISTRY_BYTES: u32 = 4 * 1024 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 32 * 1024 * 1024;
+pub(super) const MAX_FILE_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SEARCH_RESULTS: usize = 40;
 const MAX_INSTALLED_RESULTS: usize = 200;
 const MAX_EMBEDDED_IMAGE_BASE64_BYTES: usize = 192 * 1024;
@@ -43,6 +44,8 @@ const MAX_SEARCH_QUERY_BYTES: usize = 512;
 const MAX_REPOSITORY_INPUT_BYTES: usize = 2048;
 const MAX_DIRECT_URL_INPUT_BYTES: usize = 4096;
 const INITIAL_REFRESH_DELAY_MS: u32 = 100;
+const HOST_SCOPE_ID: &str = "host";
+const WORLD_SCOPE_PREFIX: &str = "world:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum View {
@@ -191,6 +194,23 @@ struct RepositoryStatus {
     error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManagementScope {
+    scope_id: String,
+    label: String,
+    world_id: Option<String>,
+}
+
+impl ManagementScope {
+    fn host() -> Self {
+        Self {
+            scope_id: HOST_SCOPE_ID.to_string(),
+            label: "Host".to_string(),
+            world_id: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct InstalledPackage {
     subject: String,
@@ -265,6 +285,8 @@ struct ManagerState {
     installed_policy: BTreeMap<(String, String), Vec<InstalledComponentPolicy>>,
     installed_policy_error: Option<String>,
     managed_installs: BTreeMap<String, ManagedInstallRecord>,
+    management_scopes: Vec<ManagementScope>,
+    selected_scope_id: String,
     view: View,
     view_history: Vec<View>,
     search: String,
@@ -304,6 +326,8 @@ impl Default for ManagerState {
             installed_policy: BTreeMap::new(),
             installed_policy_error: None,
             managed_installs: BTreeMap::new(),
+            management_scopes: vec![ManagementScope::host()],
+            selected_scope_id: HOST_SCOPE_ID.to_string(),
             view: View::Installed,
             view_history: Vec::new(),
             search: String::new(),
@@ -344,11 +368,20 @@ struct UiActionEvent {
 }
 
 #[derive(Debug, Deserialize)]
+struct UiActionResourceRef {
+    id: String,
+    size: u64,
+    media_type: String,
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "kebab-case")]
 enum UiActionPayload {
     None,
     Text(String),
     Boolean(bool),
+    Resource(UiActionResourceRef),
 }
 
 struct PackageManager;
@@ -364,6 +397,7 @@ impl exports::rintawa::engine::guest::Guest for PackageManager {
             "rintawa.ui.input.checkbox@1".to_string(),
             "rintawa.ui.input.select@1".to_string(),
             "rintawa.ui.input.text@1".to_string(),
+            "rintawa.ui.input.resource@1".to_string(),
             "rintawa.ui.layout.split@1".to_string(),
             "rintawa.ui.layout.row@1".to_string(),
             "rintawa.ui.layout.column@1".to_string(),
@@ -409,6 +443,7 @@ impl exports::rintawa::engine::guest::Guest for PackageManager {
         }
         load_repository_preferences();
         load_managed_installs();
+        refresh_management_scopes();
         refresh_installed();
         schedule_initial_refresh();
         render_surface();
@@ -525,8 +560,160 @@ fn persist_managed_installs() -> Result<(), String> {
         .map_err(|error| format!("could not persist managed install state: {error:?}"))
 }
 
+fn refresh_management_scopes() {
+    let mut scopes = vec![ManagementScope::host()];
+    match rintawa::engine::world_sessions::list_worlds() {
+        Ok(mut worlds) => {
+            worlds.sort_by(|left, right| {
+                left.title
+                    .to_lowercase()
+                    .cmp(&right.title.to_lowercase())
+                    .then_with(|| left.world_id.cmp(&right.world_id))
+            });
+            scopes.extend(worlds.into_iter().map(|world| ManagementScope {
+                scope_id: format!("{WORLD_SCOPE_PREFIX}{}", world.world_id),
+                label: world.title,
+                world_id: Some(world.world_id),
+            }));
+        }
+        Err(error) => set_status(format!(
+            "World scopes are unavailable ({error:?}). Host extensions remain manageable."
+        )),
+    }
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        if !scopes
+            .iter()
+            .any(|scope| scope.scope_id == state.selected_scope_id)
+        {
+            state.selected_scope_id = HOST_SCOPE_ID.to_string();
+            state.selected_package = None;
+            state.selected_version = None;
+        }
+        state.management_scopes = scopes;
+    });
+}
+
+fn select_management_scope(scope_id: &str) -> Result<(), String> {
+    refresh_management_scopes();
+    STATE.with(|state| -> Result<(), String> {
+        let mut state = state.borrow_mut();
+        if !state
+            .management_scopes
+            .iter()
+            .any(|scope| scope.scope_id == scope_id)
+        {
+            return Err("selected extension scope is no longer available".to_string());
+        }
+        if state.selected_scope_id != scope_id {
+            state.selected_scope_id = scope_id.to_string();
+            state.selected_package = None;
+            state.selected_version = None;
+        }
+        Ok(())
+    })?;
+    refresh_installed();
+    let label = selected_management_scope_label();
+    set_status(format!("Managing extensions for {label}."));
+    Ok(())
+}
+
+fn selected_scope_id() -> String {
+    STATE.with(|state| state.borrow().selected_scope_id.clone())
+}
+
+fn selected_management_scope_label() -> String {
+    STATE.with(|state| {
+        let state = state.borrow();
+        state
+            .management_scopes
+            .iter()
+            .find(|scope| scope.scope_id == state.selected_scope_id)
+            .map(|scope| match scope.world_id.as_deref() {
+                Some(_) => format!("World · {}", scope.label),
+                None => scope.label.clone(),
+            })
+            .unwrap_or_else(|| String::from("Host"))
+    })
+}
+
+fn managed_install_key(scope_id: &str, subject: &str) -> String {
+    if scope_id == HOST_SCOPE_ID {
+        subject.to_string()
+    } else {
+        format!("scope:{}:{scope_id}{subject}", scope_id.len())
+    }
+}
+
+fn managed_install_record<'a>(
+    state: &'a ManagerState,
+    subject: &str,
+) -> Option<&'a ManagedInstallRecord> {
+    let key = managed_install_key(&state.selected_scope_id, subject);
+    state.managed_installs.get(&key)
+}
+
+fn list_activations_for_scope(
+    scope_id: &str,
+) -> Result<Vec<rintawa::engine::composition::Activation>, String> {
+    if scope_id == HOST_SCOPE_ID {
+        rintawa::engine::composition::list_activations()
+            .map_err(|error| format!("could not list Host activations: {error:?}"))
+    } else {
+        rintawa::engine::scoped_composition::list_activations(scope_id)
+            .map_err(|error| format!("could not list scoped activations: {error:?}"))
+    }
+}
+
+fn select_artifact_for_scope(
+    scope_id: &str,
+    digest: &str,
+    enabled: Option<bool>,
+) -> Result<rintawa::engine::composition::Activation, String> {
+    if scope_id == HOST_SCOPE_ID {
+        rintawa::engine::composition::select_artifact(digest, enabled)
+            .map_err(|error| format!("could not select Host artifact: {error:?}"))
+    } else {
+        rintawa::engine::scoped_composition::select_artifact(scope_id, digest, enabled)
+            .map_err(|error| format!("could not select scoped artifact: {error:?}"))
+    }
+}
+
+fn set_enabled_for_scope(scope_id: &str, subject: &str, enabled: bool) -> Result<(), String> {
+    if scope_id == HOST_SCOPE_ID {
+        rintawa::engine::composition::set_enabled(subject, enabled)
+            .map_err(|error| format!("could not change Host enabled state: {error:?}"))
+    } else {
+        rintawa::engine::scoped_composition::set_enabled(scope_id, subject, enabled)
+            .map_err(|error| format!("could not change scoped enabled state: {error:?}"))
+    }
+}
+
+fn remove_activation_for_scope(scope_id: &str, subject: &str) -> Result<(), String> {
+    if scope_id == HOST_SCOPE_ID {
+        rintawa::engine::composition::remove_activation(subject)
+            .map_err(|error| format!("could not remove Host activation: {error:?}"))
+    } else {
+        rintawa::engine::scoped_composition::remove_activation(scope_id, subject)
+            .map_err(|error| format!("could not remove scoped activation: {error:?}"))
+    }
+}
+
+fn list_policy_for_scope(
+    scope_id: &str,
+) -> Result<Vec<rintawa::engine::runtime_policy::ComponentPolicy>, String> {
+    if scope_id == HOST_SCOPE_ID {
+        rintawa::engine::runtime_policy::list_components()
+            .map_err(|error| format!("could not list Host runtime policy: {error:?}"))
+    } else {
+        rintawa::engine::scoped_runtime_policy::list_components(scope_id)
+            .map_err(|error| format!("could not list scoped runtime policy: {error:?}"))
+    }
+}
+
 fn refresh_installed() {
-    match rintawa::engine::composition::list_activations() {
+    let scope_id = selected_scope_id();
+    match list_activations_for_scope(&scope_id) {
         Ok(activations) => {
             let installed = activations
                 .into_iter()
@@ -560,7 +747,8 @@ fn refresh_installed() {
 }
 
 fn refresh_installed_policy() {
-    match rintawa::engine::runtime_policy::list_components() {
+    let scope_id = selected_scope_id();
+    match list_policy_for_scope(&scope_id) {
         Ok(entries) => {
             let mut policy = BTreeMap::<(String, String), Vec<InstalledComponentPolicy>>::new();
             for entry in entries {
@@ -703,6 +891,18 @@ fn dispatch_action(event: UiActionEvent) -> Result<(), String> {
         "view.repositories" => open_view(View::Repositories),
         "view.direct-url" => open_view(View::DirectUrl),
         "view.close" => close_view(),
+        "management.scope" => {
+            let scope_id = text_payload(event.payload)?;
+            select_management_scope(&scope_id)?;
+        }
+        "package.file-import" => {
+            let UiActionPayload::Resource(reference) = event.payload else {
+                return Err(String::from(
+                    "RTW file import requires an ephemeral resource",
+                ));
+            };
+            import_package_resource(reference)?;
+        }
         "catalog.refresh" => refresh_repositories()?,
         "search.change" => {
             let value =
@@ -877,7 +1077,7 @@ fn dispatch_action(event: UiActionEvent) -> Result<(), String> {
 fn text_payload(payload: UiActionPayload) -> Result<String, String> {
     match payload {
         UiActionPayload::Text(value) => Ok(value),
-        UiActionPayload::None | UiActionPayload::Boolean(_) => {
+        UiActionPayload::None | UiActionPayload::Boolean(_) | UiActionPayload::Resource(_) => {
             Err("text action did not include text".to_string())
         }
     }
@@ -898,7 +1098,7 @@ fn bounded_text_payload(
 fn boolean_payload(payload: UiActionPayload) -> Result<bool, String> {
     match payload {
         UiActionPayload::Boolean(value) => Ok(value),
-        UiActionPayload::None | UiActionPayload::Text(_) => {
+        UiActionPayload::None | UiActionPayload::Text(_) | UiActionPayload::Resource(_) => {
             Err("boolean action did not include a boolean".to_string())
         }
     }
@@ -1022,7 +1222,7 @@ fn dependency_info_for_locked(state: &ManagerState, subject: &str) -> (BTreeSet<
         return (dependencies, false);
     };
 
-    if let Some(record) = state.managed_installs.get(subject)
+    if let Some(record) = managed_install_record(state, subject)
         && installed.version_text.as_deref() == Some(record.version.as_str())
     {
         dependencies.extend(record.dependencies.iter().cloned());
@@ -1116,10 +1316,12 @@ fn uninstall_package(subject: &str) -> Result<(), String> {
     let before_policy = snapshot_runtime_policy()?;
     let before_managed = STATE.with(|state| state.borrow().managed_installs.clone());
 
-    rintawa::engine::composition::remove_activation(subject)
-        .map_err(|error| format!("uninstall failed: {error:?}"))?;
+    let scope_id = selected_scope_id();
+    remove_activation_for_scope(&scope_id, subject)?;
     STATE.with(|state| {
-        state.borrow_mut().managed_installs.remove(subject);
+        let mut state = state.borrow_mut();
+        let key = managed_install_key(&state.selected_scope_id, subject);
+        state.managed_installs.remove(&key);
     });
 
     if let Err(error) = persist_managed_installs() {
@@ -1133,8 +1335,9 @@ fn uninstall_package(subject: &str) -> Result<(), String> {
     }
 
     refresh_installed();
+    let scope_label = selected_management_scope_label();
     set_status(format!(
-        "Removed {subject} from the baseline composition. Running code stops on restart."
+        "Removed {subject} from {scope_label}. Running code stops on restart."
     ));
     Ok(())
 }
@@ -1164,8 +1367,8 @@ fn set_package_enabled(subject: &str, enabled: bool) -> Result<(), String> {
         ensure_no_dependency_blockers(subject, "disable")?;
     }
 
-    rintawa::engine::composition::set_enabled(subject, enabled)
-        .map_err(|error| format!("could not change enabled state: {error:?}"))?;
+    let scope_id = selected_scope_id();
+    set_enabled_for_scope(&scope_id, subject, enabled)?;
     refresh_installed();
     set_status(format!(
         "{} {subject}. Change takes full effect on restart.",
@@ -1520,8 +1723,8 @@ fn verify_imported_artifact_digest(
 }
 
 fn snapshot_activations() -> Result<BTreeMap<String, InstalledPackage>, String> {
-    let activations = rintawa::engine::composition::list_activations()
-        .map_err(|error| format!("could not snapshot composition: {error:?}"))?;
+    let scope_id = selected_scope_id();
+    let activations = list_activations_for_scope(&scope_id)?;
     Ok(activations
         .into_iter()
         .map(|activation| {
@@ -1550,8 +1753,8 @@ type PolicyKey = (String, String, String);
 type PolicySnapshot = BTreeMap<PolicyKey, BTreeSet<String>>;
 
 fn snapshot_runtime_policy() -> Result<PolicySnapshot, String> {
-    let entries = rintawa::engine::runtime_policy::list_components()
-        .map_err(|error| format!("could not snapshot runtime policy: {error:?}"))?;
+    let scope_id = selected_scope_id();
+    let entries = list_policy_for_scope(&scope_id)?;
     Ok(entries
         .into_iter()
         .map(|entry| {
@@ -1590,13 +1793,14 @@ fn confirm_pending_install() -> Result<(), String> {
     let mut mutated_subjects = Vec::new();
     let mut selected_principals = BTreeMap::new();
 
+    let scope_id = selected_scope_id();
     for item in &pending.items {
-        let activation = match rintawa::engine::composition::select_artifact(&item.digest, None) {
+        let activation = match select_artifact_for_scope(&scope_id, &item.digest, None) {
             Ok(activation) => activation,
             Err(error) => {
                 return install_failure_with_rollback(
                     format!(
-                        "could not select {} {}: {error:?}",
+                        "could not select {} {}: {error}",
                         item.subject, item.version
                     ),
                     &before_activations,
@@ -1669,9 +1873,9 @@ fn confirm_pending_install() -> Result<(), String> {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         for item in &pending.items {
-            let record =
-                managed_install_record_for(item, state.managed_installs.get(&item.subject));
-            state.managed_installs.insert(item.subject.clone(), record);
+            let key = managed_install_key(&state.selected_scope_id, &item.subject);
+            let record = managed_install_record_for(item, state.managed_installs.get(&key));
+            state.managed_installs.insert(key, record);
         }
     });
     if let Err(error) = persist_managed_installs() {
@@ -1696,8 +1900,9 @@ fn confirm_pending_install() -> Result<(), String> {
         state.direct_url.clear();
     });
     refresh_installed();
+    let scope_label = selected_management_scope_label();
     set_status(format!(
-        "Installed {installed} from {}. Restart may be required for runtime changes.",
+        "Installed {installed} in {scope_label} from {}. Restart may be required for runtime changes.",
         pending.origin
     ));
     Ok(())
@@ -1728,16 +1933,17 @@ fn rollback_install(
     let mut failures = Vec::new();
     let mutated = mutated_subjects.iter().cloned().collect::<BTreeSet<_>>();
 
+    let scope_id = selected_scope_id();
     for subject in mutated.iter().rev() {
         let result = if let Some(previous) = before_activations.get(subject) {
-            rintawa::engine::composition::select_artifact(&previous.digest, Some(previous.enabled))
+            select_artifact_for_scope(&scope_id, &previous.digest, Some(previous.enabled))
                 .map(|_| ())
         } else {
-            rintawa::engine::composition::remove_activation(subject)
+            remove_activation_for_scope(&scope_id, subject)
         };
         if let Err(error) = result {
             failures.push(format!(
-                "composition rollback for '{subject}' failed: {error:?}"
+                "composition rollback for '{subject}' failed: {error}"
             ));
         }
     }
@@ -1756,10 +1962,10 @@ fn rollback_install(
         }
     };
 
-    let current = match rintawa::engine::runtime_policy::list_components() {
+    let current = match list_policy_for_scope(&scope_id) {
         Ok(entries) => entries,
         Err(error) => {
-            failures.push(format!("could not read policy during rollback: {error:?}"));
+            failures.push(format!("could not read policy during rollback: {error}"));
             return failures;
         }
     };
@@ -1848,6 +2054,65 @@ fn cancel_pending_install() {
     set_status(
         "Installation cancelled. Validated bytes may remain in immutable CAS cache.".to_string(),
     );
+}
+
+fn import_package_resource(reference: UiActionResourceRef) -> Result<(), String> {
+    if reference.id.trim().is_empty()
+        || reference.size == 0
+        || reference.size > MAX_FILE_IMPORT_BYTES
+    {
+        return Err(String::from(
+            "selected RTW file exceeds Package Manager bounds",
+        ));
+    }
+    if reference
+        .name
+        .as_deref()
+        .is_some_and(|name| !name.to_ascii_lowercase().ends_with(".rtw"))
+    {
+        return Err(String::from(
+            "Package Manager file import accepts .rtw files",
+        ));
+    }
+    let wit_reference = rintawa::engine::user_resources::ResourceRef {
+        id: reference.id,
+        size: reference.size,
+        media_type: reference.media_type,
+        name: reference.name.clone(),
+    };
+    let result = (|| {
+        let bytes =
+            rintawa::engine::user_resources::read_resource(&wit_reference, MAX_FILE_IMPORT_BYTES)
+                .map_err(|error| format!("could not read selected RTW file: {error:?}"))?;
+        let imported = rintawa::engine::artifact_store::import_rtw(&bytes)
+            .map_err(|error| format!("RTW validation/import failed: {error:?}"))?;
+        if imported.content != "rintawa.extension@1" {
+            return Err(format!(
+                "this Package Manager version can install extension RTWs, not '{}'",
+                imported.content
+            ));
+        }
+        let policy = rintawa::engine::runtime_policy::inspect_artifact(&imported.digest)
+            .map_err(|error| format!("could not inspect imported RTW: {error:?}"))?;
+        let origin = reference
+            .name
+            .as_deref()
+            .map(|name| format!("local file {name}"))
+            .unwrap_or_else(|| String::from("local RTW file"));
+        let item = prepared_item_from_policy(imported.digest, policy, origin.clone(), None);
+        STATE.with(|state| {
+            state.borrow_mut().pending_install = Some(PendingInstall {
+                origin,
+                items: vec![item],
+            });
+        });
+        set_status(String::from(
+            "Review requested permissions before installing.",
+        ));
+        Ok(())
+    })();
+    let _ = rintawa::engine::user_resources::release_resource(&wit_reference);
+    result
 }
 
 fn install_direct_url() -> Result<(), String> {

@@ -80,7 +80,11 @@ const image = z.object({
 
 const assetImage = z.object({
   digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-  size: z.number().int().positive().max(1024 * 1024),
+  size: z
+    .number()
+    .int()
+    .positive()
+    .max(1024 * 1024),
   media_type: z.enum(["image/png", "image/webp", "image/jpeg"]),
   alt: z.string(),
   width: z.number().int().positive().max(4096).nullable(),
@@ -96,9 +100,7 @@ const checkbox = z.object({
 
 const select = z.object({
   value: z.string(),
-  options: z
-    .array(z.object({ value: z.string(), label: z.string() }))
-    .max(256),
+  options: z.array(z.object({ value: z.string(), label: z.string() })).max(256),
   change_action: identifier,
   is_enabled: z.boolean(),
 });
@@ -117,7 +119,26 @@ const split = z
 const assetPicker = z.object({
   label: z.string(),
   accepted_media_types: z.array(z.string().min(3).max(128)).min(1).max(16),
-  max_bytes: z.number().int().positive().max(16 * 1024 * 1024),
+  max_bytes: z
+    .number()
+    .int()
+    .positive()
+    .max(16 * 1024 * 1024),
+  change_action: identifier,
+  is_enabled: z.boolean(),
+});
+
+const resourcePicker = z.object({
+  label: z.string(),
+  accepted_media_types: z.array(z.string().min(3).max(128)).max(16),
+  accepted_extensions: z
+    .array(z.string().regex(/^\.[a-z0-9][a-z0-9._-]{0,15}$/))
+    .max(16),
+  max_bytes: z
+    .number()
+    .int()
+    .positive()
+    .max(8 * 1024 * 1024),
   change_action: identifier,
   is_enabled: z.boolean(),
 });
@@ -140,7 +161,10 @@ const dataGrid = z
           label: z.string(),
           weight: z.number().int().min(1).max(10_000),
           sort_action: identifier.nullable().default(null),
-          sort_direction: z.enum(["ascending", "descending"]).nullable().default(null),
+          sort_direction: z
+            .enum(["ascending", "descending"])
+            .nullable()
+            .default(null),
         }),
       )
       .min(1)
@@ -194,7 +218,10 @@ const dataGrid = z
       return;
     }
     if (value.row_keys.length > 0) {
-      if (value.row_keys.length !== rowCount || new Set(value.row_keys).size !== value.row_keys.length) {
+      if (
+        value.row_keys.length !== rowCount ||
+        new Set(value.row_keys).size !== value.row_keys.length
+      ) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
           message: "data-grid row keys must be unique and match the row count",
@@ -218,7 +245,10 @@ const dataGrid = z
 
 const nodeKind = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), data: z.object({ text: z.string() }) }),
-  z.object({ type: z.literal("markdown"), data: z.object({ source: z.string() }) }),
+  z.object({
+    type: z.literal("markdown"),
+    data: z.object({ source: z.string() }),
+  }),
   z.object({
     type: z.literal("button"),
     data: z.object({
@@ -238,10 +268,20 @@ const nodeKind = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text-input"), data: textInput }),
   z.object({ type: z.literal("text-area"), data: textInput }),
   z.object({ type: z.literal("asset-picker"), data: assetPicker }),
+  z.object({ type: z.literal("resource-picker"), data: resourcePicker }),
   z.object({ type: z.literal("split"), data: split }),
-  z.object({ type: z.literal("row"), data: z.object({ children: z.array(identifier) }) }),
-  z.object({ type: z.literal("column"), data: z.object({ children: z.array(identifier) }) }),
-  z.object({ type: z.literal("list"), data: z.object({ children: z.array(identifier) }) }),
+  z.object({
+    type: z.literal("row"),
+    data: z.object({ children: z.array(identifier) }),
+  }),
+  z.object({
+    type: z.literal("column"),
+    data: z.object({ children: z.array(identifier) }),
+  }),
+  z.object({
+    type: z.literal("list"),
+    data: z.object({ children: z.array(identifier) }),
+  }),
   z.object({ type: z.literal("data-grid"), data: dataGrid }),
 ]);
 

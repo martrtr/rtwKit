@@ -5,12 +5,12 @@ use std::collections::BTreeSet;
 use rintawa_sdk::ui::{UiActionEvent, UiActionPayload};
 
 use crate::{
-    CharacterLibraryError, CharacterLibraryGateway, CharacterLibraryState,
+    CharacterLibraryError, CharacterLibraryGateway, CharacterLibraryState, CharacterWorldSummary,
     MAX_CHARACTER_CAST_ENTRIES, MAX_CHARACTER_IMPORT_TEXT_BYTES, MAX_CHARACTER_LIBRARY_ENTRIES,
     MAX_CHARACTER_SEARCH_BYTES, decode_character_content_document,
     ui::{
-        CAST_CREATE_NODE, IMPORT_SOURCE_NODE, IMPORT_TOGGLE_NODE, REFRESH_NODE, SEARCH_NODE,
-        cast_member_toggle_node_id, entry_cast_toggle_node_id,
+        ADD_TO_WORLD_NODE, CAST_CREATE_NODE, IMPORT_SOURCE_NODE, IMPORT_TOGGLE_NODE, REFRESH_NODE,
+        SEARCH_NODE, TARGET_WORLD_NODE, cast_member_toggle_node_id, entry_cast_toggle_node_id,
     },
 };
 
@@ -28,6 +28,10 @@ pub const CHARACTER_LIBRARY_ACTION_IMPORT: &str = "rintawa.character-library.imp
 pub const CHARACTER_LIBRARY_ACTION_SEARCH: &str = "rintawa.character-library.search";
 /// Semantic action opening or closing the advanced Tavern import panel.
 pub const CHARACTER_LIBRARY_ACTION_TOGGLE_IMPORT: &str = "rintawa.character-library.toggle-import";
+/// Semantic action selecting the persistent World edited by this management section.
+pub const CHARACTER_LIBRARY_ACTION_SELECT_WORLD: &str = "rintawa.character-library.select-world";
+/// Semantic action materializing the selected template into one existing World.
+pub const CHARACTER_LIBRARY_ACTION_ADD_TO_WORLD: &str = "rintawa.character-library.add-to-world";
 
 const MAX_IMPORT_STATUS_BYTES: usize = 2 * 1024;
 
@@ -45,6 +49,13 @@ pub enum CharacterLibraryIntent {
     InstantiateCast {
         /// Exact immutable templates selected by the user, in deterministic cast order.
         templates: Vec<CharacterCastSelection>,
+    },
+    /// Materialize one reusable CharacterTemplate into an existing persistent World.
+    InstantiateInWorld {
+        /// Canonical target World identity selected from the current Host catalog.
+        world_id: String,
+        /// Exact immutable template revision selected by the user.
+        template: CharacterCastSelection,
     },
 }
 
@@ -142,7 +153,62 @@ where
             import_pending: self.state.import_pending,
             search_query: self.state.search_query.clone(),
             import_open: self.state.import_open,
+            worlds: self.state.worlds.clone(),
+            target_world_id: self.state.target_world_id.clone(),
         };
+        Ok(())
+    }
+
+    /// Reconciles the Host-owned persistent World catalog used by management controls.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CharacterLibraryError::RevisionOverflow`] before mutating state.
+    pub fn replace_worlds(
+        &mut self,
+        mut worlds: Vec<CharacterWorldSummary>,
+    ) -> Result<(), CharacterLibraryError> {
+        worlds.sort_by(|left, right| {
+            left.title
+                .to_lowercase()
+                .cmp(&right.title.to_lowercase())
+                .then_with(|| left.world_id.cmp(&right.world_id))
+        });
+        worlds.dedup_by(|left, right| left.world_id == right.world_id);
+        let target_world_id = self
+            .state
+            .target_world_id
+            .as_ref()
+            .filter(|target| worlds.iter().any(|world| &world.world_id == *target))
+            .cloned()
+            .or_else(|| worlds.first().map(|world| world.world_id.clone()));
+        if self.state.worlds == worlds && self.state.target_world_id == target_world_id {
+            return Ok(());
+        }
+        let revision = next_revision(self.state.revision)?;
+        self.state.worlds = worlds;
+        self.state.target_world_id = target_world_id;
+        self.state.revision = revision;
+        Ok(())
+    }
+
+    /// Selects one existing persistent World as the Character management target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CharacterLibraryError::UnknownWorldAction`] for a foreign identity.
+    pub fn select_world(&mut self, world_id: &str) -> Result<(), CharacterLibraryError> {
+        if !self
+            .state
+            .worlds
+            .iter()
+            .any(|world| world.world_id == world_id)
+        {
+            return Err(CharacterLibraryError::UnknownWorldAction);
+        }
+        let revision = next_revision(self.state.revision)?;
+        self.state.target_world_id = Some(world_id.to_string());
+        self.state.revision = revision;
         Ok(())
     }
 
@@ -321,6 +387,47 @@ where
                 };
                 self.update_search_query(query.clone())?;
                 Ok(CharacterLibraryIntent::None)
+            }
+            CHARACTER_LIBRARY_ACTION_SELECT_WORLD => {
+                if event.node_id.as_str() != TARGET_WORLD_NODE {
+                    return Err(CharacterLibraryError::WrongActionNode);
+                }
+                let UiActionPayload::Text(world_id) = &event.payload else {
+                    return Err(CharacterLibraryError::InvalidActionPayload);
+                };
+                self.select_world(world_id)?;
+                Ok(CharacterLibraryIntent::None)
+            }
+            CHARACTER_LIBRARY_ACTION_ADD_TO_WORLD => {
+                require_none_payload(event)?;
+                if event.node_id.as_str() != ADD_TO_WORLD_NODE {
+                    return Err(CharacterLibraryError::WrongActionNode);
+                }
+                let world_id = self
+                    .state
+                    .target_world_id
+                    .clone()
+                    .ok_or(CharacterLibraryError::MissingTargetWorld)?;
+                let target_world = self
+                    .state
+                    .worlds
+                    .iter()
+                    .find(|world| world.world_id == world_id)
+                    .ok_or(CharacterLibraryError::UnknownWorldAction)?;
+                if !target_world.active {
+                    return Err(CharacterLibraryError::TargetWorldInactive);
+                }
+                let entry = self
+                    .state
+                    .selected_entry()
+                    .ok_or(CharacterLibraryError::UnknownEntryAction)?;
+                Ok(CharacterLibraryIntent::InstantiateInWorld {
+                    world_id,
+                    template: CharacterCastSelection {
+                        template_id: entry.id.clone(),
+                        template_revision: entry.revision.to_string(),
+                    },
+                })
             }
             CHARACTER_LIBRARY_ACTION_TOGGLE_IMPORT => {
                 require_none_payload(event)?;

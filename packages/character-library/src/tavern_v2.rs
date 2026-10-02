@@ -29,8 +29,8 @@ pub enum TavernV2Error {
     /// PNG structure/chunk integrity is invalid.
     #[error("invalid Tavern card PNG: {0}")]
     InvalidPng(&'static str),
-    /// No `chara` metadata payload exists in the PNG.
-    #[error("PNG does not contain a Tavern `chara` metadata chunk")]
+    /// No supported Character Card metadata payload exists in the PNG.
+    #[error("PNG does not contain a Tavern `chara` or Character Card `ccv3` metadata chunk")]
     MissingPngCardPayload,
     /// Metadata payload is neither supported base64/raw JSON nor bounded zlib data.
     #[error("invalid Tavern card metadata payload")]
@@ -290,12 +290,14 @@ fn import_tavern_v2_json(json: &[u8]) -> TavernV2Result<CharacterTemplate> {
         expected: "an object",
     })?;
     let spec = string_required(root, "spec", "spec")?;
-    if spec != "chara_card_v2" {
-        return Err(TavernV2Error::UnsupportedSpec(spec.to_string()));
-    }
     let spec_version = string_required(root, "spec_version", "spec_version")?;
-    if spec_version != "2.0" {
-        return Err(TavernV2Error::UnsupportedVersion(spec_version.to_string()));
+    match spec {
+        "chara_card_v2" if spec_version == "2.0" => {}
+        "chara_card_v3" if is_supported_v3_version(spec_version) => {}
+        "chara_card_v2" | "chara_card_v3" => {
+            return Err(TavernV2Error::UnsupportedVersion(spec_version.to_string()));
+        }
+        _ => return Err(TavernV2Error::UnsupportedSpec(spec.to_string())),
     }
     let data =
         root.get("data")
@@ -369,6 +371,23 @@ fn import_tavern_v2_json(json: &[u8]) -> TavernV2Result<CharacterTemplate> {
     Ok(template)
 }
 
+fn is_supported_v3_version(version: &str) -> bool {
+    let mut parts = version.split('.');
+    let Some(major) = parts.next() else {
+        return false;
+    };
+    if major != "3" || parts.next().is_none() {
+        return false;
+    }
+    parts.all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PngCardMetadataKind {
+    TavernV2,
+    CharacterCardV3,
+}
+
 fn extract_png_chara_and_artwork(bytes: &[u8]) -> TavernV2Result<(Vec<u8>, Vec<u8>)> {
     if bytes.len() > MAX_PNG_BYTES {
         return Err(TavernV2Error::InputTooLarge);
@@ -379,7 +398,7 @@ fn extract_png_chara_and_artwork(bytes: &[u8]) -> TavernV2Result<(Vec<u8>, Vec<u
 
     let mut cursor = PNG_SIGNATURE.len();
     let mut chunk_index = 0_usize;
-    let mut card_payload = None;
+    let mut card_payload: Option<(PngCardMetadataKind, Vec<u8>)> = None;
     let mut saw_iend = false;
     let mut artwork = PNG_SIGNATURE.to_vec();
     while cursor < bytes.len() {
@@ -416,11 +435,15 @@ fn extract_png_chara_and_artwork(bytes: &[u8]) -> TavernV2Result<(Vec<u8>, Vec<u
             ));
         }
         let card_chunk = text_chunk_payload(chunk_type, data)?;
-        if let Some(payload) = card_chunk {
-            if card_payload.replace(payload).is_some() {
-                return Err(TavernV2Error::InvalidPng(
-                    "multiple Tavern `chara` metadata chunks are ambiguous",
-                ));
+        if let Some((kind, payload)) = card_chunk {
+            match &card_payload {
+                Some((current_kind, _)) if *current_kind == kind => {
+                    return Err(TavernV2Error::InvalidPng(
+                        "multiple Character Card metadata chunks of the same version are ambiguous",
+                    ));
+                }
+                Some((current_kind, _)) if *current_kind > kind => {}
+                _ => card_payload = Some((kind, payload)),
             }
         } else {
             artwork.extend_from_slice(&bytes[chunk_start..crc_end]);
@@ -441,40 +464,51 @@ fn extract_png_chara_and_artwork(bytes: &[u8]) -> TavernV2Result<(Vec<u8>, Vec<u
     if !saw_iend {
         return Err(TavernV2Error::InvalidPng("PNG is missing IEND"));
     }
-    let payload = card_payload.ok_or(TavernV2Error::MissingPngCardPayload)?;
+    let (_, payload) = card_payload.ok_or(TavernV2Error::MissingPngCardPayload)?;
     Ok((decode_metadata_payload(&payload)?, artwork))
 }
 
-fn text_chunk_payload(chunk_type: &[u8], data: &[u8]) -> TavernV2Result<Option<Vec<u8>>> {
+fn metadata_kind(keyword: &[u8]) -> Option<PngCardMetadataKind> {
+    match keyword {
+        b"chara" => Some(PngCardMetadataKind::TavernV2),
+        b"ccv3" => Some(PngCardMetadataKind::CharacterCardV3),
+        _ => None,
+    }
+}
+
+fn text_chunk_payload(
+    chunk_type: &[u8],
+    data: &[u8],
+) -> TavernV2Result<Option<(PngCardMetadataKind, Vec<u8>)>> {
     match chunk_type {
         b"tEXt" => {
             let Some(separator) = data.iter().position(|byte| *byte == 0) else {
                 return Err(TavernV2Error::InvalidPng("malformed tEXt chunk"));
             };
-            if &data[..separator] == b"chara" {
-                return Ok(Some(data[separator + 1..].to_vec()));
+            if let Some(kind) = metadata_kind(&data[..separator]) {
+                return Ok(Some((kind, data[separator + 1..].to_vec())));
             }
         }
         b"zTXt" => {
             let Some(separator) = data.iter().position(|byte| *byte == 0) else {
                 return Err(TavernV2Error::InvalidPng("malformed zTXt chunk"));
             };
-            if &data[..separator] == b"chara" {
+            if let Some(kind) = metadata_kind(&data[..separator]) {
                 if data.get(separator + 1) != Some(&0) {
                     return Err(TavernV2Error::InvalidPng(
                         "unsupported zTXt compression method",
                     ));
                 }
-                return Ok(Some(decompress_bounded(&data[separator + 2..])?));
+                return Ok(Some((kind, decompress_bounded(&data[separator + 2..])?)));
             }
         }
         b"iTXt" => {
             let Some(keyword_end) = data.iter().position(|byte| *byte == 0) else {
                 return Err(TavernV2Error::InvalidPng("malformed iTXt keyword"));
             };
-            if &data[..keyword_end] != b"chara" {
+            let Some(kind) = metadata_kind(&data[..keyword_end]) else {
                 return Ok(None);
-            }
+            };
             let rest = data
                 .get(keyword_end + 1..)
                 .ok_or(TavernV2Error::InvalidPng("truncated iTXt chunk"))?;
@@ -488,9 +522,9 @@ fn text_chunk_payload(chunk_type: &[u8], data: &[u8]) -> TavernV2Result<Option<V
             let after_language = after_nul(&rest[2..])?;
             let text = after_nul(after_language)?;
             return if compressed == 1 {
-                Ok(Some(decompress_bounded(text)?))
+                Ok(Some((kind, decompress_bounded(text)?)))
             } else {
-                Ok(Some(text.to_vec()))
+                Ok(Some((kind, text.to_vec())))
             };
         }
         _ => {}

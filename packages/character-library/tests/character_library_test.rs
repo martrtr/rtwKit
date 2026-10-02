@@ -82,6 +82,34 @@ fn test_should_normalize_tavern_v2_and_preserve_compatibility_fields() -> anyhow
 }
 
 #[test]
+fn test_should_import_character_card_v3_json_and_png_metadata() -> anyhow::Result<()> {
+    let mut v3 = card_json();
+    v3["spec"] = Value::String(String::from("chara_card_v3"));
+    v3["spec_version"] = Value::String(String::from("3.0"));
+    let source = serde_json::to_vec(&v3)?;
+    let template = import_tavern_v2(&source)?;
+    assert_eq!(template.name, "Alice");
+    assert_eq!(
+        template
+            .compatibility
+            .tavern_v2
+            .as_ref()
+            .map(|compatibility| compatibility.spec_version.as_str()),
+        Some("3.0")
+    );
+
+    let encoded = BASE64.encode(&source);
+    let mut text = b"ccv3\0".to_vec();
+    text.extend_from_slice(encoded.as_bytes());
+    let mut png = png_header();
+    push_png_chunk(&mut png, b"tEXt", &text);
+    push_png_chunk(&mut png, b"IEND", &[]);
+    let template = import_tavern_v2(&png)?;
+    assert_eq!(template.name, "Alice");
+    Ok(())
+}
+
+#[test]
 fn test_should_import_base64_tavern_v2_from_png_text_chunk() -> anyhow::Result<()> {
     let json = serde_json::to_vec(&card_json())?;
     let encoded = BASE64.encode(&json);
