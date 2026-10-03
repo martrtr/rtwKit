@@ -3,26 +3,33 @@
 use rintawa_sdk::{
     contracts::{ContractKey, ContractVersion},
     ui::{
-        UI_CAPABILITY_ASSET_IMAGE, UI_CAPABILITY_BUTTON, UI_CAPABILITY_COLUMN,
-        UI_CAPABILITY_DATA_GRID, UI_CAPABILITY_ICON, UI_CAPABILITY_RESOURCE_PICKER,
-        UI_CAPABILITY_ROW, UI_CAPABILITY_SPLIT, UI_CAPABILITY_TEXT, UI_CAPABILITY_TEXT_INPUT,
-        UiActionId, UiActivityContribution, UiAssetImageNode, UiButtonAppearance, UiButtonNode,
-        UiContainerNode, UiDataGridColumn, UiDataGridNode, UiDataGridSortDirection, UiIconNode,
-        UiIconSlotId, UiNode, UiNodeId, UiNodeKind, UiPlacementHint, UiResourcePickerNode,
-        UiSplitAxis, UiSplitNode, UiSurfaceContribution, UiSurfaceId, UiSurfaceSnapshot,
+        UI_CAPABILITY_ASSET_IMAGE, UI_CAPABILITY_ASSET_PICKER, UI_CAPABILITY_BUTTON,
+        UI_CAPABILITY_COLUMN, UI_CAPABILITY_DATA_GRID, UI_CAPABILITY_ICON,
+        UI_CAPABILITY_RESOURCE_PICKER, UI_CAPABILITY_ROW, UI_CAPABILITY_SPLIT, UI_CAPABILITY_TEXT,
+        UI_CAPABILITY_TEXT_AREA, UI_CAPABILITY_TEXT_INPUT, UiActionId, UiActivityContribution,
+        UiAssetImageNode, UiAssetPickerNode, UiButtonAppearance, UiButtonNode, UiContainerNode,
+        UiDataGridColumn, UiDataGridNode, UiDataGridSortDirection, UiIconNode, UiIconSlotId,
+        UiNode, UiNodeId, UiNodeKind, UiPlacementHint, UiResourcePickerNode, UiSplitAxis,
+        UiSplitNode, UiSurfaceContribution, UiSurfaceId, UiSurfaceSnapshot, UiTextAreaNode,
         UiTextInputNode, UiTextNode,
     },
     world::WorldId,
 };
 
-use crate::{WorldCatalogEntry, WorldManagerState, WorldSortColumn, WorldSortDirection};
+use crate::{
+    MAX_WORLD_COVER_BYTES, WorldCatalogEntry, WorldManagerState, WorldSortColumn,
+    WorldSortDirection,
+};
 
 /// Stable Portable UI surface identity owned by World Manager.
 pub const WORLD_MANAGER_SURFACE_ID: &str = "rintawa.world-manager.main";
 /// Renderer-neutral shell activity identity for the world catalog.
 pub const WORLD_MANAGER_ACTIVITY_ID: &str = "rintawa.world-manager";
-/// Semantic action used by the Add World control.
+/// Semantic action used by the low-level empty-World creation operation.
 pub const WORLD_MANAGER_ACTION_CREATE: &str = "rintawa.world-manager.create";
+/// Semantic action opening/closing the unified Create World menu.
+pub const WORLD_MANAGER_ACTION_TOGGLE_CREATE_MENU: &str =
+    "rintawa.world-manager.toggle-create-menu";
 /// Semantic action routing one selected ephemeral file to an exact creator provider.
 pub const WORLD_MANAGER_ACTION_IMPORT_RESOURCE: &str = "rintawa.world-manager.import-resource";
 /// Semantic action used by the explicit catalog refresh control.
@@ -31,10 +38,15 @@ pub const WORLD_MANAGER_ACTION_REFRESH: &str = "rintawa.world-manager.refresh";
 pub const WORLD_MANAGER_ACTION_SELECT: &str = "rintawa.world-manager.select";
 /// Semantic action changing World catalog ordering.
 pub const WORLD_MANAGER_ACTION_SORT: &str = "rintawa.world-manager.sort";
-/// Semantic action keeping a rename draft in package-owned presentation state.
-pub const WORLD_MANAGER_ACTION_RENAME_DRAFT: &str = "rintawa.world-manager.rename-draft";
 /// Semantic action persisting the selected World's human-facing title.
 pub const WORLD_MANAGER_ACTION_RENAME: &str = "rintawa.world-manager.rename";
+/// Semantic action persisting the selected World's description.
+pub const WORLD_MANAGER_ACTION_UPDATE_DESCRIPTION: &str =
+    "rintawa.world-manager.update-description";
+/// Semantic action persisting the selected World's cover AssetRef.
+pub const WORLD_MANAGER_ACTION_UPDATE_COVER: &str = "rintawa.world-manager.update-cover";
+/// Semantic action opening the shared Manage workspace for the selected World.
+pub const WORLD_MANAGER_ACTION_EDIT: &str = "rintawa.world-manager.edit";
 /// Semantic action permanently deleting the selected stopped World.
 pub const WORLD_MANAGER_ACTION_DELETE: &str = "rintawa.world-manager.delete";
 /// Semantic action used to bring one World into the foreground shell session.
@@ -46,9 +58,11 @@ const ROOT_NODE: &str = "root";
 const HEADER_NODE: &str = "header";
 const TITLE_NODE: &str = "title";
 const TOOLBAR_NODE: &str = "toolbar";
-const IMPORTERS_NODE: &str = "toolbar.importers";
-const IMPORT_STATUS_NODE: &str = "toolbar.import-status";
+const CREATE_MENU_NODE: &str = "create-menu";
+const CREATE_MENU_TITLE_NODE: &str = "create-menu.title";
+const IMPORT_STATUS_NODE: &str = "create-menu.status";
 pub(crate) const CREATE_NODE: &str = "toolbar.create";
+pub(crate) const IMPORT_WORLD_NODE: &str = "create-menu.import-world";
 pub(crate) const REFRESH_NODE: &str = "toolbar.refresh";
 pub(crate) const CATALOG_GRID_NODE: &str = "catalog.grid";
 const WORKSPACE_NODE: &str = "workspace";
@@ -57,11 +71,12 @@ const EMPTY_NODE: &str = "catalog.empty";
 const INSPECTOR_NODE: &str = "selection.inspector";
 const INSPECTOR_TITLE_NODE: &str = "selection.title";
 const INSPECTOR_DESCRIPTION_NODE: &str = "selection.description";
-pub(crate) const RENAME_INPUT_NODE: &str = "selection.rename-input";
-pub(crate) const RENAME_SAVE_NODE: &str = "selection.rename-save";
-const INSPECTOR_STATUS_NODE: &str = "selection.status";
-const INSPECTOR_ERROR_NODE: &str = "selection.error";
-const INSPECTOR_COMMANDS_NODE: &str = "selection.commands";
+const COVER_CONTROL_NODE: &str = "selection.cover-control";
+const COVER_PREVIEW_NODE: &str = "selection.cover";
+pub(crate) const COVER_PICKER_NODE: &str = "selection.cover-picker";
+pub(crate) const RENAME_INPUT_NODE: &str = "selection.title-input";
+pub(crate) const DESCRIPTION_INPUT_NODE: &str = "selection.description-input";
+pub(crate) const EDIT_NODE: &str = "selection.edit";
 
 /// Returns the static Portable UI surface declaration for World Manager.
 pub fn world_manager_surface_contribution() -> UiSurfaceContribution {
@@ -78,9 +93,11 @@ pub fn world_manager_surface_contribution() -> UiSurfaceContribution {
         .requiring_capability(UI_CAPABILITY_DATA_GRID)
         .requiring_capability(UI_CAPABILITY_ICON)
         .requiring_capability(UI_CAPABILITY_ASSET_IMAGE)
+        .requiring_capability(UI_CAPABILITY_ASSET_PICKER)
         .requiring_capability(UI_CAPABILITY_RESOURCE_PICKER)
         .requiring_capability(UI_CAPABILITY_TEXT)
         .requiring_capability(UI_CAPABILITY_TEXT_INPUT)
+        .requiring_capability(UI_CAPABILITY_TEXT_AREA)
         .requiring_capability(UI_CAPABILITY_BUTTON)
 }
 
@@ -106,16 +123,9 @@ pub fn creator_import_node_id(creator_key: &str) -> UiNodeId {
 
 /// Renders the current World Manager state as a game-style media collection plus contextual actions.
 pub fn build_world_manager_snapshot(state: &WorldManagerState) -> UiSurfaceSnapshot {
-    let mut toolbar_children = Vec::new();
-    if state.creators().is_empty() {
-        toolbar_children.push(CREATE_NODE.into());
-    } else {
-        toolbar_children.push(IMPORTERS_NODE.into());
-    }
-    toolbar_children.push(REFRESH_NODE.into());
     let mut root_children = vec![HEADER_NODE.into()];
-    if state.import_status().is_some() {
-        root_children.push(IMPORT_STATUS_NODE.into());
+    if state.create_menu_open() {
+        root_children.push(CREATE_MENU_NODE.into());
     }
     root_children.push(WORKSPACE_NODE.into());
     let mut nodes = vec![
@@ -138,10 +148,17 @@ pub fn build_world_manager_snapshot(state: &WorldManagerState) -> UiSurfaceSnaps
         UiNode::new(
             TOOLBAR_NODE,
             UiNodeKind::Row(UiContainerNode {
-                children: toolbar_children,
+                children: vec![CREATE_NODE.into(), REFRESH_NODE.into()],
             }),
         )
         .with_trait("command-set"),
+        button_node(
+            CREATE_NODE,
+            "Create World",
+            WORLD_MANAGER_ACTION_TOGGLE_CREATE_MENU,
+            true,
+            UiButtonAppearance::Primary,
+        ),
         button_node(
             REFRESH_NODE,
             "Refresh",
@@ -151,50 +168,8 @@ pub fn build_world_manager_snapshot(state: &WorldManagerState) -> UiSurfaceSnaps
         ),
     ];
 
-    if state.creators().is_empty() {
-        nodes.push(button_node(
-            CREATE_NODE,
-            "Blank World",
-            WORLD_MANAGER_ACTION_CREATE,
-            true,
-            UiButtonAppearance::Subtle,
-        ));
-    } else {
-        let mut importer_children = Vec::with_capacity(state.creators().len());
-        for creator in state.creators() {
-            let node_id = creator_import_node_id(&creator.key);
-            importer_children.push(node_id.clone());
-            nodes.push(
-                UiNode::new(
-                    node_id,
-                    UiNodeKind::ResourcePicker(UiResourcePickerNode {
-                        label: creator.label.clone(),
-                        accepted_media_types: creator.accepted_media_types.clone(),
-                        accepted_extensions: creator.accepted_extensions.clone(),
-                        max_bytes: creator.max_bytes,
-                        change_action: UiActionId::new(WORLD_MANAGER_ACTION_IMPORT_RESOURCE),
-                        is_enabled: true,
-                    }),
-                )
-                .with_trait("world-import-picker"),
-            );
-        }
-        nodes.push(
-            UiNode::new(
-                IMPORTERS_NODE,
-                UiNodeKind::Row(UiContainerNode {
-                    children: importer_children,
-                }),
-            )
-            .with_trait("world-importers"),
-        );
-    }
-    if let Some(status) = state.import_status() {
-        nodes.push(
-            text_node(IMPORT_STATUS_NODE, status)
-                .with_trait("muted")
-                .with_trait("world-import-status"),
-        );
+    if state.create_menu_open() {
+        append_create_menu(&mut nodes, state);
     }
 
     let catalog_pane = build_catalog_pane(&mut nodes, state);
@@ -306,7 +281,7 @@ fn build_catalog_pane(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiN
                 cells,
                 selected_rows,
                 row_keys,
-                row_action: Some(UiActionId::new(WORLD_MANAGER_ACTION_SELECT)),
+                row_action: Some(UiActionId::new(WORLD_MANAGER_ACTION_OPEN)),
             }),
         )
         .with_semantic(semantic("management.worlds.items"))
@@ -321,11 +296,7 @@ fn build_catalog_pane(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiN
         nodes.push(
             text_node(
                 EMPTY_NODE,
-                if state.creators().is_empty() {
-                    "No Worlds yet. Create a Blank World or install an importer."
-                } else {
-                    "No Worlds yet. Import a supported file to create your first World."
-                },
+                "No Worlds yet. Use Create World to import a supported World source.",
             )
             .with_trait("empty-state"),
         );
@@ -340,6 +311,76 @@ fn build_catalog_pane(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiN
         .with_trait("primary-content"),
     );
     UiNodeId::new(CATALOG_PANE_NODE)
+}
+
+fn append_create_menu(nodes: &mut Vec<UiNode>, state: &WorldManagerState) {
+    nodes.push(text_node(CREATE_MENU_TITLE_NODE, "Import World").with_trait("section-title"));
+    let mut children = vec![CREATE_MENU_TITLE_NODE.into()];
+    if state.creators().is_empty() {
+        nodes.push(
+            text_node(
+                IMPORT_STATUS_NODE,
+                state
+                    .import_status()
+                    .unwrap_or("Discovering installed World import handlers…"),
+            )
+            .with_trait("muted")
+            .with_trait("world-import-status"),
+        );
+        children.push(IMPORT_STATUS_NODE.into());
+    } else {
+        let accepted_media_types = state
+            .creators()
+            .iter()
+            .flat_map(|creator| creator.accepted_media_types.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let accepted_extensions = state
+            .creators()
+            .iter()
+            .flat_map(|creator| creator.accepted_extensions.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        nodes.push(
+            UiNode::new(
+                IMPORT_WORLD_NODE,
+                UiNodeKind::ResourcePicker(UiResourcePickerNode {
+                    label: String::from("Import World…"),
+                    accepted_media_types,
+                    accepted_extensions,
+                    max_bytes: state
+                        .creators()
+                        .iter()
+                        .map(|creator| creator.max_bytes)
+                        .max()
+                        .unwrap_or(1),
+                    change_action: UiActionId::new(WORLD_MANAGER_ACTION_IMPORT_RESOURCE),
+                    is_enabled: true,
+                }),
+            )
+            .with_trait("world-import-picker")
+            .with_trait("world-import-unified-picker"),
+        );
+        children.push(IMPORT_WORLD_NODE.into());
+        if let Some(status) = state.import_status() {
+            nodes.push(
+                text_node(IMPORT_STATUS_NODE, status)
+                    .with_trait("muted")
+                    .with_trait("world-import-status"),
+            );
+            children.push(IMPORT_STATUS_NODE.into());
+        }
+    }
+    nodes.push(
+        UiNode::new(
+            CREATE_MENU_NODE,
+            UiNodeKind::Column(UiContainerNode { children }),
+        )
+        .with_semantic(semantic("management.worlds.create-menu"))
+        .with_trait("world-create-menu"),
+    );
 }
 
 fn build_inspector(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiNodeId {
@@ -360,125 +401,120 @@ fn build_inspector(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiNode
         );
         nodes.push(text_node(INSPECTOR_TITLE_NODE, "World details").with_trait("section-title"));
         nodes.push(
-            text_node(
-                INSPECTOR_DESCRIPTION_NODE,
-                "Select a World to view its details and actions.",
-            )
-            .with_trait("muted"),
+            text_node(INSPECTOR_DESCRIPTION_NODE, "Select a World to edit it.").with_trait("muted"),
         );
         return UiNodeId::new(INSPECTOR_NODE);
     };
 
-    let open_node = world_open_node_id(world.world_id);
-    let toggle_node = world_toggle_node_id(world.world_id);
-    let delete_node = world_delete_node_id(world.world_id);
-    let is_stopping = world.pending_active == Some(false);
-    let lifecycle_pending = world.pending_active.is_some();
-    let lifecycle_label = match world.pending_active {
-        Some(true) => "Starting…",
-        Some(false) => "Stopping…",
-        None if world.active => "Stop",
-        None => "Start",
-    };
-    let open_label = if world.pending_active == Some(true) {
-        "Open when ready"
-    } else {
-        "Open"
-    };
-
-    let mut details = vec![
-        UiNodeId::new(INSPECTOR_TITLE_NODE),
-        UiNodeId::new(INSPECTOR_DESCRIPTION_NODE),
-        UiNodeId::new(RENAME_INPUT_NODE),
-        UiNodeId::new(RENAME_SAVE_NODE),
-        UiNodeId::new(INSPECTOR_STATUS_NODE),
-    ];
-    if world.last_error.is_some() {
-        details.push(UiNodeId::new(INSPECTOR_ERROR_NODE));
-    }
-    details.push(UiNodeId::new(INSPECTOR_COMMANDS_NODE));
-
+    let cover_kind = world.cover.as_ref().map_or_else(
+        || {
+            UiNodeKind::Icon(UiIconNode {
+                slot: UiIconSlotId::new("world.thumbnail"),
+                label: Some(world.title.clone()),
+                size: Some(72),
+            })
+        },
+        |cover| {
+            UiNodeKind::AssetImage(UiAssetImageNode {
+                digest: cover.digest.clone(),
+                size: cover.size,
+                media_type: cover.media_type.clone(),
+                alt: world.title.clone(),
+                width: Some(160),
+                height: Some(160),
+            })
+        },
+    );
+    nodes.push(
+        UiNode::new(COVER_PREVIEW_NODE, cover_kind)
+            .with_trait("world-inspector-cover")
+            .with_trait("media-thumbnail"),
+    );
     nodes.push(
         UiNode::new(
-            INSPECTOR_NODE,
-            UiNodeKind::Column(UiContainerNode { children: details }),
+            COVER_PICKER_NODE,
+            UiNodeKind::AssetPicker(UiAssetPickerNode {
+                label: String::from("Change cover"),
+                accepted_media_types: vec![
+                    String::from("image/png"),
+                    String::from("image/jpeg"),
+                    String::from("image/webp"),
+                ],
+                max_bytes: MAX_WORLD_COVER_BYTES,
+                change_action: UiActionId::new(WORLD_MANAGER_ACTION_UPDATE_COVER),
+                is_enabled: true,
+            }),
         )
-        .with_semantic(semantic("management.worlds.selection-details"))
-        .with_trait("inspector")
-        .with_trait("selection-context"),
+        .with_trait("world-cover-picker"),
     );
-    nodes.push(text_node(INSPECTOR_TITLE_NODE, world.title.clone()).with_trait("section-title"));
     nodes.push(
-        text_node(
-            INSPECTOR_DESCRIPTION_NODE,
-            world.description.as_deref().unwrap_or("No description"),
+        UiNode::new(
+            COVER_CONTROL_NODE,
+            UiNodeKind::Column(UiContainerNode {
+                children: vec![COVER_PREVIEW_NODE.into(), COVER_PICKER_NODE.into()],
+            }),
         )
-        .with_trait("muted"),
+        .with_trait("world-cover-control"),
     );
     nodes.push(
         UiNode::new(
             RENAME_INPUT_NODE,
             UiNodeKind::TextInput(UiTextInputNode {
-                value: state.rename_draft().to_string(),
+                value: world.title.clone(),
                 placeholder: Some(String::from("World name")),
-                change_action: Some(UiActionId::new(WORLD_MANAGER_ACTION_RENAME_DRAFT)),
+                change_action: None,
                 submit_action: Some(UiActionId::new(WORLD_MANAGER_ACTION_RENAME)),
                 submit_label: None,
                 is_enabled: true,
             }),
         )
-        .with_trait("world-title-input"),
+        .with_trait("world-title-input")
+        .with_trait("submit-on-blur"),
+    );
+    nodes.push(
+        UiNode::new(
+            DESCRIPTION_INPUT_NODE,
+            UiNodeKind::TextArea(UiTextAreaNode {
+                value: world.description.clone().unwrap_or_default(),
+                placeholder: Some(String::from("Describe this World…")),
+                change_action: None,
+                submit_action: Some(UiActionId::new(WORLD_MANAGER_ACTION_UPDATE_DESCRIPTION)),
+                submit_label: None,
+                is_enabled: true,
+            }),
+        )
+        .with_trait("world-description-input")
+        .with_trait("submit-on-blur")
+        .with_trait("allow-empty-submit")
+        .with_trait("hide-submit-control"),
     );
     nodes.push(
         button_node(
-            RENAME_SAVE_NODE,
-            "Rename",
-            WORLD_MANAGER_ACTION_RENAME,
-            state.rename_draft().trim() != world.title,
-            UiButtonAppearance::Subtle,
+            EDIT_NODE,
+            "Edit",
+            WORLD_MANAGER_ACTION_EDIT,
+            true,
+            UiButtonAppearance::Default,
         )
-        .with_trait("rename-action"),
+        .with_trait("world-edit-action"),
     );
-    nodes.push(text_node(
-        INSPECTOR_STATUS_NODE,
-        format!("Status  {}", world_status(world)),
-    ));
-    if let Some(error) = &world.last_error {
-        nodes.push(
-            text_node(INSPECTOR_ERROR_NODE, format!("Last issue  {error}")).with_trait("warning"),
-        );
-    }
     nodes.push(
         UiNode::new(
-            INSPECTOR_COMMANDS_NODE,
+            INSPECTOR_NODE,
             UiNodeKind::Column(UiContainerNode {
-                children: vec![open_node.clone(), toggle_node.clone(), delete_node.clone()],
+                children: vec![
+                    COVER_CONTROL_NODE.into(),
+                    RENAME_INPUT_NODE.into(),
+                    DESCRIPTION_INPUT_NODE.into(),
+                    EDIT_NODE.into(),
+                ],
             }),
         )
-        .with_trait("command-set")
-        .with_trait("selection-context"),
+        .with_semantic(semantic("management.worlds.selection-details"))
+        .with_trait("inspector")
+        .with_trait("selection-context")
+        .with_trait("world-inspector"),
     );
-    nodes.push(button_node(
-        open_node,
-        open_label,
-        WORLD_MANAGER_ACTION_OPEN,
-        !is_stopping,
-        UiButtonAppearance::Primary,
-    ));
-    nodes.push(button_node(
-        toggle_node,
-        lifecycle_label,
-        WORLD_MANAGER_ACTION_TOGGLE_ACTIVE,
-        !lifecycle_pending,
-        UiButtonAppearance::Default,
-    ));
-    nodes.push(button_node(
-        delete_node,
-        "Delete World",
-        WORLD_MANAGER_ACTION_DELETE,
-        !world.active && !lifecycle_pending,
-        UiButtonAppearance::Danger,
-    ));
     UiNodeId::new(INSPECTOR_NODE)
 }
 

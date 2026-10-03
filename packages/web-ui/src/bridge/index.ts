@@ -9,6 +9,7 @@ export type {
   RendererToHostMessage,
   UiActionEvent,
   UiLayerPresentationState,
+  UiManagementContext,
   UiPresentationSurface,
 } from "./types";
 export { PORTABLE_UI_PROTOCOL_MAJOR, UI_CAPABILITIES, WEB_UI_BRIDGE_PROTOCOL_MAJOR } from "./types";

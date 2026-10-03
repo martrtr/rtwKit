@@ -24,6 +24,7 @@ export default function App() {
     focused_world: null,
     pending_world_id: null,
     last_focus_error: null,
+    management_context: { revision: 0, scope_id: "host", label: "Manage", world_id: null },
   });
   const [hasReceivedState, setHasReceivedState] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,6 +95,22 @@ export default function App() {
       });
   };
 
+  const returnToGlobalManagement = () => {
+    if (!transport) return;
+    void transport
+      .send({
+        type: "management-home",
+        protocol_major: WEB_UI_BRIDGE_PROTOCOL_MAJOR,
+      })
+      .catch((managementError: unknown) => {
+        setError(
+          managementError instanceof Error
+            ? managementError.message
+            : String(managementError),
+        );
+      });
+  };
+
   return (
     <InterfaceIconProvider mapping={experiencePack.theme.icons ?? {}}>
       <main
@@ -115,6 +132,7 @@ export default function App() {
             surfaces={surfaces}
             presentation={presentation}
             onAction={dispatchAction}
+            onManagementHome={returnToGlobalManagement}
             experiencePack={experiencePack}
           />
         )}

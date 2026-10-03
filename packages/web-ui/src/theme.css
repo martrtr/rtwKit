@@ -66,6 +66,7 @@
   --rintawa-web-chat-message-spacing: 0rem;
   --rintawa-web-chat-avatar-size: 3rem;
   --rintawa-web-chat-composer-min-height: 3.25rem;
+  --rintawa-web-chat-image-fallback-ratio: 4 / 3;
   --rintawa-web-motion-fast: 120ms;
   --rintawa-web-motion-normal: 180ms;
   --rintawa-web-motion-easing: cubic-bezier(0.2, 0, 0, 1);

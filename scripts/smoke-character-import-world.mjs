@@ -11,6 +11,7 @@ const PACKAGE_MANAGER_RTW = process.env.RINTAWA_PACKAGE_MANAGER_RTW;
 const CHARACTER_RTW = process.env.RINTAWA_CHARACTER_RTW;
 const CHAT_RTW = process.env.RINTAWA_CHAT_RTW;
 const HOST = process.env.RINTAWA_SMOKE_HOST ?? "127.0.0.1:44719";
+const KEEP_HOME = process.env.RINTAWA_SMOKE_KEEP_HOME === "1";
 const WS_URL = `ws://${HOST}/__rintawa/ws`;
 const WORLD_MANAGER_ID = "rintawa.world-manager";
 const PACKAGE_MANAGER_ID = "rintawa.package-manager";
@@ -18,6 +19,10 @@ const CHARACTER_ID = "rintawa.character-library";
 const CHAT_ID = "rintawa.chat";
 const WORLD_REFRESH_ACTION = "rintawa.world-manager.refresh";
 const WORLD_TOGGLE_ACTION = "rintawa.world-manager.toggle-active";
+const WORLD_SELECT_ACTION = "rintawa.world-manager.select";
+const WORLD_OPEN_ACTION = "rintawa.world-manager.open";
+const WORLD_EDIT_ACTION = "rintawa.world-manager.edit";
+const WORLD_TOGGLE_CREATE_MENU_ACTION = "rintawa.world-manager.toggle-create-menu";
 const WORLD_IMPORT_ACTION = "rintawa.world-manager.import-resource";
 const CHARACTER_REFRESH_ACTION = "rintawa.character-library.refresh";
 const CHARACTER_SELECT_WORLD_ACTION = "rintawa.character-library.select-world";
@@ -122,10 +127,12 @@ function worldManagerSurface(state, ownerInstance) {
 function nodeByAction(surface, action) {
   return surface?.snapshot.nodes.find((node) => {
     if (node.kind.type === "button") return node.kind.data.action === action;
-    if (node.kind.type === "select")
+    if (node.kind.type === "select" || node.kind.type === "text-input")
       return node.kind.data.change_action === action;
     if (node.kind.type === "resource-picker")
       return node.kind.data.change_action === action;
+    if (node.kind.type === "data-grid")
+      return node.kind.data.row_action === action;
     return false;
   });
 }
@@ -269,7 +276,7 @@ function connectUi() {
                 }));
                 waitReject(
                   new Error(
-                    `timed out waiting for Portable UI state; current surfaces=${JSON.stringify(summary)}`,
+                    `timed out waiting for Portable UI state; presentation=${JSON.stringify(currentState?.presentation)}; current surfaces=${JSON.stringify(summary)}`,
                   ),
                 );
               }, timeoutMs);
@@ -454,14 +461,39 @@ try {
 
   let state = await ui.waitFor((message) => {
     const surface = worldManagerSurface(message, worldManager.instance);
-    return Boolean(nodeByAction(surface, WORLD_IMPORT_ACTION));
+    return Boolean(nodeByButtonAction(surface, WORLD_TOGGLE_CREATE_MENU_ACTION));
   });
   let worldSurface = worldManagerSurface(state, worldManager.instance);
+  const createWorld = nodeByButtonAction(
+    worldSurface,
+    WORLD_TOGGLE_CREATE_MENU_ACTION,
+  );
+  if (!createWorld) throw new Error("World Manager Create World action is unavailable");
+  console.log("SMOKE stage: open unified Create World menu");
+  ui.sendAction(worldSurface, createWorld, WORLD_TOGGLE_CREATE_MENU_ACTION, {
+    type: "none",
+  });
+  state = await ui.waitFor((message) => {
+    const surface = worldManagerSurface(message, worldManager.instance);
+    return Boolean(nodeByAction(surface, WORLD_IMPORT_ACTION));
+  });
+  worldSurface = worldManagerSurface(state, worldManager.instance);
   const importPicker = nodeByAction(worldSurface, WORLD_IMPORT_ACTION);
   if (importPicker?.kind.type !== "resource-picker") {
-    throw new Error(
-      "World Manager did not expose Character world creator picker",
-    );
+    throw new Error("World Manager did not expose the unified Import World picker");
+  }
+  if (
+    !importPicker.kind.data.accepted_extensions.includes(".json") ||
+    !importPicker.kind.data.accepted_extensions.includes(".png")
+  ) {
+    throw new Error("Tavern creator did not extend the unified Import World picker");
+  }
+  if (
+    worldSurface.snapshot.nodes.some(
+      (node) => node.kind.type === "button" && node.kind.data.label === "Import Character",
+    )
+  ) {
+    throw new Error("Character creator leaked a standalone Import Character button");
   }
   const directCard = Buffer.from(
     JSON.stringify({
@@ -561,40 +593,100 @@ try {
   );
   await ui.waitFor((message) => Boolean(enabledChatComposer(chatSurface(message))));
 
-  const worldScopeId = `world:${worldId}`;
+  const managedWorldId = directWorld.id;
+  const worldScopeId = `world:${managedWorldId}`;
   state = await ui.waitFor((message) => {
     const worlds = worldManagerSurface(message, worldManager.instance);
     const characters = characterSurface(message, character.instance);
     const extensions = packageManagerSurface(message, packageManager.instance);
-    const scope = nodeByAction(extensions, PACKAGE_SCOPE_ACTION);
-    const hasWorldScope =
-      scope?.kind.type === "select" &&
-      scope.kind.data.options.some((option) => option.value === worldScopeId);
-    return (
-      Boolean(worlds) &&
-      Boolean(extensions) &&
-      hasWorldScope &&
-      Boolean(characters) &&
-      textContent(characters).includes("Direct V3 Alice")
+    return Boolean(worlds) && Boolean(characters) && Boolean(extensions);
+  });
+  worldSurface = worldManagerSurface(state, worldManager.instance);
+  const launcher = nodeByAction(worldSurface, WORLD_OPEN_ACTION);
+  if (launcher?.kind.type !== "data-grid") {
+    throw new Error("World Manager World launcher collection is unavailable");
+  }
+  const launcherRevision = worldSurface.snapshot.revision;
+  console.log("SMOKE stage: focus imported World from launcher row");
+  ui.sendAction(worldSurface, launcher, WORLD_OPEN_ACTION, {
+    type: "text",
+    value: managedWorldId,
+  });
+  state = await ui.waitFor((message) => {
+    const surface = worldManagerSurface(message, worldManager.instance);
+    return Boolean(
+      surface &&
+        BigInt(surface.snapshot.revision) > BigInt(launcherRevision) &&
+        nodeByButtonAction(surface, WORLD_EDIT_ACTION),
     );
   });
   worldSurface = worldManagerSurface(state, worldManager.instance);
-  const startWorld = nodeByButtonAction(worldSurface, WORLD_TOGGLE_ACTION);
-  if (!startWorld) throw new Error("World Manager Start action is unavailable");
-  console.log("SMOKE stage: start existing World");
-  ui.sendAction(worldSurface, startWorld, WORLD_TOGGLE_ACTION, {
-    type: "none",
+  const editWorld = nodeByButtonAction(worldSurface, WORLD_EDIT_ACTION);
+  if (!editWorld) throw new Error("World Manager Edit action is unavailable");
+  console.log("SMOKE stage: open shared Manage in World mode");
+  ui.sendAction(worldSurface, editWorld, WORLD_EDIT_ACTION, { type: "none" });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  {
+    const diagnosticState = ui.latest();
+    const diagnosticCharacters = characterSurface(diagnosticState, character.instance);
+    const diagnosticExtensions = packageManagerSurface(diagnosticState, packageManager.instance);
+    console.log("SMOKE Manage diagnostic:", JSON.stringify({
+      management: diagnosticState?.presentation?.management_context,
+      characterScope: nodeByAction(diagnosticCharacters, CHARACTER_SELECT_WORLD_ACTION)?.kind?.data?.value ?? null,
+      extensionScope: nodeByAction(diagnosticExtensions, PACKAGE_SCOPE_ACTION)?.kind?.data?.value ?? null,
+    }));
+  }
+  state = await ui.waitFor((message) => {
+    const context = message.presentation?.management_context;
+    return context?.world_id === managedWorldId && context.scope_id === worldScopeId;
   });
-  await waitForWorldActive(ui, worldManager.instance);
+  let characters = characterSurface(state, character.instance);
+  const characterContext = nodeByAction(characters, CHARACTER_SELECT_WORLD_ACTION);
+  if (characterContext?.kind.type !== "text-input") {
+    throw new Error("Characters does not expose the shell-owned management context sink");
+  }
+  console.log("SMOKE Character context diagnostic:", JSON.stringify({
+    owner: characters.owner,
+    revision: characters.snapshot.revision,
+    node: characterContext.id,
+    action: characterContext.kind.data.change_action,
+    value: characterContext.kind.data.value,
+    target: worldScopeId,
+  }));
+  ui.sendAction(characters, characterContext, CHARACTER_SELECT_WORLD_ACTION, {
+    type: "text",
+    value: worldScopeId,
+  });
+  state = await ui.waitFor((message) =>
+    nodeByAction(
+      characterSurface(message, character.instance),
+      CHARACTER_SELECT_WORLD_ACTION,
+    )?.kind?.data?.value === worldScopeId,
+  );
+  characters = characterSurface(state, character.instance);
 
-  let characters = characterSurface(ui.latest(), character.instance);
+  let managementExtensions = packageManagerSurface(ui.latest(), packageManager.instance);
+  const extensionContext = nodeByAction(managementExtensions, PACKAGE_SCOPE_ACTION);
+  if (extensionContext?.kind.type !== "text-input") {
+    throw new Error("Extensions does not expose the shell-owned management context sink");
+  }
+  ui.sendAction(managementExtensions, extensionContext, PACKAGE_SCOPE_ACTION, {
+    type: "text",
+    value: worldScopeId,
+  });
+  state = await ui.waitFor((message) =>
+    nodeByAction(
+      packageManagerSurface(message, packageManager.instance),
+      PACKAGE_SCOPE_ACTION,
+    )?.kind?.data?.value === worldScopeId,
+  );
   const refreshCharacters = nodeByButtonAction(
     characters,
     CHARACTER_REFRESH_ACTION,
   );
   if (!refreshCharacters)
     throw new Error("Character refresh action is unavailable");
-  console.log("SMOKE stage: refresh Manage Characters");
+  console.log("SMOKE stage: refresh World-scoped Manage Characters");
   ui.sendAction(characters, refreshCharacters, CHARACTER_REFRESH_ACTION, {
     type: "none",
   });
@@ -607,32 +699,43 @@ try {
   characters = characterSurface(state, character.instance);
   const worldSelect = nodeByAction(characters, CHARACTER_SELECT_WORLD_ACTION);
   if (
-    worldSelect?.kind.type !== "select" ||
-    worldSelect.kind.data.value !== worldId
+    worldSelect?.kind.type !== "text-input" ||
+    worldSelect.kind.data.value !== worldScopeId
   ) {
-    throw new Error("Character management did not target the created World");
+    throw new Error("Shared Manage context did not target the created World");
   }
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  characters = characterSurface(ui.latest(), character.instance);
   const addCharacter = nodeByButtonAction(
     characters,
     CHARACTER_ADD_TO_WORLD_ACTION,
   );
   if (!addCharacter)
     throw new Error("Add character to World action is unavailable");
+  const beforeCharacterAdd = parseWorldList(
+    run(["--home", home, "world-list"]),
+  ).find((world) => world.id === managedWorldId);
+  if (!beforeCharacterAdd) throw new Error("Managed World disappeared before Character add");
   console.log("SMOKE stage: add reusable character to existing World");
   ui.sendAction(characters, addCharacter, CHARACTER_ADD_TO_WORLD_ACTION, {
     type: "none",
   });
 
-  const world = await waitForCommittedWorld(home, worldId);
-  if (world.id !== worldId) {
+  const expectedCharacterPosition = beforeCharacterAdd.position + 1;
+  const world = await waitForCommittedWorld(
+    home,
+    managedWorldId,
+    expectedCharacterPosition,
+  );
+  if (world.id !== managedWorldId) {
     throw new Error(
-      `unexpected committed World: ${world.id}; expected ${worldId}`,
+      `unexpected committed World: ${world.id}; expected ${managedWorldId}`,
     );
   }
   const worldInfo = run(["--home", home, "world-info", world.id]);
-  if (!worldInfo.includes("commit_position = 1")) {
+  if (!worldInfo.includes(`commit_position = ${expectedCharacterPosition}`)) {
     throw new Error(
-      `Character World did not commit exactly once\n${worldInfo}`,
+      `Character add did not advance the World exactly once\n${worldInfo}`,
     );
   }
   const schemas = Number(worldInfo.match(/^schemas = (\d+)$/m)?.[1] ?? "0");
@@ -640,25 +743,11 @@ try {
     throw new Error(`Character World did not persist schemas\n${worldInfo}`);
   }
 
-  let extensions = packageManagerSurface(ui.latest(), packageManager.instance);
+  const extensions = packageManagerSurface(ui.latest(), packageManager.instance);
   const scope = nodeByAction(extensions, PACKAGE_SCOPE_ACTION);
-  if (scope?.kind.type !== "select") {
-    throw new Error("Package Manager scope selector is unavailable");
+  if (scope?.kind.type !== "text-input" || scope.kind.data.value !== worldScopeId) {
+    throw new Error("Extensions did not stay synchronized with shared World Manage context");
   }
-  console.log("SMOKE stage: select World-specific Extensions scope");
-  ui.sendAction(extensions, scope, PACKAGE_SCOPE_ACTION, {
-    type: "text",
-    value: worldScopeId,
-  });
-  await ui.waitFor((message) => {
-    const candidate = packageManagerSurface(message, packageManager.instance);
-    const selector = nodeByAction(candidate, PACKAGE_SCOPE_ACTION);
-    return (
-      selector?.kind.type === "select" &&
-      selector.kind.data.value === worldScopeId &&
-      textContent(candidate).includes("Only this World composition is changed")
-    );
-  });
 
   ui.socket.close();
   ui = null;
@@ -677,7 +766,7 @@ try {
   restartedUi.socket.close();
 
   const persistedWorldInfo = run(["--home", home, "world-info", world.id]);
-  if (!persistedWorldInfo.includes("commit_position = 1")) {
+  if (!persistedWorldInfo.includes(`commit_position = ${expectedCharacterPosition}`)) {
     throw new Error(
       `Character World commit was not stable across restart\n${persistedWorldInfo}`,
     );
@@ -692,5 +781,9 @@ try {
 } finally {
   if (ui) ui.socket.close();
   await stopHost(host);
-  await rm(root, { recursive: true, force: true });
+  if (KEEP_HOME) {
+    console.log(`SMOKE retained home: ${home}`);
+  } else {
+    await rm(root, { recursive: true, force: true });
+  }
 }

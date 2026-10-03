@@ -28,6 +28,17 @@ pub enum ShellNavigationRequest {
         /// Canonical textual World identity understood by Core.
         world_id: String,
     },
+    /// Opens the shared management workspace in one World-scoped context.
+    ///
+    /// The shell owns this presentation context. Management sections receive it through
+    /// the versioned Portable UI management-context semantic instead of inventing their
+    /// own independent scope selectors.
+    OpenWorldManagement {
+        /// Canonical textual World identity selected by the launcher.
+        world_id: String,
+        /// Bounded human-facing label for shell chrome only.
+        label: String,
+    },
 }
 
 /// Bounded result returned by a shell-navigation provider.
@@ -139,6 +150,13 @@ mod tests {
         };
         let encoded = encode_request(&request).expect("request should encode");
         assert_eq!(decode_request(&encoded), Ok(request));
+
+        let management = ShellNavigationRequest::OpenWorldManagement {
+            world_id: String::from("018f8f4e-6fd0-7ac1-a7bd-ef27b34c389a"),
+            label: String::from("Alice"),
+        };
+        let encoded = encode_request(&management).expect("management request should encode");
+        assert_eq!(decode_request(&encoded), Ok(management));
 
         let response = ShellNavigationResponse::Rejected {
             reason: ShellNavigationRejection::Unavailable,

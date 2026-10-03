@@ -8,6 +8,7 @@ import type {
 import type {
   UiActionEvent,
   UiLayerPresentationState,
+  UiManagementContext,
   UiPresentationSurface,
 } from "../bridge";
 import { regionForSurface } from "../experience";
@@ -64,6 +65,40 @@ function activityKey(
 
 function activitySurfaceKey(surface: UiPresentationSurface): string {
   return `${surface.owner.instance_id}:${surface.contribution.id}`;
+}
+
+const MANAGEMENT_ACTIVITY_ID = "rintawa.management";
+const MANAGEMENT_CONTEXT_SEMANTIC_ID = "rintawa.management.context";
+
+function hostManagementContext(revision: number): UiManagementContext {
+  return {
+    revision,
+    scope_id: "host",
+    label: "Manage",
+    world_id: null,
+  };
+}
+
+export function managementContextAction(
+  surface: UiPresentationSurface,
+  scopeId: string,
+): UiActionEvent | null {
+  const sink = surface.snapshot.nodes.find(
+    (node) =>
+      node.semantic?.id === MANAGEMENT_CONTEXT_SEMANTIC_ID &&
+      node.semantic.version === 1 &&
+      node.kind.type === "text-input",
+  );
+  if (!sink || sink.kind.type !== "text-input" || !sink.kind.data.is_enabled) return null;
+  if (sink.kind.data.value === scopeId || sink.kind.data.change_action === null) return null;
+  return {
+    owner_instance_id: surface.owner.instance_id,
+    surface_id: surface.snapshot.surface_id,
+    node_id: sink.id,
+    action_id: sink.kind.data.change_action,
+    surface_revision: surface.snapshot.revision,
+    payload: { type: "text", value: scopeId },
+  };
 }
 
 function activityDestinations(
@@ -220,6 +255,8 @@ interface ActivityRegionProps {
   onToggleCollapsed: () => void;
   onOpenMenu: (activity: DerivedActivity, anchor: HTMLElement) => void;
   onAction: (event: UiActionEvent) => void;
+  managementContext: UiManagementContext;
+  onExitWorldManagement: () => void;
 }
 
 function ActivityRegion({
@@ -233,6 +270,8 @@ function ActivityRegion({
   onToggleCollapsed,
   onOpenMenu,
   onAction,
+  managementContext,
+  onExitWorldManagement,
 }: ActivityRegionProps) {
   const [selectedSurfaceByActivity, setSelectedSurfaceByActivity] = useState<
     Record<string, string>
@@ -305,6 +344,24 @@ function ActivityRegion({
       ) : null}
 
       <div className="rintawa-workbench-region-content">
+        {active?.id === MANAGEMENT_ACTIVITY_ID ? (
+          <header className="rintawa-management-header" data-world-mode={managementContext.world_id !== null}>
+            {managementContext.world_id ? (
+              <button
+                type="button"
+                className="rintawa-management-back"
+                aria-label="Back to global Manage"
+                title="Back to global Manage"
+                onClick={onExitWorldManagement}
+              >
+                <span aria-hidden>←</span>
+              </button>
+            ) : null}
+            <strong className="rintawa-management-title">
+              {managementContext.world_id ? managementContext.label : "Manage"}
+            </strong>
+          </header>
+        ) : null}
         {active ? (
           usesSectionNavigation ? (
             <div className="rintawa-activity-section-layout">
@@ -378,6 +435,8 @@ function renderWorkbenchLayout(
   onOpenMenu: (activity: DerivedActivity, anchor: HTMLElement) => void,
   onAction: (event: UiActionEvent) => void,
   showGlobalActivityTabs: boolean,
+  managementContext: UiManagementContext,
+  onExitWorldManagement: () => void,
   key: string,
 ): ReactNode {
   if (node.type === "region") {
@@ -409,6 +468,8 @@ function renderWorkbenchLayout(
         onToggleCollapsed={() => onToggleCollapsed(node.region)}
         onOpenMenu={onOpenMenu}
         onAction={onAction}
+        managementContext={managementContext}
+        onExitWorldManagement={onExitWorldManagement}
       />
     );
   }
@@ -435,6 +496,8 @@ function renderWorkbenchLayout(
         onOpenMenu,
         onAction,
         showGlobalActivityTabs,
+        managementContext,
+        onExitWorldManagement,
         `${key}.${sourceIndex}`,
       ),
     }))
@@ -579,6 +642,7 @@ interface WorkbenchComposerProps {
   surfaces: readonly UiPresentationSurface[];
   presentation: UiLayerPresentationState;
   onAction: (event: UiActionEvent) => void;
+  onManagementHome: () => void;
   experiencePack: WebExperiencePack;
 }
 
@@ -586,6 +650,7 @@ export function WorkbenchComposer({
   surfaces,
   presentation,
   onAction,
+  onManagementHome,
   experiencePack,
 }: WorkbenchComposerProps) {
   const layerLocalActivities = useMemo(
@@ -642,6 +707,13 @@ export function WorkbenchComposer({
     top: number;
   } | null>(null);
   const lastAutoFocusedWorldEntry = useRef<string | null>(null);
+  const [managementContext, setManagementContext] = useState<UiManagementContext>(
+    presentation.management_context,
+  );
+  const lastExternalManagementRevision = useRef<number>(
+    presentation.management_context.revision,
+  );
+  const dispatchedManagementScopes = useRef(new Set<string>());
 
   useEffect(() => {
     setPreferences(readWorkspacePreferences(experiencePack));
@@ -651,6 +723,45 @@ export function WorkbenchComposer({
   useEffect(() => {
     writeWorkspacePreferences(experiencePack, preferences);
   }, [experiencePack, preferences]);
+
+  useEffect(() => {
+    const external = presentation.management_context;
+    if (external.revision === lastExternalManagementRevision.current) return;
+    lastExternalManagementRevision.current = external.revision;
+    setManagementContext(external);
+    if (external.world_id === null) return;
+    const management = layerLocalActivities.find(
+      (activity) => activity.id === MANAGEMENT_ACTIVITY_ID,
+    );
+    if (!management) return;
+    setPreferences((current) => {
+      const requested = current.placements[management.key];
+      const region =
+        requested && destinationIds.has(requested)
+          ? requested
+          : management.defaultRegion;
+      return {
+        ...current,
+        activeByRegion: { ...current.activeByRegion, [region]: management.key },
+        collapsed: { ...current.collapsed, [region]: false },
+      };
+    });
+  }, [presentation.management_context, layerLocalActivities, destinationIds]);
+
+  useEffect(() => {
+    const management = layerLocalActivities.find(
+      (activity) => activity.id === MANAGEMENT_ACTIVITY_ID,
+    );
+    if (!management) return;
+    for (const surface of management.surfaces) {
+      const action = managementContextAction(surface, managementContext.scope_id);
+      if (!action) continue;
+      const dispatchKey = `${action.owner_instance_id}:${action.surface_id}:${action.surface_revision}:${managementContext.scope_id}`;
+      if (dispatchedManagementScopes.current.has(dispatchKey)) continue;
+      dispatchedManagementScopes.current.add(dispatchKey);
+      onAction(action);
+    }
+  }, [layerLocalActivities, managementContext.scope_id, onAction]);
 
   useEffect(() => {
     const focused = presentation.focused_world;
@@ -731,6 +842,18 @@ export function WorkbenchComposer({
     }));
   };
 
+  const exitWorldManagement = () => {
+    setManagementContext((current) => hostManagementContext(current.revision));
+    onManagementHome();
+  };
+
+  const focusGlobalActivity = (activity: DerivedActivity) => {
+    if (activity.id === MANAGEMENT_ACTIVITY_ID) {
+      exitWorldManagement();
+    }
+    focusActivity(activity);
+  };
+
   const moveActivity = (activity: DerivedActivity, region: string) => {
     if (!destinationIds.has(region)) return;
     updatePreferences((current) => ({
@@ -790,6 +913,8 @@ export function WorkbenchComposer({
     openMenu,
     onAction,
     experiencePack.shell.activity_bar?.presentation === "hidden",
+    managementContext,
+    exitWorldManagement,
     "workspace",
   );
 
@@ -824,7 +949,7 @@ export function WorkbenchComposer({
                 data-active={isActive}
                 title={activity.label}
                 aria-label={activity.label}
-                onClick={() => focusActivity(activity)}
+                onClick={() => focusGlobalActivity(activity)}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   openMenu(activity, event.currentTarget);

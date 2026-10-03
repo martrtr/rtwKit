@@ -111,13 +111,20 @@ interface SurfaceComposerProps {
   surfaces: readonly UiPresentationSurface[];
   presentation?: UiLayerPresentationState;
   onAction: (event: UiActionEvent) => void;
+  onManagementHome?: () => void;
   experiencePack?: WebExperiencePack;
 }
 
 export function SurfaceComposer({
   surfaces,
-  presentation = { focused_world: null, pending_world_id: null, last_focus_error: null },
+  presentation = {
+    focused_world: null,
+    pending_world_id: null,
+    last_focus_error: null,
+    management_context: { revision: 0, scope_id: "host", label: "Manage", world_id: null },
+  },
   onAction,
+  onManagementHome = () => {},
   experiencePack = STANDARD_EXPERIENCE_PACK,
 }: SurfaceComposerProps) {
   const regions = useMemo(
@@ -137,6 +144,7 @@ export function SurfaceComposer({
         surfaces={surfaces}
         presentation={presentation}
         onAction={onAction}
+        onManagementHome={onManagementHome}
         experiencePack={experiencePack}
       />
     );

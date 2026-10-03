@@ -231,9 +231,26 @@ impl exports::rintawa::engine::guest::Guest for WorldManagerRuntime {
                 if let Err(error) = render_surface() {
                     log_error(&error);
                 }
-                if let Err(error) = request_shell_world_focus(world_id) {
+                if let Err(error) = request_shell_navigation(ShellNavigationRequest::FocusWorld {
+                    world_id: world_id.to_string(),
+                }) {
                     log_error(&format!(
                         "World Manager foreground navigation failed: {error}"
+                    ));
+                }
+            }
+            WorldManagerActionOutcome::OpenManagement { world_id, label } => {
+                if let Err(error) = render_surface() {
+                    log_error(&error);
+                }
+                if let Err(error) =
+                    request_shell_navigation(ShellNavigationRequest::OpenWorldManagement {
+                        world_id: world_id.to_string(),
+                        label,
+                    })
+                {
+                    log_error(&format!(
+                        "World Manager management navigation failed: {error}"
                     ));
                 }
             }
@@ -601,7 +618,9 @@ fn finish_world_import(world_id: String) {
     if let Err(error) = render_surface() {
         log_error(&error);
     }
-    if let Err(error) = request_shell_world_focus(world_id) {
+    if let Err(error) = request_shell_navigation(ShellNavigationRequest::FocusWorld {
+        world_id: world_id.to_string(),
+    }) {
         log_error(&format!("Imported World focus failed: {error}"));
     }
 }
@@ -636,11 +655,9 @@ fn set_import_failure(message: String) {
     }
 }
 
-fn request_shell_world_focus(world_id: rintawa_sdk::world::WorldId) -> Result<(), String> {
-    let request = encode_request(&ShellNavigationRequest::FocusWorld {
-        world_id: world_id.to_string(),
-    })
-    .map_err(|error| format!("could not encode shell navigation request: {error}"))?;
+fn request_shell_navigation(request: ShellNavigationRequest) -> Result<(), String> {
+    let request = encode_request(&request)
+        .map_err(|error| format!("could not encode shell navigation request: {error}"))?;
     let response = rintawa::engine::services::call(
         SHELL_NAVIGATION_CONTRACT_ID,
         SHELL_NAVIGATION_CONTRACT_VERSION,
@@ -652,7 +669,7 @@ fn request_shell_world_focus(world_id: rintawa_sdk::world::WorldId) -> Result<()
     {
         ShellNavigationResponse::Accepted => Ok(()),
         ShellNavigationResponse::Rejected { reason } => {
-            Err(format!("shell navigation rejected World focus: {reason:?}"))
+            Err(format!("shell navigation rejected request: {reason:?}"))
         }
     }
 }

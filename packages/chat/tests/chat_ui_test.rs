@@ -1,8 +1,8 @@
 //! Portable UI regression tests for Chat browser and focused conversation modes.
 
 use rintawa_chat::{
-    ChatConversationSummary, ChatConversationView, ChatMessageView, ChatParticipantView,
-    ContentBlock, build_chat_snapshot,
+    CHAT_ACTION_TOGGLE_PARTICIPANTS, ChatConversationSummary, ChatConversationView,
+    ChatMessageView, ChatParticipantView, ContentBlock, build_chat_snapshot,
 };
 use rintawa_sdk::{ui::UiNodeKind, world::EntityId};
 
@@ -132,12 +132,16 @@ fn test_should_render_participants_only_in_explicit_popover() {
 
     let closed = build_chat_snapshot(4, Some("world"), Some(&chat), None, None, &[], false);
     assert!(!has_node(&closed, "cast"));
-    let header_meta = closed
+    assert!(!has_node(&closed, "header.meta"));
+    let title = closed
         .nodes
         .iter()
-        .find(|node| node.id.as_str() == "header.meta")
-        .expect("participant summary control");
-    assert!(matches!(header_meta.kind, UiNodeKind::Button(_)));
+        .find(|node| node.id.as_str() == "header.title")
+        .expect("conversation title control");
+    let UiNodeKind::Button(title) = &title.kind else {
+        panic!("conversation title should toggle the participant popover");
+    };
+    assert_eq!(title.action.as_str(), CHAT_ACTION_TOGGLE_PARTICIPANTS);
 
     let open = build_chat_snapshot(5, Some("world"), Some(&chat), None, None, &[], true);
     let cast = open

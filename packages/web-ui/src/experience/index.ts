@@ -199,6 +199,7 @@ const TOKEN_TO_CSS_VARIABLE: Record<string, string> = {
   "web.chat.message-local-margin-right": "--rintawa-web-chat-message-local-margin-right",
   "web.chat.avatar-size": "--rintawa-web-chat-avatar-size",
   "web.chat.composer-min-height": "--rintawa-web-chat-composer-min-height",
+  "web.chat.image-fallback-ratio": "--rintawa-web-chat-image-fallback-ratio",
   "web.motion.fast": "--rintawa-web-motion-fast",
   "web.motion.normal": "--rintawa-web-motion-normal",
   "web.motion.easing": "--rintawa-web-motion-easing",

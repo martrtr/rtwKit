@@ -6,7 +6,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
@@ -106,6 +106,26 @@ struct WebComponent {
     listener: Option<u64>,
     task: Option<u64>,
     clients: BTreeMap<u64, Client>,
+    management_context: ShellManagementContext,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct ShellManagementContext {
+    revision: u64,
+    scope_id: String,
+    label: String,
+    world_id: Option<String>,
+}
+
+impl Default for ShellManagementContext {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            scope_id: String::from("host"),
+            label: String::from("Manage"),
+            world_id: None,
+        }
+    }
 }
 
 struct Client {
@@ -152,6 +172,9 @@ enum RendererMessage {
     Action {
         protocol_major: u32,
         event: Value,
+    },
+    ManagementHome {
+        protocol_major: u32,
     },
 }
 
@@ -255,6 +278,7 @@ impl exports::rintawa::engine::target_provider::Guest for WebRuntime {
                     listener: None,
                     task: None,
                     clients: BTreeMap::new(),
+                    management_context: ShellManagementContext::default(),
                 },
             );
             Ok(handle)
@@ -428,9 +452,11 @@ impl exports::rintawa::engine::target_provider::Guest for WebRuntime {
         {
             return Err(TargetError::Unavailable);
         }
-        let response = shell_navigation_response(&payload, |world_id| {
-            rintawa::engine::ui_layer::request_world_focus(world_id).is_ok()
-        });
+        let response = shell_navigation_response(
+            &payload,
+            |world_id| rintawa::engine::ui_layer::request_world_focus(world_id).is_ok(),
+            |world_id, label| set_management_world_context(handle, world_id, label),
+        );
         encode_response(&response).map_err(|_| TargetError::Rejected)
     }
 }
@@ -452,9 +478,14 @@ impl exports::rintawa::engine::task_handler::Guest for WebRuntime {
     }
 }
 
-fn shell_navigation_response<F>(payload: &[u8], mut request_focus: F) -> ShellNavigationResponse
+fn shell_navigation_response<F, M>(
+    payload: &[u8],
+    mut request_focus: F,
+    mut open_management: M,
+) -> ShellNavigationResponse
 where
     F: FnMut(&str) -> bool,
+    M: FnMut(&str, &str) -> bool,
 {
     match decode_request(payload) {
         Ok(ShellNavigationRequest::FocusWorld { world_id }) => {
@@ -466,10 +497,75 @@ where
                 }
             }
         }
+        Ok(ShellNavigationRequest::OpenWorldManagement { world_id, label }) => {
+            if world_id.trim().is_empty() || label.trim().is_empty() || label.len() > 512 {
+                return ShellNavigationResponse::Rejected {
+                    reason: ShellNavigationRejection::InvalidRequest,
+                };
+            }
+            if open_management(&world_id, &label) {
+                ShellNavigationResponse::Accepted
+            } else {
+                ShellNavigationResponse::Rejected {
+                    reason: ShellNavigationRejection::Unavailable,
+                }
+            }
+        }
         Err(_) => ShellNavigationResponse::Rejected {
             reason: ShellNavigationRejection::InvalidRequest,
         },
     }
+}
+
+fn set_management_world_context(handle: u64, world_id: &str, label: &str) -> bool {
+    replace_management_context(
+        handle,
+        format!("world:{world_id}"),
+        label.to_string(),
+        Some(world_id.to_string()),
+    )
+}
+
+fn set_management_host_context(handle: u64) -> bool {
+    replace_management_context(handle, String::from("host"), String::from("Manage"), None)
+}
+
+fn replace_management_context(
+    handle: u64,
+    scope_id: String,
+    label: String,
+    world_id: Option<String>,
+) -> bool {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let Some(component) = state.components.get_mut(&handle) else {
+            return false;
+        };
+        let Some(next) =
+            next_management_context(&component.management_context, scope_id, label, world_id)
+        else {
+            return false;
+        };
+        component.management_context = next;
+        for client in component.clients.values_mut() {
+            client.last_state_digest = None;
+        }
+        true
+    })
+}
+
+fn next_management_context(
+    current: &ShellManagementContext,
+    scope_id: String,
+    label: String,
+    world_id: Option<String>,
+) -> Option<ShellManagementContext> {
+    Some(ShellManagementContext {
+        revision: current.revision.checked_add(1)?,
+        scope_id,
+        label,
+        world_id,
+    })
 }
 
 fn component_exists(handle: u64) -> bool {
@@ -1548,12 +1644,37 @@ fn handle_text_message(component_handle: u64, client_id: u64, payload: Vec<u8>) 
                     return;
                 }
             };
-            if rintawa::engine::ui_layer::dispatch_action(&bytes).is_err() {
+            if let Err(error) = rintawa::engine::ui_layer::dispatch_action(&bytes) {
+                rintawa::engine::host::log(
+                    rintawa::engine::host::LogLevel::Error,
+                    &format!("Web UI action dispatch rejected: {error:?}"),
+                );
                 queue_ws_error(
                     component_handle,
                     client_id,
                     "action-rejected",
                     "UI action was rejected",
+                );
+            }
+        }
+        RendererMessage::ManagementHome { protocol_major } => {
+            if protocol_major != WEB_BRIDGE_PROTOCOL_MAJOR
+                || !client_hello_complete(component_handle, client_id)
+            {
+                queue_ws_error(
+                    component_handle,
+                    client_id,
+                    "protocol",
+                    "Renderer handshake is incomplete",
+                );
+                return;
+            }
+            if !set_management_host_context(component_handle) {
+                queue_ws_error(
+                    component_handle,
+                    client_id,
+                    "management-unavailable",
+                    "Could not return to global Manage",
                 );
             }
         }
@@ -1612,7 +1733,7 @@ fn handle_hello(
             *hello_complete = true;
         }
     });
-    if let Some(state_message) = current_state_message() {
+    if let Some(state_message) = current_state_message(component_handle) {
         let digest = state_digest(&state_message);
         STATE.with(|state| {
             if let Some(client) = state
@@ -1673,7 +1794,7 @@ fn broadcast_state_if_changed(component_handle: u64) {
     if !has_ready_clients {
         return;
     }
-    let Some(message) = current_state_message() else {
+    let Some(message) = current_state_message(component_handle) else {
         return;
     };
     let digest = state_digest(&message);
@@ -1709,7 +1830,7 @@ fn state_digest(message: &[u8]) -> [u8; 20] {
     Sha1::digest(message).into()
 }
 
-fn current_state_message() -> Option<Vec<u8>> {
+fn current_state_message(component_handle: u64) -> Option<Vec<u8>> {
     let raw_surfaces = match rintawa::engine::ui_layer::presentation_surfaces() {
         Ok(raw) => raw,
         Err(error) => {
@@ -1731,7 +1852,18 @@ fn current_state_message() -> Option<Vec<u8>> {
         }
     };
     let mut surfaces: Value = serde_json::from_slice(&raw_surfaces).ok()?;
-    let presentation: Value = serde_json::from_slice(&raw_presentation).ok()?;
+    let mut presentation: Value = serde_json::from_slice(&raw_presentation).ok()?;
+    let management_context = STATE.with(|state| {
+        state
+            .borrow()
+            .components
+            .get(&component_handle)
+            .map(|component| component.management_context.clone())
+    })?;
+    presentation.as_object_mut()?.insert(
+        String::from("management_context"),
+        serde_json::to_value(management_context).ok()?,
+    );
     convert_surface_revisions_to_strings(&mut surfaces)?;
     serde_json::to_vec(&json!({
         "type": "state",
@@ -1942,10 +2074,14 @@ mod navigation_tests {
         })
         .expect("navigation request should encode");
         let mut requested = None;
-        let response = shell_navigation_response(&payload, |world_id| {
-            requested = Some(world_id.to_string());
-            true
-        });
+        let response = shell_navigation_response(
+            &payload,
+            |world_id| {
+                requested = Some(world_id.to_string());
+                true
+            },
+            |_, _| false,
+        );
         assert_eq!(response, ShellNavigationResponse::Accepted);
         assert_eq!(
             requested.as_deref(),
@@ -1956,7 +2092,7 @@ mod navigation_tests {
     #[test]
     fn test_should_reject_invalid_or_unavailable_shell_navigation() {
         assert_eq!(
-            shell_navigation_response(b"not-json", |_| true),
+            shell_navigation_response(b"not-json", |_| true, |_, _| true),
             ShellNavigationResponse::Rejected {
                 reason: ShellNavigationRejection::InvalidRequest,
             }
@@ -1966,10 +2102,53 @@ mod navigation_tests {
         })
         .expect("navigation request should encode");
         assert_eq!(
-            shell_navigation_response(&payload, |_| false),
+            shell_navigation_response(&payload, |_| false, |_, _| true),
             ShellNavigationResponse::Rejected {
                 reason: ShellNavigationRejection::Unavailable,
             }
+        );
+    }
+
+    #[test]
+    fn test_should_return_world_management_context_to_host_scope() {
+        let world = ShellManagementContext {
+            revision: 7,
+            scope_id: String::from("world:018f8f4e-6fd0-7ac1-a7bd-ef27b34c389a"),
+            label: String::from("Alice"),
+            world_id: Some(String::from("018f8f4e-6fd0-7ac1-a7bd-ef27b34c389a")),
+        };
+        let host =
+            next_management_context(&world, String::from("host"), String::from("Manage"), None)
+                .expect("management revision should advance");
+        assert_eq!(host.revision, 8);
+        assert_eq!(host.scope_id, "host");
+        assert_eq!(host.label, "Manage");
+        assert_eq!(host.world_id, None);
+    }
+
+    #[test]
+    fn test_should_translate_world_management_navigation() {
+        let payload = encode_request(&ShellNavigationRequest::OpenWorldManagement {
+            world_id: String::from("018f8f4e-6fd0-7ac1-a7bd-ef27b34c389a"),
+            label: String::from("Alice"),
+        })
+        .expect("management request should encode");
+        let mut requested = None;
+        let response = shell_navigation_response(
+            &payload,
+            |_| false,
+            |world_id, label| {
+                requested = Some((world_id.to_string(), label.to_string()));
+                true
+            },
+        );
+        assert_eq!(response, ShellNavigationResponse::Accepted);
+        assert_eq!(
+            requested,
+            Some((
+                String::from("018f8f4e-6fd0-7ac1-a7bd-ef27b34c389a"),
+                String::from("Alice"),
+            ))
         );
     }
 }

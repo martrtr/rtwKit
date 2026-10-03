@@ -180,8 +180,7 @@ where
             .target_world_id
             .as_ref()
             .filter(|target| worlds.iter().any(|world| &world.world_id == *target))
-            .cloned()
-            .or_else(|| worlds.first().map(|world| world.world_id.clone()));
+            .cloned();
         if self.state.worlds == worlds && self.state.target_world_id == target_world_id {
             return Ok(());
         }
@@ -197,17 +196,28 @@ where
     /// # Errors
     ///
     /// Returns [`CharacterLibraryError::UnknownWorldAction`] for a foreign identity.
-    pub fn select_world(&mut self, world_id: &str) -> Result<(), CharacterLibraryError> {
-        if !self
-            .state
-            .worlds
-            .iter()
-            .any(|world| world.world_id == world_id)
-        {
-            return Err(CharacterLibraryError::UnknownWorldAction);
+    pub fn select_world(&mut self, scope_id: &str) -> Result<(), CharacterLibraryError> {
+        let target_world_id = if scope_id == "host" {
+            None
+        } else {
+            let world_id = scope_id
+                .strip_prefix("world:")
+                .ok_or(CharacterLibraryError::UnknownWorldAction)?;
+            if !self
+                .state
+                .worlds
+                .iter()
+                .any(|world| world.world_id == world_id)
+            {
+                return Err(CharacterLibraryError::UnknownWorldAction);
+            }
+            Some(world_id.to_string())
+        };
+        if self.state.target_world_id == target_world_id {
+            return Ok(());
         }
         let revision = next_revision(self.state.revision)?;
-        self.state.target_world_id = Some(world_id.to_string());
+        self.state.target_world_id = target_world_id;
         self.state.revision = revision;
         Ok(())
     }

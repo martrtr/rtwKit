@@ -7,17 +7,18 @@ use rintawa_sdk::world::WorldId;
 use thiserror::Error;
 
 use crate::{
-    MAX_WORLD_CATALOG_ENTRIES, MAX_WORLD_DESCRIPTION_BYTES, MAX_WORLD_SESSION_DIAGNOSTIC_BYTES,
-    MAX_WORLD_TITLE_BYTES, WORLD_MANAGER_ACTION_CREATE, WORLD_MANAGER_ACTION_DELETE,
-    WORLD_MANAGER_ACTION_IMPORT_RESOURCE, WORLD_MANAGER_ACTION_OPEN, WORLD_MANAGER_ACTION_REFRESH,
-    WORLD_MANAGER_ACTION_RENAME, WORLD_MANAGER_ACTION_RENAME_DRAFT, WORLD_MANAGER_ACTION_SELECT,
-    WORLD_MANAGER_ACTION_SORT, WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_SURFACE_ID,
-    WorldCatalogEntry, WorldCreatorOption, WorldImportResourceRef, WorldManagerState,
-    WorldSessionGateway, WorldSessionGatewayError, WorldSessionRecord, WorldSortColumn,
-    WorldSortDirection,
+    MAX_WORLD_CATALOG_ENTRIES, MAX_WORLD_COVER_BYTES, MAX_WORLD_DESCRIPTION_BYTES,
+    MAX_WORLD_SESSION_DIAGNOSTIC_BYTES, MAX_WORLD_TITLE_BYTES, WORLD_MANAGER_ACTION_CREATE,
+    WORLD_MANAGER_ACTION_DELETE, WORLD_MANAGER_ACTION_EDIT, WORLD_MANAGER_ACTION_IMPORT_RESOURCE,
+    WORLD_MANAGER_ACTION_OPEN, WORLD_MANAGER_ACTION_REFRESH, WORLD_MANAGER_ACTION_RENAME,
+    WORLD_MANAGER_ACTION_SELECT, WORLD_MANAGER_ACTION_SORT, WORLD_MANAGER_ACTION_TOGGLE_ACTIVE,
+    WORLD_MANAGER_ACTION_TOGGLE_CREATE_MENU, WORLD_MANAGER_ACTION_UPDATE_COVER,
+    WORLD_MANAGER_ACTION_UPDATE_DESCRIPTION, WORLD_MANAGER_SURFACE_ID, WorldCatalogEntry,
+    WorldCreatorOption, WorldImportResourceRef, WorldManagerState, WorldSessionGateway,
+    WorldSessionGatewayError, WorldSessionRecord, WorldSortColumn, WorldSortDirection,
     ui::{
-        CATALOG_GRID_NODE, CREATE_NODE, REFRESH_NODE, RENAME_INPUT_NODE, RENAME_SAVE_NODE,
-        creator_import_node_id,
+        CATALOG_GRID_NODE, COVER_PICKER_NODE, CREATE_NODE, DESCRIPTION_INPUT_NODE, EDIT_NODE,
+        IMPORT_WORLD_NODE, REFRESH_NODE, RENAME_INPUT_NODE,
     },
     world_delete_node_id, world_open_node_id, world_toggle_node_id,
 };
@@ -72,6 +73,12 @@ pub enum WorldManagerError {
     /// The host accepted metadata update but returned a malformed or mismatched summary.
     #[error("world metadata was updated but the returned world summary is invalid")]
     MetadataAcceptedButInvalidSummary,
+    /// Selected resource does not match any installed World creator provider.
+    #[error("no installed World creator accepts the selected resource")]
+    UnsupportedImportResource,
+    /// More than one creator claims the same selected resource and routing is ambiguous.
+    #[error("selected resource matches more than one World creator")]
+    AmbiguousImportResource,
     /// Action identity is unknown to this package version.
     #[error("unknown World Manager action `{0}`")]
     UnknownAction(String),
@@ -96,6 +103,13 @@ pub enum WorldManagerActionOutcome {
     None,
     /// Bring this World into the caller's foreground presentation session.
     OpenWorld(WorldId),
+    /// Open the shared management workspace in this World's scope.
+    OpenManagement {
+        /// Canonical World identity selected by the launcher.
+        world_id: WorldId,
+        /// Human-facing title used by shell chrome.
+        label: String,
+    },
     /// Route one ephemeral user-selected resource to an exact creator provider.
     ImportWorld {
         /// Session-local creator provider key.
@@ -153,18 +167,14 @@ where
             .selected_world_id
             .filter(|selected| worlds.iter().any(|world| world.world_id == *selected))
             .or_else(|| worlds.first().map(|world| world.world_id));
-        let rename_draft = selected_world_id
-            .and_then(|selected| worlds.iter().find(|world| world.world_id == selected))
-            .map(|world| world.title.clone())
-            .unwrap_or_default();
         self.state = WorldManagerState {
             worlds,
             selected_world_id,
-            rename_draft,
             sort_column: self.state.sort_column,
             sort_direction: self.state.sort_direction,
             creators: self.state.creators.clone(),
             import_status: self.state.import_status.clone(),
+            create_menu_open: self.state.create_menu_open,
             revision,
         };
         Ok(())
@@ -204,19 +214,14 @@ where
             self.state.sort_column,
             self.state.sort_direction,
         );
-        let rename_draft = worlds
-            .iter()
-            .find(|world| world.world_id == world_id)
-            .map(|world| world.title.clone())
-            .unwrap_or_default();
         self.state = WorldManagerState {
             worlds,
             selected_world_id: Some(world_id),
-            rename_draft,
             sort_column: self.state.sort_column,
             sort_direction: self.state.sort_direction,
             creators: self.state.creators.clone(),
             import_status: self.state.import_status.clone(),
+            create_menu_open: self.state.create_menu_open,
             revision,
         };
         Ok(world_id)
@@ -253,11 +258,11 @@ where
         self.state = WorldManagerState {
             worlds,
             selected_world_id: self.state.selected_world_id,
-            rename_draft: self.state.rename_draft.clone(),
             sort_column: self.state.sort_column,
             sort_direction: self.state.sort_direction,
             creators: self.state.creators.clone(),
             import_status: self.state.import_status.clone(),
+            create_menu_open: self.state.create_menu_open,
             revision,
         };
         Ok(())
@@ -275,10 +280,17 @@ where
         if self.state.creators == creators && self.state.import_status.is_none() {
             return Ok(());
         }
-        let revision = next_revision(self.state.revision)?;
+        let visible_change = self.state.create_menu_open;
+        let revision = if visible_change {
+            Some(next_revision(self.state.revision)?)
+        } else {
+            None
+        };
         self.state.creators = creators;
         self.state.import_status = None;
-        self.state.revision = revision;
+        if let Some(revision) = revision {
+            self.state.revision = revision;
+        }
         Ok(())
     }
 
@@ -311,49 +323,59 @@ where
         {
             return Err(WorldManagerError::UnknownWorldAction);
         }
-        let title = self
-            .state
-            .worlds
-            .iter()
-            .find(|world| world.world_id == world_id)
-            .map(|world| world.title.clone())
-            .ok_or(WorldManagerError::UnknownWorldAction)?;
         self.state.selected_world_id = Some(world_id);
-        self.state.rename_draft = title;
         self.state.revision = next_revision(self.state.revision)?;
         Ok(())
     }
 
-    /// Changes catalog ordering from one validated data-grid column key.
-    ///
-    /// Selecting the active column toggles direction; selecting another column resets to ascending.
-    pub fn sort_by(&mut self, column: WorldSortColumn) -> WorldManagerResult<()> {
+    /// Opens or closes the single owner-rendered Create World menu.
+    pub fn toggle_create_menu(&mut self) -> WorldManagerResult<()> {
         let revision = next_revision(self.state.revision)?;
-        let direction = if self.state.sort_column == column {
-            self.state.sort_direction.toggled()
-        } else {
-            WorldSortDirection::Ascending
-        };
-        self.state.sort_column = column;
-        self.state.sort_direction = direction;
-        sort_worlds(&mut self.state.worlds, column, direction);
+        self.state.create_menu_open = !self.state.create_menu_open;
         self.state.revision = revision;
         Ok(())
     }
 
-    /// Updates the launcher-local title draft without mutating host metadata.
-    pub fn update_rename_draft(&mut self, title: String) -> WorldManagerResult<()> {
-        if title.len() > MAX_WORLD_TITLE_BYTES {
-            return Err(WorldManagerError::InvalidTitle);
+    /// Persists the selected World's optional human-facing description.
+    pub fn update_selected_description(&mut self, description: String) -> WorldManagerResult<()> {
+        if description.len() > MAX_WORLD_DESCRIPTION_BYTES {
+            return Err(WorldManagerError::InvalidDescription);
         }
-        self.state.rename_draft = title;
-        self.state.revision = next_revision(self.state.revision)?;
-        Ok(())
+        let normalized = (!description.trim().is_empty()).then_some(description);
+        self.replace_selected_metadata(None, Some(normalized), None)
     }
 
-    /// Persists a new title for the selected World and applies the authoritative summary.
-    pub fn rename_selected_world(&mut self, title: String) -> WorldManagerResult<()> {
-        let title = validate_title(&title)?.to_string();
+    /// Persists a trusted immutable image selected through the UI Layer as the cover.
+    pub fn update_selected_cover(
+        &mut self,
+        cover: rintawa_sdk::ui::UiActionAssetRef,
+    ) -> WorldManagerResult<()> {
+        if cover.size == 0
+            || cover.size > MAX_WORLD_COVER_BYTES
+            || !matches!(
+                cover.media_type.as_str(),
+                "image/png" | "image/jpeg" | "image/webp"
+            )
+        {
+            return Err(WorldManagerError::InvalidActionPayload);
+        }
+        self.replace_selected_metadata(
+            None,
+            None,
+            Some(Some(crate::WorldCatalogAssetRef {
+                digest: cover.digest,
+                size: cover.size,
+                media_type: cover.media_type,
+            })),
+        )
+    }
+
+    fn replace_selected_metadata(
+        &mut self,
+        title: Option<String>,
+        description: Option<Option<String>>,
+        cover: Option<Option<crate::WorldCatalogAssetRef>>,
+    ) -> WorldManagerResult<()> {
         let world_id = self
             .state
             .selected_world_id
@@ -364,12 +386,15 @@ where
             .iter()
             .find(|world| world.world_id == world_id)
             .ok_or(WorldManagerError::UnknownWorldAction)?;
+        let title = title.unwrap_or_else(|| current.title.clone());
+        let description = description.unwrap_or_else(|| current.description.clone());
+        let cover = cover.unwrap_or_else(|| current.cover.clone());
         let revision = next_revision(self.state.revision)?;
         let returned = self.gateway.set_metadata(
             &world_id.to_string(),
             &title,
-            current.description.as_deref(),
-            current.cover.clone(),
+            description.as_deref(),
+            cover,
         )?;
         let entry = validate_record(returned)
             .map_err(|_| WorldManagerError::MetadataAcceptedButInvalidSummary)?;
@@ -390,14 +415,37 @@ where
         self.state = WorldManagerState {
             worlds,
             selected_world_id: Some(world_id),
-            rename_draft: title,
             sort_column: self.state.sort_column,
             sort_direction: self.state.sort_direction,
             creators: self.state.creators.clone(),
             import_status: self.state.import_status.clone(),
+            create_menu_open: self.state.create_menu_open,
             revision,
         };
         Ok(())
+    }
+
+    /// Changes catalog ordering from one validated data-grid column key.
+    ///
+    /// Selecting the active column toggles direction; selecting another column resets to ascending.
+    pub fn sort_by(&mut self, column: WorldSortColumn) -> WorldManagerResult<()> {
+        let revision = next_revision(self.state.revision)?;
+        let direction = if self.state.sort_column == column {
+            self.state.sort_direction.toggled()
+        } else {
+            WorldSortDirection::Ascending
+        };
+        self.state.sort_column = column;
+        self.state.sort_direction = direction;
+        sort_worlds(&mut self.state.worlds, column, direction);
+        self.state.revision = revision;
+        Ok(())
+    }
+
+    /// Persists a new title for the selected World and applies the authoritative summary.
+    pub fn rename_selected_world(&mut self, title: String) -> WorldManagerResult<()> {
+        let title = validate_title(&title)?.to_string();
+        self.replace_selected_metadata(Some(title), None, None)
     }
 
     /// Deletes the selected stopped World and moves selection to a deterministic fallback.
@@ -427,18 +475,14 @@ where
                 .get(index.min(worlds.len() - 1))
                 .map(|world| world.world_id)
         };
-        let rename_draft = selected_world_id
-            .and_then(|selected| worlds.iter().find(|world| world.world_id == selected))
-            .map(|world| world.title.clone())
-            .unwrap_or_default();
         self.state = WorldManagerState {
             worlds,
             selected_world_id,
-            rename_draft,
             sort_column: self.state.sort_column,
             sort_direction: self.state.sort_direction,
             creators: self.state.creators.clone(),
             import_status: self.state.import_status.clone(),
+            create_menu_open: self.state.create_menu_open,
             revision,
         };
         Ok(())
@@ -472,15 +516,13 @@ where
         }
         match event.action_id.as_str() {
             WORLD_MANAGER_ACTION_IMPORT_RESOURCE => {
+                if event.node_id.as_str() != IMPORT_WORLD_NODE || !self.state.create_menu_open {
+                    return Err(WorldManagerError::WrongActionNode);
+                }
                 let UiActionPayload::Resource(reference) = &event.payload else {
                     return Err(WorldManagerError::InvalidActionPayload);
                 };
-                let creator = self
-                    .state
-                    .creators
-                    .iter()
-                    .find(|creator| creator_import_node_id(&creator.key) == event.node_id)
-                    .ok_or(WorldManagerError::WrongActionNode)?;
+                let creator = select_creator_for_resource(&self.state.creators, reference)?;
                 if reference.size == 0 || reference.size > creator.max_bytes {
                     return Err(WorldManagerError::InvalidActionPayload);
                 }
@@ -500,6 +542,14 @@ where
                     return Err(WorldManagerError::WrongActionNode);
                 }
                 self.refresh()?;
+                Ok(WorldManagerActionOutcome::None)
+            }
+            WORLD_MANAGER_ACTION_TOGGLE_CREATE_MENU => {
+                require_no_payload(event)?;
+                if event.node_id.as_str() != CREATE_NODE {
+                    return Err(WorldManagerError::WrongActionNode);
+                }
+                self.toggle_create_menu()?;
                 Ok(WorldManagerActionOutcome::None)
             }
             WORLD_MANAGER_ACTION_CREATE => {
@@ -539,32 +589,49 @@ where
                 self.sort_by(column)?;
                 Ok(WorldManagerActionOutcome::None)
             }
-            WORLD_MANAGER_ACTION_RENAME_DRAFT => {
+            WORLD_MANAGER_ACTION_RENAME => {
                 if event.node_id.as_str() != RENAME_INPUT_NODE {
                     return Err(WorldManagerError::WrongActionNode);
                 }
                 let UiActionPayload::Text(title) = &event.payload else {
                     return Err(WorldManagerError::InvalidActionPayload);
                 };
-                self.update_rename_draft(title.clone())?;
+                self.rename_selected_world(title.clone())?;
                 Ok(WorldManagerActionOutcome::None)
             }
-            WORLD_MANAGER_ACTION_RENAME => {
-                let title = match event.node_id.as_str() {
-                    RENAME_INPUT_NODE => {
-                        let UiActionPayload::Text(title) = &event.payload else {
-                            return Err(WorldManagerError::InvalidActionPayload);
-                        };
-                        title.clone()
-                    }
-                    RENAME_SAVE_NODE => {
-                        require_no_payload(event)?;
-                        self.state.rename_draft.clone()
-                    }
-                    _ => return Err(WorldManagerError::WrongActionNode),
+            WORLD_MANAGER_ACTION_UPDATE_DESCRIPTION => {
+                if event.node_id.as_str() != DESCRIPTION_INPUT_NODE {
+                    return Err(WorldManagerError::WrongActionNode);
+                }
+                let UiActionPayload::Text(description) = &event.payload else {
+                    return Err(WorldManagerError::InvalidActionPayload);
                 };
-                self.rename_selected_world(title)?;
+                self.update_selected_description(description.clone())?;
                 Ok(WorldManagerActionOutcome::None)
+            }
+            WORLD_MANAGER_ACTION_UPDATE_COVER => {
+                if event.node_id.as_str() != COVER_PICKER_NODE {
+                    return Err(WorldManagerError::WrongActionNode);
+                }
+                let UiActionPayload::Asset(cover) = &event.payload else {
+                    return Err(WorldManagerError::InvalidActionPayload);
+                };
+                self.update_selected_cover(cover.clone())?;
+                Ok(WorldManagerActionOutcome::None)
+            }
+            WORLD_MANAGER_ACTION_EDIT => {
+                require_no_payload(event)?;
+                if event.node_id.as_str() != EDIT_NODE {
+                    return Err(WorldManagerError::WrongActionNode);
+                }
+                let world = self
+                    .state
+                    .selected_world()
+                    .ok_or(WorldManagerError::UnknownWorldAction)?;
+                Ok(WorldManagerActionOutcome::OpenManagement {
+                    world_id: world.world_id,
+                    label: world.title.clone(),
+                })
             }
             WORLD_MANAGER_ACTION_DELETE => {
                 require_no_payload(event)?;
@@ -579,21 +646,36 @@ where
                 Ok(WorldManagerActionOutcome::None)
             }
             WORLD_MANAGER_ACTION_OPEN => {
-                require_no_payload(event)?;
+                let world_id = if event.node_id.as_str() == CATALOG_GRID_NODE {
+                    let UiActionPayload::Text(world_id) = &event.payload else {
+                        return Err(WorldManagerError::InvalidActionPayload);
+                    };
+                    world_id
+                        .parse::<WorldId>()
+                        .map_err(|_| WorldManagerError::InvalidActionPayload)?
+                } else {
+                    require_no_payload(event)?;
+                    self.state
+                        .worlds
+                        .iter()
+                        .find(|world| {
+                            self.state.selected_world_id == Some(world.world_id)
+                                && world_open_node_id(world.world_id) == event.node_id
+                        })
+                        .map(|world| world.world_id)
+                        .ok_or(WorldManagerError::UnknownWorldAction)?
+                };
                 let world = self
                     .state
                     .worlds
                     .iter()
-                    .find(|world| {
-                        self.state.selected_world_id == Some(world.world_id)
-                            && world_open_node_id(world.world_id) == event.node_id
-                    })
+                    .find(|world| world.world_id == world_id)
                     .ok_or(WorldManagerError::UnknownWorldAction)?;
                 if world.pending_active == Some(false) {
                     return Err(WorldManagerError::LifecyclePending);
                 }
-                let world_id = world.world_id;
                 let should_start = !world.active && world.pending_active.is_none();
+                self.state.selected_world_id = Some(world_id);
                 if should_start {
                     self.request_active(world_id, true)?;
                 } else {
@@ -738,6 +820,42 @@ fn validate_title(title: &str) -> WorldManagerResult<&str> {
         return Err(WorldManagerError::InvalidTitle);
     }
     Ok(title)
+}
+
+fn select_creator_for_resource<'a>(
+    creators: &'a [WorldCreatorOption],
+    reference: &rintawa_sdk::ui::UiActionUserResourceRef,
+) -> WorldManagerResult<&'a WorldCreatorOption> {
+    let normalized_name = reference.name.as_deref().map(str::to_ascii_lowercase);
+    let extension_matches = creators
+        .iter()
+        .filter(|creator| {
+            normalized_name.as_deref().is_some_and(|name| {
+                creator
+                    .accepted_extensions
+                    .iter()
+                    .any(|extension| name.ends_with(extension))
+            })
+        })
+        .collect::<Vec<_>>();
+    let matches = if extension_matches.is_empty() {
+        creators
+            .iter()
+            .filter(|creator| {
+                creator
+                    .accepted_media_types
+                    .iter()
+                    .any(|media_type| media_type == &reference.media_type)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        extension_matches
+    };
+    match matches.as_slice() {
+        [creator] => Ok(*creator),
+        [] => Err(WorldManagerError::UnsupportedImportResource),
+        _ => Err(WorldManagerError::AmbiguousImportResource),
+    }
 }
 
 fn require_no_payload(event: &UiActionEvent) -> WorldManagerResult<()> {

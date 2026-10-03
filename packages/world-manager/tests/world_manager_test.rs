@@ -4,21 +4,23 @@ use rintawa_sdk::{
     contracts::ComponentRef,
     types::{ExtensionInstanceId, RuntimeScopeId},
     ui::{
-        UiActionEvent, UiActionId, UiActionPayload, UiActionUserResourceRef, UiNodeId, UiNodeKind,
-        UiSplitAxis, UiSurfaceId,
+        UiActionAssetRef, UiActionEvent, UiActionId, UiActionPayload, UiActionUserResourceRef,
+        UiLayerDescriptor, UiNodeId, UiNodeKind, UiPatch, UiPatchBatch, UiSplitAxis, UiSurfaceId,
     },
     world::WorldId,
 };
-use rintawa_ui_runtime::{OwnedUiSurfaceContribution, UiRuntime};
+use rintawa_ui_runtime::{OwnedUiLayerDescriptor, OwnedUiSurfaceContribution, UiRuntime};
 use rintawa_world_manager::{
     MAX_WORLD_CATALOG_ENTRIES, MAX_WORLD_DESCRIPTION_BYTES, WORLD_MANAGER_ACTION_CREATE,
-    WORLD_MANAGER_ACTION_DELETE, WORLD_MANAGER_ACTION_IMPORT_RESOURCE, WORLD_MANAGER_ACTION_OPEN,
-    WORLD_MANAGER_ACTION_RENAME, WORLD_MANAGER_ACTION_RENAME_DRAFT, WORLD_MANAGER_ACTION_SELECT,
-    WORLD_MANAGER_ACTION_SORT, WORLD_MANAGER_ACTION_TOGGLE_ACTIVE, WORLD_MANAGER_SURFACE_ID,
-    WorldCatalogAssetRef, WorldCreatorOption, WorldManagerActionOutcome, WorldManagerController,
-    WorldManagerError, WorldSessionGateway, WorldSessionGatewayError, WorldSessionRecord,
-    build_world_manager_snapshot, creator_import_node_id, world_delete_node_id,
-    world_manager_surface_contribution, world_open_node_id, world_toggle_node_id,
+    WORLD_MANAGER_ACTION_DELETE, WORLD_MANAGER_ACTION_EDIT, WORLD_MANAGER_ACTION_IMPORT_RESOURCE,
+    WORLD_MANAGER_ACTION_OPEN, WORLD_MANAGER_ACTION_RENAME, WORLD_MANAGER_ACTION_SELECT,
+    WORLD_MANAGER_ACTION_SORT, WORLD_MANAGER_ACTION_TOGGLE_ACTIVE,
+    WORLD_MANAGER_ACTION_TOGGLE_CREATE_MENU, WORLD_MANAGER_ACTION_UPDATE_COVER,
+    WORLD_MANAGER_ACTION_UPDATE_DESCRIPTION, WORLD_MANAGER_SURFACE_ID, WorldCatalogAssetRef,
+    WorldCreatorOption, WorldManagerActionOutcome, WorldManagerController, WorldManagerError,
+    WorldSessionGateway, WorldSessionGatewayError, WorldSessionRecord,
+    build_world_manager_snapshot, world_delete_node_id, world_manager_surface_contribution,
+    world_open_node_id, world_toggle_node_id,
 };
 
 #[derive(Default)]
@@ -204,7 +206,7 @@ fn test_should_normalize_catalog_and_mount_valid_portable_ui_snapshot() -> anyho
     );
     assert_eq!(
         grid.row_action.as_ref().map(UiActionId::as_str),
-        Some(WORLD_MANAGER_ACTION_SELECT)
+        Some(WORLD_MANAGER_ACTION_OPEN)
     );
     let workspace = snapshot
         .nodes
@@ -218,17 +220,30 @@ fn test_should_normalize_catalog_and_mount_valid_portable_ui_snapshot() -> anyho
     assert_eq!(workspace.weights, vec![100, 27]);
     let selected_world = controller.state().selected_world().expect("selected world");
     let delete_node = world_delete_node_id(selected_world.world_id);
-    let delete = snapshot
+    assert!(
+        snapshot.nodes.iter().all(|node| node.id != delete_node),
+        "destructive lifecycle actions belong outside the launcher inspector"
+    );
+    let inspector = snapshot
         .nodes
         .iter()
-        .find(|node| node.id == delete_node)
-        .expect("selected world should expose delete action");
-    let UiNodeKind::Button(delete) = &delete.kind else {
-        panic!("delete action must render as a button");
+        .find(|node| node.id.as_str() == "selection.inspector")
+        .expect("selected world should expose the compact inspector");
+    let UiNodeKind::Column(inspector) = &inspector.kind else {
+        panic!("world inspector must be a column");
     };
     assert_eq!(
-        delete.is_enabled,
-        !selected_world.active && selected_world.pending_active.is_none()
+        inspector
+            .children
+            .iter()
+            .map(UiNodeId::as_str)
+            .collect::<Vec<_>>(),
+        vec![
+            "selection.cover-control",
+            "selection.title-input",
+            "selection.description-input",
+            "selection.edit",
+        ]
     );
     let ui = UiRuntime::new();
     let instance_id = ExtensionInstanceId::new("world-manager");
@@ -293,6 +308,42 @@ fn test_should_create_and_queue_toggle_without_misreporting_deferred_state() -> 
     assert_eq!(
         controller.gateway().active_writes.as_slice(),
         &[(created.to_string(), true)]
+    );
+    Ok(())
+}
+
+#[test]
+fn test_should_open_world_directly_from_catalog_row_action() -> anyhow::Result<()> {
+    let first = WorldId::new();
+    let second = WorldId::new();
+    let gateway = RecordingGateway {
+        worlds: vec![record(first, false), record(second, false)],
+        ..RecordingGateway::default()
+    };
+    let mut controller = WorldManagerController::new(gateway);
+    controller.refresh()?;
+
+    let open = action(
+        controller.state().revision(),
+        UiNodeId::new("catalog.grid"),
+        WORLD_MANAGER_ACTION_OPEN,
+        UiActionPayload::Text(second.to_string()),
+    );
+    assert_eq!(
+        controller.handle_action(&open)?,
+        WorldManagerActionOutcome::OpenWorld(second)
+    );
+    assert_eq!(controller.state().selected_world_id(), Some(second));
+    assert_eq!(
+        controller.gateway().active_writes.as_slice(),
+        &[(second.to_string(), true)]
+    );
+    assert!(
+        controller
+            .state()
+            .worlds()
+            .iter()
+            .any(|world| { world.world_id == second && world.pending_active == Some(true) })
     );
     Ok(())
 }
@@ -429,7 +480,7 @@ fn test_should_fail_closed_for_stale_or_pending_actions() -> anyhow::Result<()> 
 }
 
 #[test]
-fn test_should_edit_and_persist_selected_world_title() -> anyhow::Result<()> {
+fn test_should_edit_and_persist_selected_world_metadata() -> anyhow::Result<()> {
     let world_id = WorldId::new();
     let mut initial = record(world_id, false);
     initial.title = String::from("Old Name");
@@ -440,64 +491,54 @@ fn test_should_edit_and_persist_selected_world_title() -> anyhow::Result<()> {
     let mut controller = WorldManagerController::new(gateway);
     controller.refresh()?;
 
-    let draft = action(
+    controller.handle_action(&action(
         controller.state().revision(),
-        UiNodeId::new("selection.rename-input"),
-        WORLD_MANAGER_ACTION_RENAME_DRAFT,
+        UiNodeId::new("selection.title-input"),
+        WORLD_MANAGER_ACTION_RENAME,
         UiActionPayload::Text(String::from("New Name")),
-    );
-    controller.handle_action(&draft)?;
-    assert_eq!(controller.state().rename_draft(), "New Name");
-
-    let rename = action(
+    ))?;
+    controller.handle_action(&action(
         controller.state().revision(),
-        UiNodeId::new("selection.rename-save"),
-        WORLD_MANAGER_ACTION_RENAME,
-        UiActionPayload::None,
-    );
-    controller.handle_action(&rename)?;
+        UiNodeId::new("selection.description-input"),
+        WORLD_MANAGER_ACTION_UPDATE_DESCRIPTION,
+        UiActionPayload::Text(String::from("A persistent story World")),
+    ))?;
+    controller.handle_action(&action(
+        controller.state().revision(),
+        UiNodeId::new("selection.cover-picker"),
+        WORLD_MANAGER_ACTION_UPDATE_COVER,
+        UiActionPayload::Asset(UiActionAssetRef {
+            digest: format!("sha256:{}", "a".repeat(64)),
+            size: 1024,
+            media_type: String::from("image/png"),
+            name: Some(String::from("cover.png")),
+        }),
+    ))?;
+    let selected = controller.state().selected_world().unwrap();
+    assert_eq!(selected.title, "New Name");
     assert_eq!(
-        controller.state().selected_world().unwrap().title,
-        "New Name"
-    );
-    assert_eq!(
-        controller.gateway().metadata_writes,
-        vec![(world_id.to_string(), String::from("New Name"), None)]
-    );
-    Ok(())
-}
-
-#[test]
-fn test_should_allow_empty_rename_draft_but_reject_empty_commit() -> anyhow::Result<()> {
-    let world_id = WorldId::new();
-    let gateway = RecordingGateway {
-        worlds: vec![record(world_id, false)],
-        ..RecordingGateway::default()
-    };
-    let mut controller = WorldManagerController::new(gateway);
-    controller.refresh()?;
-
-    let draft = action(
-        controller.state().revision(),
-        UiNodeId::new("selection.rename-input"),
-        WORLD_MANAGER_ACTION_RENAME_DRAFT,
-        UiActionPayload::Text(String::new()),
-    );
-    controller.handle_action(&draft)?;
-    assert_eq!(controller.state().rename_draft(), "");
-    assert!(controller.gateway().metadata_writes.is_empty());
-
-    let save = action(
-        controller.state().revision(),
-        UiNodeId::new("selection.rename-save"),
-        WORLD_MANAGER_ACTION_RENAME,
-        UiActionPayload::None,
+        selected.description.as_deref(),
+        Some("A persistent story World")
     );
     assert_eq!(
-        controller.handle_action(&save),
-        Err(WorldManagerError::InvalidTitle)
+        selected
+            .cover
+            .as_ref()
+            .map(|cover| cover.media_type.as_str()),
+        Some("image/png")
     );
-    assert!(controller.gateway().metadata_writes.is_empty());
+    assert_eq!(
+        controller.handle_action(&action(
+            controller.state().revision(),
+            UiNodeId::new("selection.edit"),
+            WORLD_MANAGER_ACTION_EDIT,
+            UiActionPayload::None,
+        ))?,
+        WorldManagerActionOutcome::OpenManagement {
+            world_id,
+            label: String::from("New Name"),
+        }
+    );
     Ok(())
 }
 
@@ -512,7 +553,7 @@ fn test_should_reject_blank_rename_before_host_mutation() -> anyhow::Result<()> 
     controller.refresh()?;
     let rename = action(
         controller.state().revision(),
-        UiNodeId::new("selection.rename-input"),
+        UiNodeId::new("selection.title-input"),
         WORLD_MANAGER_ACTION_RENAME,
         UiActionPayload::Text(String::from("   ")),
     );
@@ -830,7 +871,7 @@ fn test_should_reconcile_identical_creator_discovery_without_advancing_revision(
     controller.refresh()?;
     let creators = vec![WorldCreatorOption {
         key: String::from("provider-0"),
-        label: String::from("Import Character"),
+        label: String::from("Tavern character card"),
         description: String::from("Tavern V2/V3"),
         accepted_media_types: vec![String::from("application/json")],
         accepted_extensions: vec![String::from(".json")],
@@ -845,20 +886,58 @@ fn test_should_reconcile_identical_creator_discovery_without_advancing_revision(
 }
 
 #[test]
+fn test_should_not_invalidate_closed_create_menu_when_creator_discovery_changes()
+-> anyhow::Result<()> {
+    let mut controller = WorldManagerController::new(RecordingGateway::default());
+    controller.refresh()?;
+    let visible_revision = controller.state().revision();
+    let creators = vec![WorldCreatorOption {
+        key: String::from("provider-0"),
+        label: String::from("Tavern character card"),
+        description: String::from("Tavern V2/V3"),
+        accepted_media_types: vec![String::from("application/json")],
+        accepted_extensions: vec![String::from(".json")],
+        max_bytes: 8 * 1024 * 1024,
+        icon_slot: Some(String::from("world.import.character")),
+    }];
+    controller.replace_creators(creators.clone())?;
+    assert_eq!(controller.state().revision(), visible_revision);
+    controller.handle_action(&action(
+        visible_revision,
+        UiNodeId::new("toolbar.create"),
+        WORLD_MANAGER_ACTION_TOGGLE_CREATE_MENU,
+        UiActionPayload::None,
+    ))?;
+    let open_revision = controller.state().revision();
+    let mut changed = creators;
+    changed[0].accepted_extensions.push(String::from(".png"));
+    controller.replace_creators(changed)?;
+    assert!(controller.state().revision() > open_revision);
+    Ok(())
+}
+
+#[test]
 fn test_should_route_exact_resource_to_discovered_creator_and_reject_spoofed_picker()
 -> anyhow::Result<()> {
     let mut controller = WorldManagerController::new(RecordingGateway::default());
     controller.refresh()?;
     controller.replace_creators(vec![WorldCreatorOption {
         key: String::from("provider-0"),
-        label: String::from("Import Character"),
+        label: String::from("Tavern character card"),
         description: String::from("Tavern V2/V3"),
         accepted_media_types: vec![String::from("application/json"), String::from("image/png")],
         accepted_extensions: vec![String::from(".json"), String::from(".png")],
         max_bytes: 8 * 1024 * 1024,
         icon_slot: Some(String::from("world.import.character")),
     }])?;
-    let picker = creator_import_node_id("provider-0");
+    let picker = UiNodeId::new("create-menu.import-world");
+    let closed_snapshot = build_world_manager_snapshot(controller.state());
+    controller.handle_action(&action(
+        controller.state().revision(),
+        UiNodeId::new("toolbar.create"),
+        WORLD_MANAGER_ACTION_TOGGLE_CREATE_MENU,
+        UiActionPayload::None,
+    ))?;
     let reference = UiActionUserResourceRef {
         id: String::from("resource-1"),
         size: 4096,
@@ -905,22 +984,65 @@ fn test_should_route_exact_resource_to_discovered_creator_and_reject_spoofed_pic
         })
     );
     assert!(!snapshot.nodes.iter().any(|node| {
-        matches!(&node.kind, UiNodeKind::Button(button) if button.label == "Blank World")
+        matches!(&node.kind, UiNodeKind::Button(button) if button.label == "Import Character")
     }));
 
     let ui = UiRuntime::new();
     let instance_id = ExtensionInstanceId::new("world-manager-creator");
     let owner = ComponentRef::new(instance_id.clone(), "ui");
+    let contribution = world_manager_surface_contribution();
+    let layer_instance = ExtensionInstanceId::new("web-layer");
+    let layer_owner = ComponentRef::new(layer_instance.clone(), "ui");
     ui.register_instance(
         instance_id.clone(),
         RuntimeScopeId::new("host"),
         vec![OwnedUiSurfaceContribution {
             owner: owner.clone(),
-            contribution: world_manager_surface_contribution(),
+            contribution: contribution.clone(),
         }],
         Vec::new(),
     )?;
+    ui.register_instance(
+        layer_instance.clone(),
+        RuntimeScopeId::new("host"),
+        Vec::new(),
+        vec![OwnedUiLayerDescriptor {
+            owner: layer_owner.clone(),
+            descriptor: UiLayerDescriptor::new(contribution.required_capabilities.clone()),
+        }],
+    )?;
+    ui.set_instance_active(&layer_instance, true)?;
+    ui.attach_registered_layer(layer_owner)?;
     ui.set_instance_active(&instance_id, true)?;
-    ui.mount_surface(&owner, snapshot)?;
+    ui.mount_surface(&owner, closed_snapshot.clone())?;
+    let open_ids = snapshot
+        .nodes
+        .iter()
+        .map(|node| node.id.as_str().to_string())
+        .collect::<std::collections::HashSet<_>>();
+    let mut patches = snapshot
+        .nodes
+        .iter()
+        .cloned()
+        .map(|node| UiPatch::UpsertNode { node })
+        .collect::<Vec<_>>();
+    patches.extend(
+        closed_snapshot
+            .nodes
+            .iter()
+            .filter(|node| !open_ids.contains(node.id.as_str()))
+            .map(|node| UiPatch::RemoveNode {
+                node_id: node.id.clone(),
+            }),
+    );
+    ui.apply_patches(
+        &owner,
+        UiPatchBatch {
+            surface_id: snapshot.surface_id.clone(),
+            base_revision: closed_snapshot.revision,
+            next_revision: snapshot.revision,
+            patches,
+        },
+    )?;
     Ok(())
 }

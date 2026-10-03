@@ -187,6 +187,28 @@ pub fn build_chat_snapshot(
     }
     root_children.push(BODY_NODE.into());
 
+    let mut title_children = vec![TITLE_NODE.into()];
+    let show_header_meta = !has_participants || visible_status.is_some();
+    if show_header_meta {
+        title_children.push(HEADER_META_NODE.into());
+    }
+    let title_node = if has_participants && visible_status.is_none() {
+        button_node(
+            TITLE_NODE,
+            title,
+            CHAT_ACTION_TOGGLE_PARTICIPANTS,
+            true,
+            UiButtonAppearance::Subtle,
+        )
+        .with_trait("page-title")
+        .with_trait("chat-title")
+        .with_trait("chat-title-button")
+    } else {
+        text_node(TITLE_NODE, title)
+            .with_trait("page-title")
+            .with_trait("chat-title")
+    };
+
     nodes.extend([
         UiNode::new(
             ROOT_NODE,
@@ -207,28 +229,11 @@ pub fn build_chat_snapshot(
         UiNode::new(
             TITLE_GROUP_NODE,
             UiNodeKind::Row(UiContainerNode {
-                children: vec![TITLE_NODE.into(), HEADER_META_NODE.into()],
+                children: title_children,
             }),
         )
         .with_trait("chat-title-group"),
-        text_node(TITLE_NODE, title)
-            .with_trait("page-title")
-            .with_trait("chat-title"),
-        if has_participants && visible_status.is_none() {
-            button_node(
-                HEADER_META_NODE,
-                meta,
-                CHAT_ACTION_TOGGLE_PARTICIPANTS,
-                true,
-                UiButtonAppearance::Subtle,
-            )
-            .with_trait("chat-header-meta")
-            .with_trait("chat-participants-toggle")
-        } else {
-            text_node(HEADER_META_NODE, meta)
-                .with_trait("muted")
-                .with_trait("chat-header-meta")
-        },
+        title_node,
         UiNode::new(
             HEADER_ACTIONS_NODE,
             UiNodeKind::Row(UiContainerNode {
@@ -238,6 +243,13 @@ pub fn build_chat_snapshot(
         .with_trait("chat-header-actions")
         .with_trait("command-set"),
     ]);
+    if show_header_meta {
+        nodes.push(
+            text_node(HEADER_META_NODE, meta)
+                .with_trait("muted")
+                .with_trait("chat-header-meta"),
+        );
+    }
 
     if show_cast && let Some(view) = view {
         append_cast(&mut nodes, view);
@@ -904,6 +916,7 @@ fn content_node(id: UiNodeId, block: &ContentBlock) -> UiNode {
             )
             .with_trait("chat-image")
             .with_trait("chat-attachment")
+            .with_trait("eager-media")
         }
         ContentBlock::ImageRef { alt, .. } => text_node(
             id,

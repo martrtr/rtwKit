@@ -39,6 +39,7 @@
       "web.chat.max-width": "64rem",
       "web.chat.avatar-size": "3rem",
       "web.chat.composer-min-height": "3.25rem",
+      "web.chat.image-fallback-ratio": "4 / 3",
       "web.chat.message-max-width": "64rem",
       "web.chat.message-background": "transparent",
       "web.chat.message-local-background": "color-mix(in srgb, var(--rintawa-ui-color-accent) 3%, transparent)",

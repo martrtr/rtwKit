@@ -373,7 +373,7 @@ fn test_should_namespace_managed_install_metadata_by_composition_scope() {
 }
 
 #[test]
-fn test_should_render_explicit_host_and_world_extension_scope_selector() {
+fn test_should_render_shell_owned_management_context_sink() {
     let state = ManagerState {
         management_scopes: vec![
             ManagementScope::host(),
@@ -394,12 +394,21 @@ fn test_should_render_explicit_host_and_world_extension_scope_selector() {
             node.get("semantic")
                 .and_then(|semantic| semantic.get("id"))
                 .and_then(Value::as_str)
-                == Some("management.extensions.scope-selector")
+                == Some("rintawa.management.context")
         })
-        .expect("scope selector must be rendered");
-    let data = &selector["kind"]["data"];
+        .expect("management context sink must be rendered");
+    let kind = &selector["kind"];
+    assert_eq!(kind["type"], "text-input");
+    let data = &kind["data"];
     assert_eq!(data["value"], "world:alpha");
     assert_eq!(data["change_action"], "management.scope");
-    assert_eq!(data["options"][0]["label"], "Host");
-    assert_eq!(data["options"][1]["label"], "World · Alpha");
+    assert!(data.get("options").is_none());
+    assert_eq!(selector["traits"][0], "management-context-sink");
+    assert!(!rendered.nodes.iter().any(|node| {
+        node.get("kind")
+            .and_then(|kind| kind.get("data"))
+            .and_then(|data| data.get("text"))
+            .and_then(Value::as_str)
+            == Some("Configure extensions for")
+    }));
 }

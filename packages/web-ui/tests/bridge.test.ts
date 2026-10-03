@@ -22,6 +22,32 @@ describe("web UI bridge", () => {
     );
     expect(sameOriginWebSocketUrl("file:", "")).toBeNull();
   });
+  test("accepts shell-owned World management context", () => {
+    const message = parseHostMessage({
+      type: "state",
+      protocol_major: 1,
+      surfaces: [],
+      presentation: {
+        focused_world: null,
+        pending_world_id: null,
+        last_focus_error: null,
+        management_context: {
+          revision: 7,
+          scope_id: "world:018f8f4e-6fd0-7ac1-a7bd-ef27b34c389a",
+          label: "Alice",
+          world_id: "018f8f4e-6fd0-7ac1-a7bd-ef27b34c389a",
+        },
+      },
+    });
+    expect(message.type).toBe("state");
+    if (message.type === "state") {
+      expect(message.presentation.management_context.scope_id).toBe(
+        "world:018f8f4e-6fd0-7ac1-a7bd-ef27b34c389a",
+      );
+      expect(message.presentation.management_context.label).toBe("Alice");
+    }
+  });
+
   test("accepts exact decimal string revisions", () => {
     const message = parseHostMessage({
       type: "state",

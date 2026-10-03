@@ -27,7 +27,7 @@ use crate::{
 };
 
 const CREATOR_ID: &str = "tavern-character-card";
-const CREATOR_LABEL: &str = "Import Character";
+const CREATOR_LABEL: &str = "Tavern character card";
 const CREATOR_TASK_INTERVAL_MS: u32 = 50;
 const MAX_CREATOR_OPERATIONS: usize = 8;
 const MAX_CREATOR_POLLS: u16 = 600;

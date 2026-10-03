@@ -14,6 +14,8 @@ pub const MAX_WORLD_SESSION_DIAGNOSTIC_BYTES: usize = 2 * 1024;
 pub const MAX_WORLD_TITLE_BYTES: usize = 256;
 /// Maximum UTF-8 byte length accepted for an optional human-facing World description.
 pub const MAX_WORLD_DESCRIPTION_BYTES: usize = 4 * 1024;
+/// Maximum immutable cover image accepted from the standard World Manager picker.
+pub const MAX_WORLD_COVER_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Transport-neutral immutable asset reference attached to World catalog metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,11 +163,11 @@ pub struct WorldImportResourceRef {
 pub struct WorldManagerState {
     pub(crate) worlds: Vec<WorldCatalogEntry>,
     pub(crate) selected_world_id: Option<WorldId>,
-    pub(crate) rename_draft: String,
     pub(crate) sort_column: WorldSortColumn,
     pub(crate) sort_direction: WorldSortDirection,
     pub(crate) creators: Vec<WorldCreatorOption>,
     pub(crate) import_status: Option<String>,
+    pub(crate) create_menu_open: bool,
     pub(crate) revision: u64,
 }
 
@@ -186,11 +188,6 @@ impl WorldManagerState {
         self.worlds.iter().find(|world| world.world_id == selected)
     }
 
-    /// Returns the current launcher-local rename draft for the selected World.
-    pub fn rename_draft(&self) -> &str {
-        &self.rename_draft
-    }
-
     /// Returns the column currently owning catalog ordering.
     pub const fn sort_column(&self) -> WorldSortColumn {
         self.sort_column
@@ -209,6 +206,11 @@ impl WorldManagerState {
     /// Returns the latest bounded creator/import diagnostic, when any.
     pub fn import_status(&self) -> Option<&str> {
         self.import_status.as_deref()
+    }
+
+    /// Returns whether the unified Create World menu is currently open.
+    pub const fn create_menu_open(&self) -> bool {
+        self.create_menu_open
     }
 
     /// Returns the monotonic package presentation revision.

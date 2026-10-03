@@ -13,6 +13,7 @@ import {
 import {
   deriveActivities,
   deriveGlobalActivities,
+  managementContextAction,
 } from "../src/renderer/WorkbenchComposer";
 
 function surface(
@@ -225,6 +226,78 @@ describe("surface composer", () => {
     expect(markup).toContain(">Settings</button>");
   });
 
+
+  test("routes shell-owned Manage context through an option-free semantic sink", () => {
+    const extensions = surface("settings", "extensions", "management.extensions@1", {
+      instanceId: "rintawa.package-manager",
+      activity: {
+        id: "rintawa.management",
+        label: "Manage",
+        icon_slot: "activity.management",
+      },
+    });
+    extensions.snapshot.nodes = [
+      {
+        id: "management.context",
+        semantic: { id: "rintawa.management.context", version: 1 },
+        traits: ["management-context-sink"],
+        kind: {
+          type: "text-input",
+          data: {
+            value: "host",
+            placeholder: null,
+            change_action: "management.scope",
+            submit_action: null,
+            is_enabled: true,
+          },
+        },
+      },
+    ];
+
+    expect(managementContextAction(extensions, "world:new-world")).toEqual({
+      owner_instance_id: "rintawa.package-manager",
+      surface_id: "extensions",
+      node_id: "management.context",
+      action_id: "management.scope",
+      surface_revision: "1",
+      payload: { type: "text", value: "world:new-world" },
+    });
+    expect(managementContextAction(extensions, "host")).toBeNull();
+  });
+
+  test("renders compact World management header without section-local scope chrome", () => {
+    const manage = surface("settings", "extensions", "management.extensions@1", {
+      instanceId: "rintawa.package-manager",
+      activity: {
+        id: "rintawa.management",
+        label: "Manage",
+        icon_slot: "activity.management",
+      },
+    });
+    manage.contribution.traits = ["activity-section"];
+    const markup = renderToStaticMarkup(
+      <SurfaceComposer
+        surfaces={[manage]}
+        presentation={{
+          focused_world: null,
+          pending_world_id: null,
+          last_focus_error: null,
+          management_context: {
+            revision: 4,
+            scope_id: "world:world-a",
+            label: "Alice",
+            world_id: "world-a",
+          },
+        }}
+        onAction={() => undefined}
+      />,
+    );
+    expect(markup).toContain('class="rintawa-management-header"');
+    expect(markup).toContain('aria-label="Back to global Manage"');
+    expect(markup).toContain('>Alice</strong>');
+    expect(markup).not.toContain("Configure extensions for");
+  });
+
   test("groups multiple surfaces from one extension under one activity id", () => {
     const activity = {
       id: "world",
@@ -281,6 +354,7 @@ describe("surface composer", () => {
           },
           pending_world_id: null,
           last_focus_error: null,
+          management_context: { revision: 0, scope_id: "host", label: "Manage", world_id: null },
         }}
         onAction={() => undefined}
       />,

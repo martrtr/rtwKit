@@ -46,10 +46,18 @@ export interface UiFocusedWorldPresentation {
   descriptor: WorldPresentationDescriptor;
 }
 
+export interface UiManagementContext {
+  revision: number;
+  scope_id: string;
+  label: string;
+  world_id: string | null;
+}
+
 export interface UiLayerPresentationState {
   focused_world: UiFocusedWorldPresentation | null;
   pending_world_id: string | null;
   last_focus_error: string | null;
+  management_context: UiManagementContext;
 }
 
 export type UiPlacementHint =
@@ -272,8 +280,15 @@ export interface RendererActionMessage {
   event: UiActionEvent;
 }
 
+export interface RendererManagementHomeMessage {
+  type: "management-home";
+  protocol_major: typeof WEB_UI_BRIDGE_PROTOCOL_MAJOR;
+}
+
 export type RendererToHostMessage =
-  RendererHelloMessage | RendererActionMessage;
+  | RendererHelloMessage
+  | RendererActionMessage
+  | RendererManagementHomeMessage;
 
 export interface HostStateMessage {
   type: "state";

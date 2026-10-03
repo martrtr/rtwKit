@@ -109,7 +109,7 @@ export class DemoUiTransport implements UiTransport {
   }
 
   async send(message: RendererToHostMessage): Promise<void> {
-    if (message.type === "hello") {
+    if (message.type === "hello" || message.type === "management-home") {
       this.emitState();
       return;
     }
@@ -133,6 +133,7 @@ export class DemoUiTransport implements UiTransport {
         focused_world: null,
         pending_world_id: null,
         last_focus_error: null,
+        management_context: { revision: 0, scope_id: "host", label: "Manage", world_id: null },
       },
     };
     queueMicrotask(() => this.onMessage?.(message));

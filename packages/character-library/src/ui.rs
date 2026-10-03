@@ -7,12 +7,11 @@
 
 use rintawa_sdk::ui::{
     UI_CAPABILITY_ASSET_IMAGE, UI_CAPABILITY_BUTTON, UI_CAPABILITY_COLUMN, UI_CAPABILITY_ICON,
-    UI_CAPABILITY_LIST, UI_CAPABILITY_ROW, UI_CAPABILITY_SELECT, UI_CAPABILITY_SPLIT,
-    UI_CAPABILITY_TEXT, UI_CAPABILITY_TEXT_INPUT, UiActionId, UiActivityContribution,
-    UiAssetImageNode, UiButtonAppearance, UiButtonNode, UiContainerNode, UiIconNode, UiIconSlotId,
-    UiNode, UiNodeId, UiNodeKind, UiPlacementHint, UiSelectNode, UiSelectOption, UiSplitAxis,
-    UiSplitNode, UiSurfaceContribution, UiSurfaceId, UiSurfaceSnapshot, UiTextInputNode,
-    UiTextNode,
+    UI_CAPABILITY_LIST, UI_CAPABILITY_ROW, UI_CAPABILITY_SPLIT, UI_CAPABILITY_TEXT,
+    UI_CAPABILITY_TEXT_INPUT, UiActionId, UiActivityContribution, UiAssetImageNode,
+    UiButtonAppearance, UiButtonNode, UiContainerNode, UiIconNode, UiIconSlotId, UiNode, UiNodeId,
+    UiNodeKind, UiPlacementHint, UiSplitAxis, UiSplitNode, UiSurfaceContribution, UiSurfaceId,
+    UiSurfaceSnapshot, UiTextInputNode, UiTextNode,
 };
 
 use crate::{
@@ -27,6 +26,7 @@ pub const CHARACTER_LIBRARY_SURFACE_ID: &str = "rintawa.character-library.main";
 pub const CHARACTER_LIBRARY_ACTIVITY_ID: &str = "rintawa.management";
 
 const ROOT_NODE: &str = "root";
+const MANAGEMENT_CONTEXT_NODE: &str = "management.context";
 const HEADER_NODE: &str = "header";
 const TITLE_GROUP_NODE: &str = "header.title-group";
 const TITLE_NODE: &str = "title";
@@ -43,7 +43,7 @@ const DETAILS_NODE: &str = "details";
 const DETAILS_EMPTY_NODE: &str = "details.empty";
 const WORLD_TARGET_GROUP_NODE: &str = "details.world-target";
 const WORLD_TARGET_LABEL_NODE: &str = "details.world-target.label";
-pub(crate) const TARGET_WORLD_NODE: &str = "details.world-target.select";
+pub(crate) const TARGET_WORLD_NODE: &str = MANAGEMENT_CONTEXT_NODE;
 const WORLD_TARGET_HELP_NODE: &str = "details.world-target.help";
 pub(crate) const ADD_TO_WORLD_NODE: &str = "details.world-target.add";
 
@@ -75,7 +75,6 @@ pub fn character_library_surface_contribution() -> UiSurfaceContribution {
         .requiring_capability(UI_CAPABILITY_SPLIT)
         .requiring_capability(UI_CAPABILITY_TEXT)
         .requiring_capability(UI_CAPABILITY_TEXT_INPUT)
-        .requiring_capability(UI_CAPABILITY_SELECT)
         .requiring_capability(UI_CAPABILITY_ICON)
         .requiring_capability(UI_CAPABILITY_ASSET_IMAGE)
         .requiring_capability(UI_CAPABILITY_BUTTON)
@@ -103,6 +102,7 @@ pub fn build_character_library_snapshot(state: &CharacterLibraryState) -> UiSurf
             ROOT_NODE,
             UiNodeKind::Column(UiContainerNode {
                 children: vec![
+                    MANAGEMENT_CONTEXT_NODE.into(),
                     HEADER_NODE.into(),
                     SEARCH_SHELL_NODE.into(),
                     WORKSPACE_NODE.into(),
@@ -111,6 +111,7 @@ pub fn build_character_library_snapshot(state: &CharacterLibraryState) -> UiSurf
         )
         .with_trait("character-management-root")
         .with_trait("primary-content"),
+        management_context_node(state),
         UiNode::new(
             HEADER_NODE,
             UiNodeKind::Row(UiContainerNode {
@@ -414,17 +415,20 @@ fn append_details(nodes: &mut Vec<UiNode>, state: &CharacterLibraryState) -> UiN
             .with_trait("character-management-details-tags"),
     );
     append_world_target(nodes, state);
+    let mut detail_children = vec![
+        portrait.into(),
+        identity.into(),
+        description.into(),
+        tags.into(),
+    ];
+    if state.target_world_id().is_some() {
+        detail_children.push(WORLD_TARGET_GROUP_NODE.into());
+    }
     nodes.push(
         UiNode::new(
             DETAILS_NODE,
             UiNodeKind::Column(UiContainerNode {
-                children: vec![
-                    portrait.into(),
-                    identity.into(),
-                    description.into(),
-                    tags.into(),
-                    WORLD_TARGET_GROUP_NODE.into(),
-                ],
+                children: detail_children,
             }),
         )
         .with_trait("character-management-details")
@@ -433,55 +437,46 @@ fn append_details(nodes: &mut Vec<UiNode>, state: &CharacterLibraryState) -> UiN
     UiNodeId::new(DETAILS_NODE)
 }
 
+fn management_context_node(state: &CharacterLibraryState) -> UiNode {
+    UiNode::new(
+        MANAGEMENT_CONTEXT_NODE,
+        UiNodeKind::TextInput(UiTextInputNode {
+            value: state
+                .target_world_id()
+                .map(|world_id| format!("world:{world_id}"))
+                .unwrap_or_else(|| String::from("host")),
+            placeholder: None,
+            change_action: Some(UiActionId::new(CHARACTER_LIBRARY_ACTION_SELECT_WORLD)),
+            submit_action: None,
+            submit_label: None,
+            is_enabled: true,
+        }),
+    )
+    .with_semantic(semantic("rintawa.management.context"))
+    .with_trait("management-context-sink")
+}
+
 fn append_world_target(nodes: &mut Vec<UiNode>, state: &CharacterLibraryState) {
-    let options = state
+    let Some(world_id) = state.target_world_id() else {
+        return;
+    };
+    let Some(world) = state
         .worlds()
         .iter()
-        .map(|world| UiSelectOption {
-            value: world.world_id.clone(),
-            label: if world.active {
-                format!("{} · running", world.title)
-            } else {
-                world.title.clone()
-            },
-        })
-        .collect::<Vec<_>>();
-    let has_worlds = !options.is_empty();
-    let selected = state.target_world_id().unwrap_or_default().to_string();
-    let is_target_active = state
-        .target_world_id()
-        .and_then(|world_id| {
-            state
-                .worlds()
-                .iter()
-                .find(|world| world.world_id == world_id)
-        })
-        .is_some_and(|world| world.active);
-
+        .find(|world| world.world_id == world_id)
+    else {
+        return;
+    };
     nodes.push(
-        text_node(WORLD_TARGET_LABEL_NODE, "Add to World")
+        text_node(WORLD_TARGET_LABEL_NODE, format!("World · {}", world.title))
             .with_trait("section-title")
             .with_trait("character-management-world-label"),
     );
     nodes.push(
-        UiNode::new(
-            TARGET_WORLD_NODE,
-            UiNodeKind::Select(UiSelectNode {
-                value: selected,
-                options,
-                change_action: UiActionId::new(CHARACTER_LIBRARY_ACTION_SELECT_WORLD),
-                is_enabled: has_worlds,
-            }),
-        )
-        .with_trait("character-management-world-select"),
-    );
-    nodes.push(
         text_node(
             WORLD_TARGET_HELP_NODE,
-            if !has_worlds {
-                "No Worlds are available. Create or import one from Worlds first."
-            } else if is_target_active {
-                "Adds this exact reusable template revision to the selected running World."
+            if world.active {
+                "Adds this exact reusable template revision to the current World."
             } else {
                 "Start or open this World from Worlds before adding a character."
             },
@@ -492,9 +487,9 @@ fn append_world_target(nodes: &mut Vec<UiNode>, state: &CharacterLibraryState) {
     nodes.push(
         button_node(
             ADD_TO_WORLD_NODE,
-            "Add character",
+            "Add character to World",
             CHARACTER_LIBRARY_ACTION_ADD_TO_WORLD,
-            has_worlds && is_target_active && state.selected_entry().is_some(),
+            world.active && state.selected_entry().is_some(),
             UiButtonAppearance::Primary,
         )
         .with_trait("character-management-add-to-world"),
@@ -505,7 +500,6 @@ fn append_world_target(nodes: &mut Vec<UiNode>, state: &CharacterLibraryState) {
             UiNodeKind::Column(UiContainerNode {
                 children: vec![
                     WORLD_TARGET_LABEL_NODE.into(),
-                    TARGET_WORLD_NODE.into(),
                     WORLD_TARGET_HELP_NODE.into(),
                     ADD_TO_WORLD_NODE.into(),
                 ],

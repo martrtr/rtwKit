@@ -189,6 +189,8 @@ function TextControl({
   submitOnEnter = false,
   allowEmptySubmit = false,
   clearOnSubmit = false,
+  submitOnBlur = false,
+  hideSubmitControl = false,
   presentationAttributes,
 }: {
   nodeId: string;
@@ -199,6 +201,8 @@ function TextControl({
   submitOnEnter?: boolean;
   allowEmptySubmit?: boolean;
   clearOnSubmit?: boolean;
+  submitOnBlur?: boolean;
+  hideSubmitControl?: boolean;
   presentationAttributes: NodePresentationAttributes;
 }) {
   const [value, setValue] = useState(data.value);
@@ -242,6 +246,9 @@ function TextControl({
           placeholder={data.placeholder ?? undefined}
           disabled={!data.is_enabled}
           onChange={(event) => onChange(event.currentTarget.value)}
+          onBlur={() => {
+            if (submitOnBlur && value !== data.value) submit();
+          }}
           onKeyDown={(event) => {
             const submitRequested = shouldSubmitMultilineGesture(
               {
@@ -258,7 +265,7 @@ function TextControl({
             submit();
           }}
         />
-        {data.submit_action ? (
+        {data.submit_action && !hideSubmitControl ? (
           <button
             type="button"
             className="rintawa-button rintawa-textarea-submit"
@@ -296,6 +303,9 @@ function TextControl({
       placeholder={data.placeholder ?? undefined}
       disabled={!data.is_enabled}
       onChange={(event) => onChange(event.currentTarget.value)}
+      onBlur={() => {
+        if (submitOnBlur && value !== data.value) submit();
+      }}
       onKeyDown={(event) => {
         if (event.key === "Enter") {
           submit();
@@ -341,7 +351,11 @@ function AssetImage({
       alt={data.alt}
       width={data.width ?? undefined}
       height={data.height ?? undefined}
-      loading="lazy"
+      loading={
+        hasPresentationTrait(presentationAttributes, "eager-media")
+          ? "eager"
+          : "lazy"
+      }
       decoding="async"
       onError={() => setFailed(true)}
     />
@@ -747,6 +761,7 @@ function NodeRenderer({
           surface={surface}
           onAction={onAction}
           isMultiline={false}
+          submitOnBlur={node.traits?.includes("submit-on-blur") ?? false}
           presentationAttributes={presentationAttributes}
         />
       );
@@ -763,6 +778,10 @@ function NodeRenderer({
             node.traits?.includes("allow-empty-submit") ?? false
           }
           clearOnSubmit={node.traits?.includes("clear-on-submit") ?? false}
+          submitOnBlur={node.traits?.includes("submit-on-blur") ?? false}
+          hideSubmitControl={
+            node.traits?.includes("hide-submit-control") ?? false
+          }
           presentationAttributes={presentationAttributes}
         />
       );

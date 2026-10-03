@@ -52,6 +52,7 @@ function presentation(entrySurfaceId: string): UiLayerPresentationState {
     },
     pending_world_id: null,
     last_focus_error: null,
+    management_context: { revision: 0, scope_id: "host", label: "Manage", world_id: null },
   };
 }
 

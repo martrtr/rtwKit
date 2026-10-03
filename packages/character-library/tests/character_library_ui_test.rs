@@ -527,31 +527,44 @@ fn test_should_select_existing_world_and_emit_exact_revision_materialization_int
             active: false,
         },
     ])?;
-    assert_eq!(controller.state().target_world_id(), Some("world-a"));
+    assert_eq!(controller.state().target_world_id(), None);
 
     let snapshot = build_character_library_snapshot(controller.state());
-    let world_select = snapshot
+    let context = snapshot
         .nodes
         .iter()
-        .find(|node| node.id.as_str() == "details.world-target.select")
-        .ok_or_else(|| anyhow::anyhow!("target World selector must be rendered"))?;
+        .find(|node| node.id.as_str() == "management.context")
+        .ok_or_else(|| anyhow::anyhow!("management context sink must be rendered"))?;
     assert!(matches!(
-        &world_select.kind,
-        UiNodeKind::Select(select)
-            if select.is_enabled
-                && select.value == "world-a"
-                && select.options.iter().map(|option| option.label.as_str()).collect::<Vec<_>>()
-                    == vec!["Alpha", "Zeta · running"]
+        &context.kind,
+        UiNodeKind::TextInput(input)
+            if input.is_enabled
+                && input.value == "host"
+                && input.change_action.as_ref().is_some_and(|action| action.as_str()
+                    == CHARACTER_LIBRARY_ACTION_SELECT_WORLD)
+                && input.submit_action.is_none()
     ));
+    assert!(
+        !snapshot
+            .nodes
+            .iter()
+            .any(|node| node.id.as_str() == "details.world-target.add")
+    );
+
+    controller.handle_action(&action(
+        controller.state().revision(),
+        UiNodeId::new("management.context"),
+        CHARACTER_LIBRARY_ACTION_SELECT_WORLD,
+        UiActionPayload::Text(String::from("world:world-a")),
+    ))?;
+    assert_eq!(controller.state().target_world_id(), Some("world-a"));
+    let snapshot = build_character_library_snapshot(controller.state());
     let add_button = snapshot
         .nodes
         .iter()
         .find(|node| node.id.as_str() == "details.world-target.add")
-        .ok_or_else(|| anyhow::anyhow!("add-to-World button must be rendered"))?;
-    assert!(matches!(
-        &add_button.kind,
-        UiNodeKind::Button(button) if !button.is_enabled
-    ));
+        .ok_or_else(|| anyhow::anyhow!("world-mode add button must be rendered"))?;
+    assert!(matches!(&add_button.kind, UiNodeKind::Button(button) if !button.is_enabled));
     assert_eq!(
         controller.handle_action(&action(
             controller.state().revision(),
@@ -564,9 +577,9 @@ fn test_should_select_existing_world_and_emit_exact_revision_materialization_int
 
     controller.handle_action(&action(
         controller.state().revision(),
-        UiNodeId::new("details.world-target.select"),
+        UiNodeId::new("management.context"),
         CHARACTER_LIBRARY_ACTION_SELECT_WORLD,
-        UiActionPayload::Text(String::from("world-b")),
+        UiActionPayload::Text(String::from("world:world-b")),
     ))?;
     let intent = controller.handle_action(&action(
         controller.state().revision(),
@@ -587,9 +600,9 @@ fn test_should_select_existing_world_and_emit_exact_revision_materialization_int
     assert_eq!(
         controller.handle_action(&action(
             controller.state().revision(),
-            UiNodeId::new("details.world-target.select"),
+            UiNodeId::new("management.context"),
             CHARACTER_LIBRARY_ACTION_SELECT_WORLD,
-            UiActionPayload::Text(String::from("foreign-world")),
+            UiActionPayload::Text(String::from("world:foreign-world")),
         )),
         Err(CharacterLibraryError::UnknownWorldAction)
     );

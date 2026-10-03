@@ -30,6 +30,13 @@ const worldPresentationDescriptor = z.object({
   presentation_intent: contractKey.nullable(),
 });
 
+const managementContext = z.object({
+  revision: z.number().int().min(0),
+  scope_id: identifier,
+  label: z.string().min(1).max(512),
+  world_id: identifier.nullable(),
+});
+
 const presentationState = z.object({
   focused_world: z
     .object({
@@ -39,6 +46,12 @@ const presentationState = z.object({
     .nullable(),
   pending_world_id: identifier.nullable(),
   last_focus_error: z.string().nullable(),
+  management_context: managementContext.default({
+    revision: 0,
+    scope_id: "host",
+    label: "Manage",
+    world_id: null,
+  }),
 });
 
 const activity = z.object({
@@ -313,6 +326,12 @@ const hostMessage = z.discriminatedUnion("type", [
       focused_world: null,
       pending_world_id: null,
       last_focus_error: null,
+      management_context: {
+        revision: 0,
+        scope_id: "host",
+        label: "Manage",
+        world_id: null,
+      },
     }),
   }),
   z.object({
