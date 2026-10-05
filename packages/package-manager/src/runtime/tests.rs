@@ -412,3 +412,28 @@ fn test_should_render_shell_owned_management_context_sink() {
             == Some("Configure extensions for")
     }));
 }
+
+#[test]
+fn test_should_render_install_rtw_picker_in_general_actions_without_dead_add_file_button() {
+    let rendered = presentation::build_surface(&ManagerState::default());
+    let pickers = rendered
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.get("kind")
+                .and_then(|kind| kind.get("type"))
+                .and_then(Value::as_str)
+                == Some("resource-picker")
+                && node["kind"]["data"]["change_action"] == "package.file-import"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(pickers.len(), 1);
+    assert_eq!(pickers[0]["kind"]["data"]["label"], "Install RTW");
+    assert!(!rendered.nodes.iter().any(|node| {
+        node.get("kind")
+            .and_then(|kind| kind.get("type"))
+            .and_then(Value::as_str)
+            == Some("button")
+            && node["kind"]["data"]["label"] == "Add File"
+    }));
+}

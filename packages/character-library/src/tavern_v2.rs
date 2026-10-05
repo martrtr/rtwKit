@@ -93,6 +93,17 @@ impl TavernV2Artwork {
     }
 }
 
+/// Transport-decoded Tavern source awaiting semantic Character normalization.
+///
+/// Separating transport decoding from semantic normalization lets cooperative runtimes
+/// perform bounded heavy work across separate task callbacks without changing the
+/// normalized Character model or trusting partially decoded data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TavernV2DecodedSource {
+    json: Vec<u8>,
+    portrait: Option<TavernV2Artwork>,
+}
+
 /// Normalized Tavern import plus optional PNG artwork awaiting generic asset publication.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TavernV2Import {
@@ -142,14 +153,41 @@ impl TavernV2Import {
 /// Returns [`TavernV2Error`] for malformed/oversized transport, unsupported card
 /// spec/version, typed-field mismatch, or invalid normalized template state.
 pub fn import_tavern_v2_with_artwork(bytes: &[u8]) -> TavernV2Result<TavernV2Import> {
+    normalize_tavern_v2_source(decode_tavern_v2_source(bytes)?)
+}
+
+/// Decodes Tavern JSON/PNG carriage without normalizing Character semantics.
+///
+/// The returned source contains only bounded, CRC-validated transport data. Call
+/// [`normalize_tavern_v2_source`] in a later cooperative step to validate and build
+/// the normalized [`CharacterTemplate`].
+///
+/// # Errors
+///
+/// Returns [`TavernV2Error`] for malformed/oversized JSON or PNG transport, invalid
+/// PNG CRCs, or unsupported metadata carriage.
+pub fn decode_tavern_v2_source(bytes: &[u8]) -> TavernV2Result<TavernV2DecodedSource> {
     let (json, portrait) = if bytes.starts_with(PNG_SIGNATURE) {
         let (json, artwork) = extract_png_chara_and_artwork(bytes)?;
         (json, Some(TavernV2Artwork { bytes: artwork }))
     } else {
         (bounded_json(bytes)?, None)
     };
-    let template = import_tavern_v2_json(&json)?;
-    Ok(TavernV2Import { template, portrait })
+    Ok(TavernV2DecodedSource { json, portrait })
+}
+
+/// Normalizes one bounded transport-decoded Tavern source into reusable Character content.
+///
+/// # Errors
+///
+/// Returns [`TavernV2Error`] when the decoded JSON has an unsupported spec/version,
+/// invalid typed fields, or produces a [`CharacterTemplate`] that violates package bounds.
+pub fn normalize_tavern_v2_source(source: TavernV2DecodedSource) -> TavernV2Result<TavernV2Import> {
+    let template = import_tavern_v2_json(&source.json)?;
+    Ok(TavernV2Import {
+        template,
+        portrait: source.portrait,
+    })
 }
 
 /// Imports either a raw Character Card V2 JSON document or a PNG carrying `chara` metadata.
@@ -437,11 +475,6 @@ fn extract_png_chara_and_artwork(bytes: &[u8]) -> TavernV2Result<(Vec<u8>, Vec<u
         let card_chunk = text_chunk_payload(chunk_type, data)?;
         if let Some((kind, payload)) = card_chunk {
             match &card_payload {
-                Some((current_kind, _)) if *current_kind == kind => {
-                    return Err(TavernV2Error::InvalidPng(
-                        "multiple Character Card metadata chunks of the same version are ambiguous",
-                    ));
-                }
                 Some((current_kind, _)) if *current_kind > kind => {}
                 _ => card_payload = Some((kind, payload)),
             }

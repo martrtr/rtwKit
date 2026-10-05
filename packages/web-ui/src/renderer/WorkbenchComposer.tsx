@@ -19,6 +19,7 @@ import type {
 } from "../experience/types";
 import { InterfaceIcon } from "../icons/InterfaceIcon";
 import { PortableSurface } from "./PortableSurface";
+import { beginWindowPointerResize } from "./pointerResize";
 import {
   effectiveWeights,
   resizeAdjacentWeightsWithinBounds,
@@ -251,8 +252,10 @@ interface ActivityRegionProps {
   tabActivities: readonly DerivedActivity[];
   activeKey: string | undefined;
   collapsed: boolean;
+  sectionNavigationWidth: number | undefined;
   onFocus: (activity: DerivedActivity) => void;
   onToggleCollapsed: () => void;
+  onResizeSectionNavigation: (activityKey: string, width: number) => void;
   onOpenMenu: (activity: DerivedActivity, anchor: HTMLElement) => void;
   onAction: (event: UiActionEvent) => void;
   managementContext: UiManagementContext;
@@ -266,8 +269,10 @@ function ActivityRegion({
   tabActivities,
   activeKey,
   collapsed,
+  sectionNavigationWidth,
   onFocus,
   onToggleCollapsed,
+  onResizeSectionNavigation,
   onOpenMenu,
   onAction,
   managementContext,
@@ -276,6 +281,20 @@ function ActivityRegion({
   const [selectedSurfaceByActivity, setSelectedSurfaceByActivity] = useState<
     Record<string, string>
   >({});
+  const sectionNavigationRef = useRef<HTMLElement | null>(null);
+
+  const boundedSectionNavigationWidth = (requested: number): number => {
+    const navigation = sectionNavigationRef.current;
+    if (!navigation || typeof window === "undefined") return Math.max(96, requested);
+    const styles = window.getComputedStyle(navigation);
+    const minimum = Number.parseFloat(styles.minWidth);
+    const maximum = Number.parseFloat(styles.maxWidth);
+    const effectiveMinimum = Number.isFinite(minimum) ? minimum : 96;
+    const effectiveMaximum = Number.isFinite(maximum)
+      ? maximum
+      : Number.POSITIVE_INFINITY;
+    return Math.min(effectiveMaximum, Math.max(effectiveMinimum, requested));
+  };
 
   if (presentation?.collapsible && (collapsed || activities.length === 0)) {
     return null;
@@ -366,8 +385,14 @@ function ActivityRegion({
           usesSectionNavigation ? (
             <div className="rintawa-activity-section-layout">
               <nav
+                ref={sectionNavigationRef}
                 className="rintawa-activity-section-nav"
                 aria-label={`${active.label} sections`}
+                style={
+                  sectionNavigationWidth === undefined
+                    ? undefined
+                    : { flexBasis: `${sectionNavigationWidth}px` }
+                }
               >
                 {active.surfaces.map((surface) => {
                   const surfaceKey = activitySurfaceKey(surface);
@@ -393,6 +418,41 @@ function ActivityRegion({
                   );
                 })}
               </nav>
+              <button
+                type="button"
+                className="rintawa-split-resize-handle rintawa-activity-section-resize-handle"
+                data-axis="horizontal"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={`Resize ${active.label} section navigation`}
+                tabIndex={0}
+                onPointerDown={(event) => {
+                  const navigation = sectionNavigationRef.current;
+                  if (!navigation) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const startWidth = navigation.getBoundingClientRect().width;
+                  beginWindowPointerResize("horizontal", event, (delta) => {
+                    onResizeSectionNavigation(
+                      active.key,
+                      boundedSectionNavigationWidth(startWidth + delta),
+                    );
+                  });
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                  const navigation = sectionNavigationRef.current;
+                  if (!navigation) return;
+                  event.preventDefault();
+                  const direction = event.key === "ArrowLeft" ? -1 : 1;
+                  onResizeSectionNavigation(
+                    active.key,
+                    boundedSectionNavigationWidth(
+                      navigation.getBoundingClientRect().width + direction * 24,
+                    ),
+                  );
+                }}
+              />
               <div className="rintawa-activity-section-content">
                 {selectedSurface ? (
                   <PortableSurface
@@ -429,9 +489,11 @@ function renderWorkbenchLayout(
   activeByRegion: Readonly<Record<string, string>>,
   collapsed: Readonly<Record<string, boolean>>,
   splitWeights: Readonly<Record<string, number[]>>,
+  sectionNavigationWidths: Readonly<Record<string, number>>,
   onFocus: (activity: DerivedActivity) => void,
   onToggleCollapsed: (region: string) => void,
   onResizeSplit: (splitId: string, weights: number[]) => void,
+  onResizeSectionNavigation: (activityKey: string, width: number) => void,
   onOpenMenu: (activity: DerivedActivity, anchor: HTMLElement) => void,
   onAction: (event: UiActionEvent) => void,
   showGlobalActivityTabs: boolean,
@@ -464,8 +526,15 @@ function renderWorkbenchLayout(
         tabActivities={tabActivities}
         activeKey={activeByRegion[node.region]}
         collapsed={collapsed[node.region] ?? false}
+        sectionNavigationWidth={
+          sectionNavigationWidths[
+            (regionActivities.find((activity) => activity.key === activeByRegion[node.region]) ??
+              regionActivities[0])?.key ?? ""
+          ]
+        }
         onFocus={onFocus}
         onToggleCollapsed={() => onToggleCollapsed(node.region)}
+        onResizeSectionNavigation={onResizeSectionNavigation}
         onOpenMenu={onOpenMenu}
         onAction={onAction}
         managementContext={managementContext}
@@ -490,9 +559,11 @@ function renderWorkbenchLayout(
         activeByRegion,
         collapsed,
         splitWeights,
+        sectionNavigationWidths,
         onFocus,
         onToggleCollapsed,
         onResizeSplit,
+        onResizeSectionNavigation,
         onOpenMenu,
         onAction,
         showGlobalActivityTabs,
@@ -574,24 +645,10 @@ function renderWorkbenchLayout(
     const geometry = adjacentPaneGeometry(event.currentTarget, visibleIndex);
     if (!geometry) return;
 
-    const horizontal = node.axis === "horizontal";
-    const startCoordinate = horizontal ? event.clientX : event.clientY;
     const pairPixels = geometry.pairPixels;
-
-    const move = (pointerEvent: PointerEvent) => {
-      const coordinate = horizontal
-        ? pointerEvent.clientX
-        : pointerEvent.clientY;
-      resizeVisiblePair(visibleIndex, coordinate - startCoordinate, pairPixels);
-    };
-    const stop = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
-      window.removeEventListener("pointercancel", stop);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop);
-    window.addEventListener("pointercancel", stop);
+    beginWindowPointerResize(node.axis, event, (delta) => {
+      resizeVisiblePair(visibleIndex, delta, pairPixels);
+    });
   };
 
   return (
@@ -887,6 +944,17 @@ export function WorkbenchComposer({
     }));
   };
 
+  const resizeSectionNavigation = (activityKey: string, width: number) => {
+    if (!Number.isFinite(width) || width <= 0) return;
+    updatePreferences((current) => ({
+      ...current,
+      sectionNavigationWidths: {
+        ...current.sectionNavigationWidths,
+        [activityKey]: width,
+      },
+    }));
+  };
+
   const openMenu = (activity: DerivedActivity, anchor: HTMLElement) => {
     const rect = anchor.getBoundingClientRect();
     setMenu({
@@ -907,9 +975,11 @@ export function WorkbenchComposer({
     effectiveActiveByRegion,
     preferences.collapsed,
     preferences.splitWeights,
+    preferences.sectionNavigationWidths,
     focusActivity,
     toggleCollapsed,
     resizeSplit,
+    resizeSectionNavigation,
     openMenu,
     onAction,
     experiencePack.shell.activity_bar?.presentation === "hidden",

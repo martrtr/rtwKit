@@ -1,6 +1,6 @@
 id = "rintawa.character-library"
 name = "Character Library"
-version = "0.0.1"
+version = "0.0.2"
 sdk = "^0.0"
 
 [[components]]

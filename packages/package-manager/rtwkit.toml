@@ -3,7 +3,7 @@ schema = 1
 [package]
 id = "rintawa.package-manager"
 name = "Package Manager"
-version = "0.0.2"
+version = "0.0.3"
 description = "Repository-backed extension manager for Rintawa"
 license = "GPL-3.0-only"
 authors = ["martrtr"]

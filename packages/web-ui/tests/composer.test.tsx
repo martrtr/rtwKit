@@ -295,6 +295,11 @@ describe("surface composer", () => {
     expect(markup).toContain('class="rintawa-management-header"');
     expect(markup).toContain('aria-label="Back to global Manage"');
     expect(markup).toContain('>Alice</strong>');
+    expect(markup).toContain(
+      'class="rintawa-split-resize-handle rintawa-activity-section-resize-handle"',
+    );
+    expect(markup).toContain('role="separator"');
+    expect(markup).toContain('aria-orientation="vertical"');
     expect(markup).not.toContain("Configure extensions for");
   });
 

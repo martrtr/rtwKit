@@ -303,7 +303,21 @@ interface asset-store {
     }
 
     /// Imports exact bytes under a canonical media type and returns an AssetRef.
+    /// Intended for small payloads that fit comfortably inside one callback budget.
     import-asset: func(bytes: list<u8>, media-type: string) -> result<asset-ref, error>;
+
+    /// Starts one bounded host-owned streaming asset upload.
+    /// The declared size reserves quota but does not allocate the complete buffer eagerly.
+    begin-upload: func(media-type: string, expected-size: u64) -> result<u64, error>;
+
+    /// Appends one bounded chunk to an existing streaming upload.
+    append-upload: func(handle: u64, bytes: list<u8>) -> result<_, error>;
+
+    /// Finalizes an exactly-sized upload into the immutable asset store.
+    finish-upload: func(handle: u64) -> result<asset-ref, error>;
+
+    /// Cancels one streaming upload and releases its host-owned staging state.
+    cancel-upload: func(handle: u64) -> result<_, error>;
 }
 
 /// Generic bounded ephemeral user-selected resources.
@@ -338,6 +352,22 @@ interface user-resources {
         media-type: string,
         name: option<string>,
     ) -> result<resource-ref, error>;
+
+    /// Starts one bounded HostRuntime-local streaming resource upload.
+    begin-upload: func(
+        media-type: string,
+        name: option<string>,
+        expected-size: u64,
+    ) -> result<u64, error>;
+
+    /// Appends one bounded chunk to an existing resource upload.
+    append-upload: func(handle: u64, bytes: list<u8>) -> result<_, error>;
+
+    /// Finalizes one exactly-sized upload and returns its opaque resource ref.
+    finish-upload: func(handle: u64) -> result<resource-ref, error>;
+
+    /// Cancels one in-flight resource upload and releases its staging bytes.
+    cancel-upload: func(handle: u64) -> result<_, error>;
 
     /// Reads exact bytes for one ref. Requires `user-resource-read`.
     read-resource: func(

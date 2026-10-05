@@ -379,8 +379,23 @@ fn bounded_world_description(description: &str) -> Option<String> {
     Some(trimmed[..end].trim_end().to_string())
 }
 
-fn add_character_to_world(world_id: &str, selection: CharacterCastSelection) -> Result<(), String> {
-    require_character_support_in_world(world_id)?;
+pub(crate) struct PreparedExistingMaterialization {
+    world_id: String,
+    schema: String,
+    command: CharacterInstantiateCommandV2,
+}
+
+pub(crate) struct EncodedExistingMaterialization {
+    world_id: String,
+    schema: String,
+    payload_json: Vec<u8>,
+}
+
+pub(crate) fn prepare_existing_materialization(
+    world_id: String,
+    selection: CharacterCastSelection,
+) -> Result<PreparedExistingMaterialization, String> {
+    require_character_support_in_world(&world_id)?;
     let provenance = CharacterInstantiateCommand {
         template_id: selection.template_id.clone(),
         template_revision: selection.template_revision.clone(),
@@ -400,18 +415,43 @@ fn add_character_to_world(world_id: &str, selection: CharacterCastSelection) -> 
         .map_err(|error| format!("Character instantiate@2 preflight failed: {error}"))?;
     let schema = character_instantiate_command_schema_key_v2()
         .map_err(|error| format!("Character command schema construction failed: {error}"))?;
-    let payload_json = serde_json::to_vec(&command)
-        .map_err(|error| format!("Character instantiate command serialization failed: {error}"))?;
-
-    world_commands::submit(&world_commands::Request {
-        world_id: world_id.to_string(),
+    Ok(PreparedExistingMaterialization {
+        world_id,
         schema: schema.to_string(),
+        command,
+    })
+}
+
+pub(crate) fn encode_existing_materialization(
+    prepared: PreparedExistingMaterialization,
+) -> Result<EncodedExistingMaterialization, String> {
+    let payload_json = serde_json::to_vec(&prepared.command)
+        .map_err(|error| format!("Character instantiate command serialization failed: {error}"))?;
+    Ok(EncodedExistingMaterialization {
+        world_id: prepared.world_id,
+        schema: prepared.schema,
+        payload_json,
+    })
+}
+
+pub(crate) fn submit_existing_materialization(
+    encoded: EncodedExistingMaterialization,
+) -> Result<(), String> {
+    world_commands::submit(&world_commands::Request {
+        world_id: encoded.world_id,
+        schema: encoded.schema,
         actor: world_commands::Actor::Principal,
         expected_position: None,
-        payload_json,
+        payload_json: encoded.payload_json,
     })
     .map_err(|error| format!("Character instantiation submission failed: {error:?}"))?;
     Ok(())
+}
+
+fn add_character_to_world(world_id: &str, selection: CharacterCastSelection) -> Result<(), String> {
+    let prepared = prepare_existing_materialization(world_id.to_string(), selection)?;
+    let encoded = encode_existing_materialization(prepared)?;
+    submit_existing_materialization(encoded)
 }
 
 fn require_character_support_in_world(world_id: &str) -> Result<(), String> {

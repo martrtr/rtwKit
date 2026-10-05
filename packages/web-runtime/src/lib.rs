@@ -26,6 +26,7 @@ const MAX_BUNDLE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
 const MAX_CLIENT_BUFFER_BYTES: usize = 2 * 1024 * 1024;
 const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
+const MAX_PRESENTED_ASSET_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CLIENTS: usize = 8;
 const MAX_ACCEPTS_PER_TICK: usize = 8;
 const MAX_FRAMES_PER_TICK: usize = 32;
@@ -37,8 +38,11 @@ const PRESENTED_ASSET_PATH_PREFIX: &str = "/__rintawa/asset/";
 const IMPORT_ASSET_PATH: &str = "/__rintawa/import-asset";
 const IMPORT_RESOURCE_PATH: &str = "/__rintawa/import-resource";
 const USER_RESOURCE_NAME_HEADER: &str = "x-rintawa-resource-name";
-const MAX_PICKED_ASSET_BYTES: usize = 1024 * 1024;
+const MAX_PICKED_ASSET_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PICKED_RESOURCE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_HTTP_REQUEST_BUFFER_BYTES: usize =
+    MAX_HTTP_HEADER_BYTES + (NETWORK_READ_BYTES as usize * 4);
+const HOST_UPLOAD_CHUNK_BYTES: usize = 64 * 1024;
 const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 #[derive(Debug, Deserialize)]
@@ -134,6 +138,8 @@ struct Client {
     outbound: Vec<u8>,
     outbound_offset: usize,
     pending_asset: Option<PendingAsset>,
+    pending_asset_upload: Option<PendingHostUpload>,
+    pending_resource_upload: Option<PendingHostUpload>,
     last_state_digest: Option<[u8; 20]>,
     mode: ClientMode,
     close_after_write: bool,
@@ -145,10 +151,32 @@ struct PendingAsset {
     length: usize,
 }
 
+struct PendingHostUpload {
+    handle: u64,
+    body_offset: usize,
+    content_length: usize,
+    offset: usize,
+}
+
 enum ClientMode {
     HttpRequest,
     HttpResponse,
     WebSocket { hello_complete: bool },
+}
+
+fn client_inbound_limit(mode: &ClientMode) -> usize {
+    match mode {
+        ClientMode::HttpRequest => MAX_HTTP_REQUEST_BUFFER_BYTES,
+        ClientMode::HttpResponse | ClientMode::WebSocket { .. } => MAX_CLIENT_BUFFER_BYTES,
+    }
+}
+
+fn client_network_read_iterations(client: &Client) -> usize {
+    if client.pending_asset_upload.is_some() || client.pending_resource_upload.is_some() {
+        1
+    } else {
+        4
+    }
 }
 
 #[derive(Default)]
@@ -692,6 +720,8 @@ fn accept_clients(component_handle: u64) {
                     outbound: Vec::new(),
                     outbound_offset: 0,
                     pending_asset: None,
+                    pending_asset_upload: None,
+                    pending_resource_upload: None,
                     last_state_digest: None,
                     mode: ClientMode::HttpRequest,
                     close_after_write: false,
@@ -718,8 +748,17 @@ fn pump_client(component_handle: u64, client_id: u64) {
         return;
     };
 
+    let read_iterations = STATE.with(|state| {
+        state
+            .borrow()
+            .components
+            .get(&component_handle)
+            .and_then(|component| component.clients.get(&client_id))
+            .map(client_network_read_iterations)
+            .unwrap_or(1)
+    });
     let mut should_close = false;
-    for _ in 0..4 {
+    for _ in 0..read_iterations {
         match rintawa::engine::network::read(socket, NETWORK_READ_BYTES) {
             Ok(result) => {
                 if !result.data.is_empty() {
@@ -733,7 +772,7 @@ fn pump_client(component_handle: u64, client_id: u64) {
                             return true;
                         };
                         if client.inbound.len().saturating_add(result.data.len())
-                            > MAX_CLIENT_BUFFER_BYTES
+                            > client_inbound_limit(&client.mode)
                         {
                             return true;
                         }
@@ -773,6 +812,26 @@ fn pump_client(component_handle: u64, client_id: u64) {
 }
 
 fn process_client_input(component_handle: u64, client_id: u64) -> bool {
+    let (has_pending_resource_upload, has_pending_asset_upload) = STATE.with(|state| {
+        let state = state.borrow();
+        let client = state
+            .components
+            .get(&component_handle)
+            .and_then(|component| component.clients.get(&client_id));
+        (
+            client.is_some_and(|client| client.pending_resource_upload.is_some()),
+            client.is_some_and(|client| client.pending_asset_upload.is_some()),
+        )
+    });
+    if has_pending_resource_upload {
+        process_pending_resource_upload(component_handle, client_id);
+        return false;
+    }
+    if has_pending_asset_upload {
+        process_pending_asset_upload(component_handle, client_id);
+        return false;
+    }
+
     let is_http = STATE.with(|state| {
         state
             .borrow()
@@ -842,43 +901,45 @@ fn process_client_input(component_handle: u64, client_id: u64) -> bool {
 }
 
 fn process_http_request(component_handle: u64, client_id: u64) -> bool {
-    let inbound = STATE.with(|state| {
-        state
-            .borrow()
+    let header = STATE.with(|state| {
+        let state = state.borrow();
+        let inbound = state
             .components
             .get(&component_handle)
             .and_then(|component| component.clients.get(&client_id))
-            .map(|client| client.inbound.clone())
-            .unwrap_or_default()
+            .map(|client| client.inbound.as_slice())
+            .unwrap_or_default();
+        let header_end = inbound
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| index + 4);
+        match header_end {
+            None if inbound.len() > MAX_HTTP_HEADER_BYTES => Some(Err(())),
+            None => None,
+            Some(length) if length > MAX_HTTP_HEADER_BYTES => Some(Err(())),
+            Some(length) => Some(Ok(inbound[..length].to_vec())),
+        }
     });
-    let header_end = inbound
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .map(|index| index + 4);
-    if header_end.is_none() && inbound.len() > MAX_HTTP_HEADER_BYTES {
-        queue_http_response(
-            component_handle,
-            client_id,
-            431,
-            "text/plain; charset=utf-8",
-            b"request header too large",
-        );
-        return true;
-    }
-    if header_end.is_some_and(|length| length > MAX_HTTP_HEADER_BYTES) {
-        queue_http_response(
-            component_handle,
-            client_id,
-            431,
-            "text/plain; charset=utf-8",
-            b"request header too large",
-        );
-        return true;
-    }
+    let Some(header) = header else {
+        return false;
+    };
+    let header = match header {
+        Ok(header) => header,
+        Err(()) => {
+            queue_http_response(
+                component_handle,
+                client_id,
+                431,
+                "text/plain; charset=utf-8",
+                b"request header too large",
+            );
+            return true;
+        }
+    };
 
     let mut headers = [httparse::EMPTY_HEADER; 48];
     let mut request = httparse::Request::new(&mut headers);
-    let parsed = match request.parse(&inbound) {
+    let parsed = match request.parse(&header) {
         Ok(httparse::Status::Complete(consumed)) => consumed,
         Ok(httparse::Status::Partial) => return false,
         Err(_) => {
@@ -895,19 +956,12 @@ fn process_http_request(component_handle: u64, client_id: u64) -> bool {
     let path = request.path.unwrap_or("/");
     let request_path = path.split('?').next().unwrap_or(path);
     if request.method == Some("POST") && request_path == IMPORT_ASSET_PATH {
-        return process_asset_import_request(
-            component_handle,
-            client_id,
-            &inbound,
-            parsed,
-            request.headers,
-        );
+        return process_asset_import_request(component_handle, client_id, parsed, request.headers);
     }
     if request.method == Some("POST") && request_path == IMPORT_RESOURCE_PATH {
         return process_resource_import_request(
             component_handle,
             client_id,
-            &inbound,
             parsed,
             request.headers,
         );
@@ -977,7 +1031,7 @@ fn process_http_request(component_handle: u64, client_id: u64) -> bool {
             match rintawa::engine::ui_layer::read_presented_asset(&digest) {
                 Ok(asset)
                     if presented_asset_media_type_allowed(&asset.media_type)
-                        && asset.bytes.len() <= MAX_CLIENT_BUFFER_BYTES =>
+                        && asset.bytes.len() <= MAX_PRESENTED_ASSET_BYTES =>
                 {
                     queue_http_immutable_response(
                         component_handle,
@@ -1043,7 +1097,6 @@ fn process_http_request(component_handle: u64, client_id: u64) -> bool {
 fn process_asset_import_request(
     component_handle: u64,
     client_id: u64,
-    inbound: &[u8],
     body_offset: usize,
     headers: &[httparse::Header<'_>],
 ) -> bool {
@@ -1081,13 +1134,33 @@ fn process_asset_import_request(
         );
         return true;
     }
-    let required = body_offset.saturating_add(content_length);
-    if inbound.len() < required {
-        return false;
-    }
     let media_type = request_header(headers, "content-type").unwrap_or("");
-    let bytes = &inbound[body_offset..required];
-    if !picked_asset_media_type_matches(media_type, bytes) {
+    let Some(signature_length) = picked_asset_signature_length(media_type) else {
+        queue_http_response(
+            component_handle,
+            client_id,
+            415,
+            "text/plain; charset=utf-8",
+            b"unsupported asset type",
+        );
+        return true;
+    };
+    let signature = STATE.with(|state| {
+        let state = state.borrow();
+        let client = state
+            .components
+            .get(&component_handle)?
+            .clients
+            .get(&client_id)?;
+        client
+            .inbound
+            .get(body_offset..body_offset.saturating_add(signature_length))
+            .map(ToOwned::to_owned)
+    });
+    let Some(signature) = signature else {
+        return false;
+    };
+    if !picked_asset_media_type_matches(media_type, &signature) {
         queue_http_response(
             component_handle,
             client_id,
@@ -1097,15 +1170,36 @@ fn process_asset_import_request(
         );
         return true;
     }
-    match rintawa::engine::asset_store::import_asset(bytes, media_type) {
-        Ok(reference) => {
-            let body = serde_json::to_vec(&json!({
-                "digest": reference.digest,
-                "size": reference.size,
-                "media_type": reference.media_type,
-            }))
-            .unwrap_or_default();
-            queue_http_response(component_handle, client_id, 200, "application/json", &body);
+    let expected_size = match u64::try_from(content_length) {
+        Ok(value) => value,
+        Err(_) => {
+            queue_http_response(
+                component_handle,
+                client_id,
+                413,
+                "text/plain; charset=utf-8",
+                b"asset too large",
+            );
+            return true;
+        }
+    };
+    match rintawa::engine::asset_store::begin_upload(media_type, expected_size) {
+        Ok(handle) => {
+            STATE.with(|state| {
+                if let Some(client) = state
+                    .borrow_mut()
+                    .components
+                    .get_mut(&component_handle)
+                    .and_then(|component| component.clients.get_mut(&client_id))
+                {
+                    client.pending_asset_upload = Some(PendingHostUpload {
+                        handle,
+                        body_offset,
+                        content_length,
+                        offset: 0,
+                    });
+                }
+            });
         }
         Err(_) => queue_http_response(
             component_handle,
@@ -1118,10 +1212,123 @@ fn process_asset_import_request(
     true
 }
 
+fn process_pending_asset_upload(component_handle: u64, client_id: u64) {
+    let next = STATE.with(|state| {
+        let state = state.borrow();
+        let client = state
+            .components
+            .get(&component_handle)?
+            .clients
+            .get(&client_id)?;
+        let pending = client.pending_asset_upload.as_ref()?;
+        if pending.offset >= pending.content_length {
+            return Some((
+                pending.handle,
+                Vec::new(),
+                pending.offset,
+                pending.body_offset,
+            ));
+        }
+        let available = client.inbound.len().saturating_sub(pending.body_offset);
+        let remaining = pending.content_length.saturating_sub(pending.offset);
+        let length = HOST_UPLOAD_CHUNK_BYTES.min(available).min(remaining);
+        if length == 0 {
+            return None;
+        }
+        let start = pending.body_offset;
+        let end = start.saturating_add(length);
+        Some((
+            pending.handle,
+            client.inbound[start..end].to_vec(),
+            pending.offset,
+            pending.body_offset,
+        ))
+    });
+    let Some((handle, chunk, offset, body_offset)) = next else {
+        return;
+    };
+
+    if !chunk.is_empty() {
+        match rintawa::engine::asset_store::append_upload(handle, &chunk) {
+            Ok(()) => {
+                STATE.with(|state| {
+                    let mut state = state.borrow_mut();
+                    let Some(client) = state
+                        .components
+                        .get_mut(&component_handle)
+                        .and_then(|component| component.clients.get_mut(&client_id))
+                    else {
+                        return;
+                    };
+                    let is_current = client.pending_asset_upload.as_ref().is_some_and(|pending| {
+                        pending.handle == handle
+                            && pending.offset == offset
+                            && pending.body_offset == body_offset
+                    });
+                    if !is_current || body_offset.saturating_add(chunk.len()) > client.inbound.len()
+                    {
+                        return;
+                    }
+                    client
+                        .inbound
+                        .drain(body_offset..body_offset.saturating_add(chunk.len()));
+                    if let Some(pending) = client.pending_asset_upload.as_mut() {
+                        pending.offset = pending.offset.saturating_add(chunk.len());
+                    }
+                });
+            }
+            Err(_) => fail_pending_asset_upload(component_handle, client_id, handle),
+        }
+        return;
+    }
+
+    match rintawa::engine::asset_store::finish_upload(handle) {
+        Ok(reference) => {
+            clear_pending_asset_upload(component_handle, client_id, handle);
+            let body = serde_json::to_vec(&json!({
+                "digest": reference.digest,
+                "size": reference.size,
+                "media_type": reference.media_type,
+            }))
+            .unwrap_or_default();
+            queue_http_response(component_handle, client_id, 200, "application/json", &body);
+        }
+        Err(_) => fail_pending_asset_upload(component_handle, client_id, handle),
+    }
+}
+
+fn clear_pending_asset_upload(component_handle: u64, client_id: u64, handle: u64) {
+    STATE.with(|state| {
+        if let Some(client) = state
+            .borrow_mut()
+            .components
+            .get_mut(&component_handle)
+            .and_then(|component| component.clients.get_mut(&client_id))
+            && client
+                .pending_asset_upload
+                .as_ref()
+                .is_some_and(|pending| pending.handle == handle)
+        {
+            client.pending_asset_upload = None;
+        }
+    });
+}
+
+fn fail_pending_asset_upload(component_handle: u64, client_id: u64, handle: u64) {
+    let _ = rintawa::engine::asset_store::cancel_upload(handle);
+    clear_pending_asset_upload(component_handle, client_id, handle);
+    queue_http_response(
+        component_handle,
+        client_id,
+        400,
+        "text/plain; charset=utf-8",
+        b"asset import rejected",
+    );
+}
+
 fn process_resource_import_request(
     component_handle: u64,
     client_id: u64,
-    inbound: &[u8],
     body_offset: usize,
     headers: &[httparse::Header<'_>],
 ) -> bool {
@@ -1159,23 +1366,38 @@ fn process_resource_import_request(
         );
         return true;
     }
-    let required = body_offset.saturating_add(content_length);
-    if inbound.len() < required {
-        return false;
-    }
     let media_type = request_header(headers, "content-type").unwrap_or("");
     let name = request_header(headers, USER_RESOURCE_NAME_HEADER);
-    let bytes = &inbound[body_offset..required];
-    match rintawa::engine::user_resources::import_resource(bytes, media_type, name) {
-        Ok(reference) => {
-            let body = serde_json::to_vec(&json!({
-                "id": reference.id,
-                "size": reference.size,
-                "media_type": reference.media_type,
-                "name": reference.name,
-            }))
-            .unwrap_or_default();
-            queue_http_response(component_handle, client_id, 200, "application/json", &body);
+    let expected_size = match u64::try_from(content_length) {
+        Ok(value) => value,
+        Err(_) => {
+            queue_http_response(
+                component_handle,
+                client_id,
+                413,
+                "text/plain; charset=utf-8",
+                b"resource too large",
+            );
+            return true;
+        }
+    };
+    match rintawa::engine::user_resources::begin_upload(media_type, name, expected_size) {
+        Ok(handle) => {
+            STATE.with(|state| {
+                if let Some(client) = state
+                    .borrow_mut()
+                    .components
+                    .get_mut(&component_handle)
+                    .and_then(|component| component.clients.get_mut(&client_id))
+                {
+                    client.pending_resource_upload = Some(PendingHostUpload {
+                        handle,
+                        body_offset,
+                        content_length,
+                        offset: 0,
+                    });
+                }
+            });
         }
         Err(_) => queue_http_response(
             component_handle,
@@ -1186,6 +1408,134 @@ fn process_resource_import_request(
         ),
     }
     true
+}
+
+fn process_pending_resource_upload(component_handle: u64, client_id: u64) {
+    let next = STATE.with(|state| {
+        let state = state.borrow();
+        let client = state
+            .components
+            .get(&component_handle)?
+            .clients
+            .get(&client_id)?;
+        let pending = client.pending_resource_upload.as_ref()?;
+        if pending.offset >= pending.content_length {
+            return Some((
+                pending.handle,
+                Vec::new(),
+                pending.offset,
+                pending.body_offset,
+            ));
+        }
+        let available = client.inbound.len().saturating_sub(pending.body_offset);
+        let remaining = pending.content_length.saturating_sub(pending.offset);
+        let length = HOST_UPLOAD_CHUNK_BYTES.min(available).min(remaining);
+        if length == 0 {
+            return None;
+        }
+        let start = pending.body_offset;
+        let end = start.saturating_add(length);
+        Some((
+            pending.handle,
+            client.inbound[start..end].to_vec(),
+            pending.offset,
+            pending.body_offset,
+        ))
+    });
+    let Some((handle, chunk, offset, body_offset)) = next else {
+        return;
+    };
+
+    if !chunk.is_empty() {
+        match rintawa::engine::user_resources::append_upload(handle, &chunk) {
+            Ok(()) => {
+                STATE.with(|state| {
+                    let mut state = state.borrow_mut();
+                    let Some(client) = state
+                        .components
+                        .get_mut(&component_handle)
+                        .and_then(|component| component.clients.get_mut(&client_id))
+                    else {
+                        return;
+                    };
+                    let is_current =
+                        client
+                            .pending_resource_upload
+                            .as_ref()
+                            .is_some_and(|pending| {
+                                pending.handle == handle
+                                    && pending.offset == offset
+                                    && pending.body_offset == body_offset
+                            });
+                    if !is_current || body_offset.saturating_add(chunk.len()) > client.inbound.len()
+                    {
+                        return;
+                    }
+                    client
+                        .inbound
+                        .drain(body_offset..body_offset.saturating_add(chunk.len()));
+                    if let Some(pending) = client.pending_resource_upload.as_mut() {
+                        pending.offset = pending.offset.saturating_add(chunk.len());
+                    }
+                });
+            }
+            Err(_) => fail_pending_resource_upload(component_handle, client_id, handle),
+        }
+        return;
+    }
+
+    match rintawa::engine::user_resources::finish_upload(handle) {
+        Ok(reference) => {
+            clear_pending_resource_upload(component_handle, client_id, handle);
+            let body = serde_json::to_vec(&json!({
+                "id": reference.id,
+                "size": reference.size,
+                "media_type": reference.media_type,
+                "name": reference.name,
+            }))
+            .unwrap_or_default();
+            queue_http_response(component_handle, client_id, 200, "application/json", &body);
+        }
+        Err(_) => fail_pending_resource_upload(component_handle, client_id, handle),
+    }
+}
+
+fn clear_pending_resource_upload(component_handle: u64, client_id: u64, handle: u64) {
+    STATE.with(|state| {
+        if let Some(client) = state
+            .borrow_mut()
+            .components
+            .get_mut(&component_handle)
+            .and_then(|component| component.clients.get_mut(&client_id))
+            && client
+                .pending_resource_upload
+                .as_ref()
+                .is_some_and(|pending| pending.handle == handle)
+        {
+            client.pending_resource_upload = None;
+        }
+    });
+}
+
+fn fail_pending_resource_upload(component_handle: u64, client_id: u64, handle: u64) {
+    let _ = rintawa::engine::user_resources::cancel_upload(handle);
+    clear_pending_resource_upload(component_handle, client_id, handle);
+    queue_http_response(
+        component_handle,
+        client_id,
+        400,
+        "text/plain; charset=utf-8",
+        b"resource import rejected",
+    );
+}
+
+fn picked_asset_signature_length(media_type: &str) -> Option<usize> {
+    match media_type {
+        "image/png" => Some(8),
+        "image/jpeg" => Some(3),
+        "image/webp" => Some(12),
+        _ => None,
+    }
 }
 
 fn picked_asset_media_type_matches(media_type: &str, bytes: &[u8]) -> bool {
@@ -1470,16 +1820,21 @@ fn flush_client_output(component_handle: u64, client_id: u64) -> bool {
 }
 
 fn remove_client(component_handle: u64, client_id: u64) {
-    let socket = STATE.with(|state| {
+    let removed = STATE.with(|state| {
         state
             .borrow_mut()
             .components
             .get_mut(&component_handle)
             .and_then(|component| component.clients.remove(&client_id))
-            .map(|client| client.socket)
     });
-    if let Some(socket) = socket {
-        let _ = rintawa::engine::network::close(socket);
+    if let Some(client) = removed {
+        if let Some(upload) = client.pending_asset_upload {
+            let _ = rintawa::engine::asset_store::cancel_upload(upload.handle);
+        }
+        if let Some(upload) = client.pending_resource_upload {
+            let _ = rintawa::engine::user_resources::cancel_upload(upload.handle);
+        }
+        let _ = rintawa::engine::network::close(client.socket);
     }
 }
 
@@ -2164,12 +2519,52 @@ mod output_tests {
             outbound: Vec::new(),
             outbound_offset: 0,
             pending_asset: None,
+            pending_asset_upload: None,
+            pending_resource_upload: None,
             last_state_digest: None,
             mode: ClientMode::WebSocket {
                 hello_complete: true,
             },
             close_after_write: false,
         }
+    }
+
+    #[test]
+    fn test_should_apply_network_backpressure_while_host_upload_is_pending() {
+        let mut client = test_client();
+        assert_eq!(client_network_read_iterations(&client), 4);
+
+        client.pending_asset_upload = Some(PendingHostUpload {
+            handle: 7,
+            body_offset: 32,
+            content_length: 1024,
+            offset: 0,
+        });
+        assert_eq!(client_network_read_iterations(&client), 1);
+
+        client.pending_asset_upload = None;
+        client.pending_resource_upload = Some(PendingHostUpload {
+            handle: 8,
+            body_offset: 32,
+            content_length: 1024,
+            offset: 0,
+        });
+        assert_eq!(client_network_read_iterations(&client), 1);
+    }
+
+    #[test]
+    fn test_should_stream_bounded_http_ingress_without_buffering_complete_assets() {
+        assert_eq!(
+            client_inbound_limit(&ClientMode::HttpRequest),
+            MAX_HTTP_REQUEST_BUFFER_BYTES
+        );
+        assert!(client_inbound_limit(&ClientMode::HttpRequest) < MAX_PICKED_ASSET_BYTES);
+        assert_eq!(
+            client_inbound_limit(&ClientMode::WebSocket {
+                hello_complete: true,
+            }),
+            MAX_CLIENT_BUFFER_BYTES
+        );
     }
 
     #[test]

@@ -54,7 +54,7 @@ pub(crate) const IMPORT_SOURCE_NODE: &str = "import.source";
 pub(crate) const CAST_CREATE_NODE: &str = "cast.create-world";
 
 const MAX_PRESENTATION_TEXT_BYTES: usize = 4 * 1024;
-const MAX_PRESENTED_ASSET_BYTES: u64 = 1024 * 1024;
+const MAX_PRESENTED_ASSET_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Returns the standard Character management surface contribution.
 pub fn character_library_surface_contribution() -> UiSurfaceContribution {

@@ -23,6 +23,7 @@ import type {
   UiTextInputNode,
 } from "../bridge/types";
 import { InterfaceIcon } from "../icons/InterfaceIcon";
+import { beginWindowPointerResize } from "./pointerResize";
 import {
   EMPTY_PORTABLE_LAYOUT_OVERRIDES,
   effectiveChildOrder,
@@ -839,35 +840,17 @@ function NodeRenderer({
         if (!first || !second) return;
 
         const horizontal = kind.data.axis === "horizontal";
-        const startCoordinate = horizontal ? event.clientX : event.clientY;
         const pairPixels = horizontal
           ? first.width + second.width
           : first.height + second.height;
         const startWeights = [...weights];
 
-        const move = (pointerEvent: PointerEvent) => {
-          const coordinate = horizontal
-            ? pointerEvent.clientX
-            : pointerEvent.clientY;
+        beginWindowPointerResize(kind.data.axis, event, (delta) => {
           layout.setSplitWeights(
             node.id,
-            resizeAdjacentWeights(
-              startWeights,
-              index,
-              coordinate - startCoordinate,
-              pairPixels,
-              72,
-            ),
+            resizeAdjacentWeights(startWeights, index, delta, pairPixels, 72),
           );
-        };
-        const stop = () => {
-          window.removeEventListener("pointermove", move);
-          window.removeEventListener("pointerup", stop);
-          window.removeEventListener("pointercancel", stop);
-        };
-        window.addEventListener("pointermove", move);
-        window.addEventListener("pointerup", stop);
-        window.addEventListener("pointercancel", stop);
+        });
       };
 
       return (
@@ -969,29 +952,14 @@ function NodeRenderer({
         const second = headings[index + 1]?.getBoundingClientRect();
         if (!first || !second) return;
 
-        const startX = event.clientX;
         const pairPixels = first.width + second.width;
         const startWeights = [...weights];
-        const move = (pointerEvent: PointerEvent) => {
+        beginWindowPointerResize("horizontal", event, (delta) => {
           layout.setGridWeights(
             node.id,
-            resizeAdjacentWeights(
-              startWeights,
-              index,
-              pointerEvent.clientX - startX,
-              pairPixels,
-              56,
-            ),
+            resizeAdjacentWeights(startWeights, index, delta, pairPixels, 56),
           );
-        };
-        const stop = () => {
-          window.removeEventListener("pointermove", move);
-          window.removeEventListener("pointerup", stop);
-          window.removeEventListener("pointercancel", stop);
-        };
-        window.addEventListener("pointermove", move);
-        window.addEventListener("pointerup", stop);
-        window.addEventListener("pointercancel", stop);
+        });
       };
 
       const resizeColumnByKeyboard = (index: number, delta: number) => {

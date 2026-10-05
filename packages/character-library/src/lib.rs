@@ -51,8 +51,9 @@ pub use rtw::{
     CHARACTER_TEMPLATE_ENTRY_PATH, CharacterTemplateRtwError, encode_character_template_rtw,
 };
 pub use tavern_v2::{
-    MAX_TAVERN_CARD_BYTES, TavernV2Artwork, TavernV2Error, TavernV2Import, TavernV2Result,
-    export_tavern_v2_json, import_tavern_v2, import_tavern_v2_with_artwork,
+    MAX_TAVERN_CARD_BYTES, TavernV2Artwork, TavernV2DecodedSource, TavernV2Error, TavernV2Import,
+    TavernV2Result, decode_tavern_v2_source, export_tavern_v2_json, import_tavern_v2,
+    import_tavern_v2_with_artwork, normalize_tavern_v2_source,
 };
 
 pub use ui::{

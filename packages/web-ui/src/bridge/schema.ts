@@ -97,7 +97,7 @@ const assetImage = z.object({
     .number()
     .int()
     .positive()
-    .max(1024 * 1024),
+    .max(32 * 1024 * 1024),
   media_type: z.enum(["image/png", "image/webp", "image/jpeg"]),
   alt: z.string(),
   width: z.number().int().positive().max(4096).nullable(),
@@ -136,7 +136,7 @@ const assetPicker = z.object({
     .number()
     .int()
     .positive()
-    .max(16 * 1024 * 1024),
+    .max(32 * 1024 * 1024),
   change_action: identifier,
   is_enabled: z.boolean(),
 });

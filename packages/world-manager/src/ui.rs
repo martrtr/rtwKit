@@ -77,6 +77,7 @@ pub(crate) const COVER_PICKER_NODE: &str = "selection.cover-picker";
 pub(crate) const RENAME_INPUT_NODE: &str = "selection.title-input";
 pub(crate) const DESCRIPTION_INPUT_NODE: &str = "selection.description-input";
 pub(crate) const EDIT_NODE: &str = "selection.edit";
+const ACTIONS_NODE: &str = "selection.actions";
 
 /// Returns the static Portable UI surface declaration for World Manager.
 pub fn world_manager_surface_contribution() -> UiSurfaceContribution {
@@ -498,6 +499,58 @@ fn build_inspector(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiNode
         )
         .with_trait("world-edit-action"),
     );
+
+    let open_id = world_open_node_id(world.world_id);
+    let toggle_id = world_toggle_node_id(world.world_id);
+    let delete_id = world_delete_node_id(world.world_id);
+    let lifecycle_pending = world.pending_active.is_some();
+    let open_enabled = world.pending_active != Some(false);
+    let toggle_label = match world.pending_active {
+        Some(true) => "Starting…",
+        Some(false) => "Stopping…",
+        None if world.active => "Stop",
+        None => "Start",
+    };
+    nodes.push(
+        button_node(
+            open_id.clone(),
+            "Open",
+            WORLD_MANAGER_ACTION_OPEN,
+            open_enabled,
+            UiButtonAppearance::Primary,
+        )
+        .with_trait("world-open-action"),
+    );
+    nodes.push(
+        button_node(
+            toggle_id.clone(),
+            toggle_label,
+            WORLD_MANAGER_ACTION_TOGGLE_ACTIVE,
+            !lifecycle_pending,
+            UiButtonAppearance::Default,
+        )
+        .with_trait("world-lifecycle-action"),
+    );
+    nodes.push(
+        button_node(
+            delete_id.clone(),
+            "Delete",
+            WORLD_MANAGER_ACTION_DELETE,
+            !world.active && !lifecycle_pending,
+            UiButtonAppearance::Danger,
+        )
+        .with_trait("world-delete-action"),
+    );
+    nodes.push(
+        UiNode::new(
+            ACTIONS_NODE,
+            UiNodeKind::Row(UiContainerNode {
+                children: vec![open_id, toggle_id, delete_id],
+            }),
+        )
+        .with_trait("world-inspector-actions")
+        .with_trait("command-set"),
+    );
     nodes.push(
         UiNode::new(
             INSPECTOR_NODE,
@@ -507,6 +560,7 @@ fn build_inspector(nodes: &mut Vec<UiNode>, state: &WorldManagerState) -> UiNode
                     RENAME_INPUT_NODE.into(),
                     DESCRIPTION_INPUT_NODE.into(),
                     EDIT_NODE.into(),
+                    ACTIONS_NODE.into(),
                 ],
             }),
         )

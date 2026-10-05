@@ -73,7 +73,7 @@ const COMPOSER_ATTACH_NODE: &str = "composer.attach";
 const COMPOSER_ATTACHMENTS_NODE: &str = "composer.attachments";
 const CREATE_CONVERSATION_NODE: &str = "conversation.create";
 const MAX_PRESENTATION_TEXT_BYTES: usize = 16 * 1024;
-const MAX_PRESENTED_ASSET_BYTES: u64 = 1024 * 1024;
+const MAX_PRESENTED_ASSET_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Returns the static Portable UI surface declaration for Chat.
 pub fn chat_surface_contribution() -> UiSurfaceContribution {

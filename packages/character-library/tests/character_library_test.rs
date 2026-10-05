@@ -5,12 +5,13 @@ use flate2::{Compression, write::ZlibEncoder};
 use rintawa_artifacts::{ArtifactDigest, AssetStore, RtwArchive, RtwLimits};
 use rintawa_character_library::{
     CHARACTER_TEMPLATE_CONTENT_V1, CHARACTER_TEMPLATE_ENTRY_PATH, CharacterTemplate, TavernV2Error,
-    character_world_schemas, encode_character_template_rtw, export_tavern_v2_json,
-    import_tavern_v2, import_tavern_v2_with_artwork, instantiate_character,
-    pack_character_template_rtw, validate_character_template_descriptor,
+    character_world_schemas, decode_tavern_v2_source, encode_character_template_rtw,
+    export_tavern_v2_json, import_tavern_v2, import_tavern_v2_with_artwork, instantiate_character,
+    normalize_tavern_v2_source, pack_character_template_rtw,
+    validate_character_template_descriptor,
 };
 use rintawa_sdk::{
-    content::{ContentHandlerRequest, ContentHandlerResponse},
+    content::{ContentHandlerRequest, ContentHandlerResponse, MAX_CONTENT_HANDLER_ENTRY_BYTES},
     world::SchemaKind,
 };
 use serde_json::{Value, json};
@@ -82,6 +83,20 @@ fn test_should_normalize_tavern_v2_and_preserve_compatibility_fields() -> anyhow
 }
 
 #[test]
+fn test_should_pack_large_bounded_tavern_compatibility_payload() -> anyhow::Result<()> {
+    let mut card = card_json();
+    card["data"]["extensions"]["vendor/large"] = Value::String("x".repeat(700 * 1024));
+    let template = import_tavern_v2(&serde_json::to_vec(&card)?)?;
+    let descriptor = serde_json::to_vec_pretty(&template)?;
+
+    assert!(descriptor.len() > 128 * 1024);
+    assert!(descriptor.len() <= MAX_CONTENT_HANDLER_ENTRY_BYTES);
+    let rtw = encode_character_template_rtw(&template)?;
+    assert!(!rtw.is_empty());
+    Ok(())
+}
+
+#[test]
 fn test_should_import_character_card_v3_json_and_png_metadata() -> anyhow::Result<()> {
     let mut v3 = card_json();
     v3["spec"] = Value::String(String::from("chara_card_v3"));
@@ -123,6 +138,56 @@ fn test_should_import_base64_tavern_v2_from_png_text_chunk() -> anyhow::Result<(
     let template = import_tavern_v2(&png)?;
     assert_eq!(template.name, "Alice");
     assert_eq!(template.session.alternate_greetings.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn test_should_stage_transport_decode_before_character_normalization() -> anyhow::Result<()> {
+    let mut card = card_json();
+    card["data"]["extensions"]["vendor/large"] = Value::String("x".repeat(700 * 1024));
+    let json = serde_json::to_vec(&card)?;
+    let mut text = b"chara\0".to_vec();
+    text.extend_from_slice(BASE64.encode(json).as_bytes());
+    let mut png = png_header();
+    push_png_chunk(&mut png, b"tEXt", &text);
+    push_png_chunk(&mut png, b"IEND", &[]);
+
+    let staged = normalize_tavern_v2_source(decode_tavern_v2_source(&png)?)?;
+    let direct = import_tavern_v2_with_artwork(&png)?;
+    assert_eq!(staged, direct);
+    assert_eq!(staged.template.name, "Alice");
+    assert!(staged.portrait.is_some());
+    Ok(())
+}
+
+#[test]
+fn test_should_use_last_same_version_png_metadata_chunk() -> anyhow::Result<()> {
+    let first = serde_json::to_vec(&card_json())?;
+    let mut second_card = card_json();
+    second_card["data"]["name"] = Value::String(String::from("Alice updated"));
+    second_card["data"]["character_version"] = Value::String(String::from("8"));
+    let second = serde_json::to_vec(&second_card)?;
+
+    let mut first_text = b"chara\0".to_vec();
+    first_text.extend_from_slice(BASE64.encode(first).as_bytes());
+    let mut second_text = b"chara\0".to_vec();
+    second_text.extend_from_slice(BASE64.encode(second).as_bytes());
+
+    let mut png = png_header();
+    push_png_chunk(&mut png, b"tEXt", &first_text);
+    push_png_chunk(&mut png, b"tEXt", &second_text);
+    push_png_chunk(&mut png, b"IEND", &[]);
+
+    let template = import_tavern_v2(&png)?;
+    assert_eq!(template.name, "Alice updated");
+    assert_eq!(
+        template
+            .compatibility
+            .tavern_v2
+            .as_ref()
+            .map(|value| value.spec_version.as_str()),
+        Some("2.0")
+    );
     Ok(())
 }
 

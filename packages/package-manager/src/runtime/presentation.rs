@@ -471,18 +471,6 @@ pub(super) fn build_surface(state: &ManagerState) -> RenderedSurface {
     }
 
     let context = build_management_context_sink(&mut ui, state, true);
-    let file_import = ui.resource_picker("Install RTW…", "package.file-import", true);
-    let file_import = ui.presentation_semantic(
-        file_import,
-        "management.extensions.file-import",
-        &["management-file-import"],
-    );
-    let commands = ui.row(vec![file_import]);
-    let commands = ui.presentation_semantic(
-        commands,
-        "management.extensions.commands",
-        &["command-set", "management-extension-commands"],
-    );
     let workspace = match state.view {
         View::Browse => build_browse(&mut ui, state),
         View::Installed => build_installed(&mut ui, state),
@@ -497,7 +485,7 @@ pub(super) fn build_surface(state: &ManagerState) -> RenderedSurface {
             ui.column(vec![direct_url, status])
         }
     };
-    ui.finish(vec![context, commands, workspace])
+    ui.finish(vec![context, workspace])
 }
 
 fn build_management_context_sink(
@@ -1095,7 +1083,12 @@ fn build_installed_commands(
         true,
         None,
     );
-    let add_file = ui.button(message(Message::AddFile), "package.add-file", false, None);
+    let install_rtw = ui.resource_picker("Install RTW", "package.file-import", true);
+    let install_rtw = ui.presentation_semantic(
+        install_rtw,
+        "management.extensions.file-import",
+        &["management-file-import"],
+    );
     let direct = ui.button(message(Message::AddFromUrl), "view.direct-url", true, None);
     let repositories = ui.button(
         message(Message::Repositories),
@@ -1103,7 +1096,14 @@ fn build_installed_commands(
         true,
         None,
     );
-    let mut actions = vec![general, download, refresh, add_file, direct, repositories];
+    let mut actions = vec![
+        general,
+        install_rtw,
+        download,
+        refresh,
+        direct,
+        repositories,
+    ];
 
     if let Some(package) = selected {
         actions.push(ui.text(message(Message::SelectedExtension)));

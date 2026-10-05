@@ -15,7 +15,7 @@ pub const MAX_WORLD_TITLE_BYTES: usize = 256;
 /// Maximum UTF-8 byte length accepted for an optional human-facing World description.
 pub const MAX_WORLD_DESCRIPTION_BYTES: usize = 4 * 1024;
 /// Maximum immutable cover image accepted from the standard World Manager picker.
-pub const MAX_WORLD_COVER_BYTES: u64 = 4 * 1024 * 1024;
+pub const MAX_WORLD_COVER_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Transport-neutral immutable asset reference attached to World catalog metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]

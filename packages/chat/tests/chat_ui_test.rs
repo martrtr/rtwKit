@@ -295,7 +295,10 @@ fn test_should_render_sillytavern_style_message_structure_and_composer_shell() {
         .iter()
         .find(|node| node.id.as_str() == "composer.attach")
         .expect("attachment picker");
-    assert!(matches!(attach.kind, UiNodeKind::AssetPicker(_)));
+    let UiNodeKind::AssetPicker(picker) = &attach.kind else {
+        panic!("composer attachment control must remain an asset picker");
+    };
+    assert_eq!(picker.max_bytes, 32 * 1024 * 1024);
     let editing = build_chat_snapshot(
         5,
         Some("world"),

@@ -1,6 +1,6 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, extname, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
 const RINTAWA_BIN = process.env.RINTAWA_BIN;
@@ -12,6 +12,12 @@ const CHARACTER_RTW = process.env.RINTAWA_CHARACTER_RTW;
 const CHAT_RTW = process.env.RINTAWA_CHAT_RTW;
 const HOST = process.env.RINTAWA_SMOKE_HOST ?? "127.0.0.1:44719";
 const KEEP_HOME = process.env.RINTAWA_SMOKE_KEEP_HOME === "1";
+const TAVERN_CARD_PATH = process.env.RINTAWA_TAVERN_CARD_PATH ?? null;
+const TAVERN_EXPECTED_NAME =
+  process.env.RINTAWA_TAVERN_EXPECTED_NAME ?? "Direct V3 Alice";
+const TAVERN_EXPECTED_GREETING =
+  process.env.RINTAWA_TAVERN_EXPECTED_GREETING ?? "Hello from V3.";
+const TAVERN_EXPECTED_GREETING_PROBE = TAVERN_EXPECTED_GREETING.slice(0, 512);
 const WS_URL = `ws://${HOST}/__rintawa/ws`;
 const WORLD_MANAGER_ID = "rintawa.world-manager";
 const PACKAGE_MANAGER_ID = "rintawa.package-manager";
@@ -495,35 +501,44 @@ try {
   ) {
     throw new Error("Character creator leaked a standalone Import Character button");
   }
-  const directCard = Buffer.from(
-    JSON.stringify({
-      spec: "chara_card_v3",
-      spec_version: "3.0",
-      data: {
-        name: "Direct V3 Alice",
-        description: "Created from the World Manager file picker",
-        personality: "Curious",
-        scenario: "A clean import smoke test",
-        first_mes: "Hello from V3.",
-        mes_example: "",
-        creator_notes: "",
-        system_prompt: "",
-        post_history_instructions: "",
-        alternate_greetings: [],
-        tags: ["smoke"],
-        creator: "rtwKit smoke",
-        character_version: "1",
-        extensions: {},
-      },
-    }),
-  );
+  const directCard = TAVERN_CARD_PATH
+    ? await readFile(TAVERN_CARD_PATH)
+    : Buffer.from(
+        JSON.stringify({
+          spec: "chara_card_v3",
+          spec_version: "3.0",
+          data: {
+            name: "Direct V3 Alice",
+            description: "Created from the World Manager file picker",
+            personality: "Curious",
+            scenario: "A clean import smoke test",
+            first_mes: "Hello from V3.",
+            mes_example: "",
+            creator_notes: "",
+            system_prompt: "",
+            post_history_instructions: "",
+            alternate_greetings: [],
+            tags: ["smoke"],
+            creator: "rtwKit smoke",
+            character_version: "1",
+            extensions: {},
+          },
+        }),
+      );
+  const directCardName = TAVERN_CARD_PATH
+    ? basename(TAVERN_CARD_PATH)
+    : "direct-v3-alice.json";
+  const directCardMediaType =
+    TAVERN_CARD_PATH && extname(TAVERN_CARD_PATH).toLowerCase() === ".png"
+      ? "image/png"
+      : "application/json";
   const importedResourceResponse = await fetch(
     `http://${HOST}/__rintawa/import-resource`,
     {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        "X-Rintawa-Resource-Name": "direct-v3-alice.json",
+        "Content-Type": directCardMediaType,
+        "X-Rintawa-Resource-Name": directCardName,
       },
       body: directCard,
     },
@@ -541,12 +556,12 @@ try {
   });
   state = await ui.waitFor((message) =>
     textContent(worldManagerSurface(message, worldManager.instance)).includes(
-      "Direct V3 Alice",
+      TAVERN_EXPECTED_NAME,
     ),
   );
   if (
     !textContent(worldManagerSurface(state, worldManager.instance)).includes(
-      "Direct V3 Alice",
+      TAVERN_EXPECTED_NAME,
     )
   ) {
     throw new Error("direct V3 import did not create a titled World");
@@ -567,7 +582,7 @@ try {
   console.log("SMOKE stage: wait for imported World Chat bootstrap");
   await ui.waitFor((message) => {
     const chat = chatSurface(message);
-    return Boolean(chat) && textContent(chat).includes("Hello from V3.");
+    return Boolean(chat) && textContent(chat).includes(TAVERN_EXPECTED_GREETING_PROBE);
   });
   await new Promise((resolve) => setTimeout(resolve, 1_000));
   const diagnosticChat = chatSurface(ui.latest());
@@ -760,7 +775,7 @@ try {
   await restartedUi.waitFor((message) => {
     const candidate = characterSurface(message, character.instance);
     return (
-      Boolean(candidate) && textContent(candidate).includes("Direct V3 Alice")
+      Boolean(candidate) && textContent(candidate).includes(TAVERN_EXPECTED_NAME)
     );
   });
   restartedUi.socket.close();

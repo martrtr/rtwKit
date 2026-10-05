@@ -637,7 +637,10 @@ textarea {
   padding: 0.45rem 0;
   overflow: auto;
   background: var(--rintawa-ui-color-surface-primary);
-  border-right: 1px solid var(--rintawa-web-color-border);
+}
+
+.rintawa-activity-section-resize-handle {
+  flex-shrink: 0;
 }
 
 .rintawa-activity-section-button {
@@ -946,7 +949,7 @@ textarea {
     width: 100%;
     min-width: 0;
     max-width: none;
-    flex: 0 0 auto;
+    flex: 0 0 auto !important;
     flex-direction: row;
     gap: 0;
     padding: 0;
@@ -958,6 +961,10 @@ textarea {
   }
 
   .rintawa-activity-section-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .rintawa-activity-section-resize-handle {
     display: none;
   }
   .rintawa-activity-section-button {
@@ -1080,42 +1087,60 @@ textarea {
 .rintawa-split-resize-handle {
   position: relative;
   z-index: 3;
-  flex: 0 0 0.4rem;
   align-self: stretch;
   padding: 0;
   border: 0;
   background: transparent;
   touch-action: none;
+  user-select: none;
+}
+
+.rintawa-split-resize-handle::before,
+.rintawa-split-resize-handle::after {
+  position: absolute;
+  content: "";
 }
 
 .rintawa-split-resize-handle::before {
-  position: absolute;
-  content: "";
   background: var(--rintawa-web-color-border);
   transition: background var(--rintawa-web-motion-fast)
     var(--rintawa-web-motion-easing);
 }
 
 .rintawa-split-resize-handle[data-axis="horizontal"] {
+  width: 1px;
+  min-width: 1px;
+  flex: 0 0 1px;
   cursor: col-resize;
 }
 
 .rintawa-split-resize-handle[data-axis="horizontal"]::before {
+  inset: 0;
+}
+
+.rintawa-split-resize-handle[data-axis="horizontal"]::after {
   top: 0;
   bottom: 0;
-  left: calc(50% - 0.5px);
-  width: 1px;
+  left: -0.35rem;
+  right: -0.35rem;
 }
 
 .rintawa-split-resize-handle[data-axis="vertical"] {
+  height: 1px;
+  min-height: 1px;
+  flex: 0 0 1px;
   cursor: row-resize;
 }
 
 .rintawa-split-resize-handle[data-axis="vertical"]::before {
-  top: calc(50% - 0.5px);
+  inset: 0;
+}
+
+.rintawa-split-resize-handle[data-axis="vertical"]::after {
+  top: -0.35rem;
   right: 0;
+  bottom: -0.35rem;
   left: 0;
-  height: 1px;
 }
 
 .rintawa-split-resize-handle:hover::before,
@@ -2427,7 +2452,6 @@ textarea {
   gap: 0.55rem;
   padding: clamp(0.7rem, 2vw, 1.2rem);
   overflow: auto;
-  border-left: 1px solid var(--rintawa-web-color-border);
   background: transparent;
 }
 
@@ -2544,6 +2568,24 @@ textarea {
   font-size: 0.72rem;
 }
 
+.rintawa-resource-picker[data-ui-traits~="management-file-import"] {
+  width: 100%;
+}
+
+.rintawa-resource-picker[data-ui-traits~="management-file-import"] .rintawa-button {
+  width: 100%;
+  justify-content: center;
+  border-color: color-mix(
+    in srgb,
+    var(--rintawa-ui-color-accent) 45%,
+    var(--rintawa-web-color-control-border)
+  );
+  background: color-mix(
+    in srgb,
+    var(--rintawa-ui-color-accent) 12%,
+    var(--rintawa-ui-color-surface-secondary)
+  );
+}
 
 /* Standard World Manager launcher controls. */
 .rintawa-surface:has([data-ui-semantic="management.worlds.launcher@1"]) {
@@ -2574,6 +2616,8 @@ textarea {
 }
 
 .rintawa-column[data-ui-traits~="world-inspector"] {
+  height: 100%;
+  min-height: 0;
   gap: 0.65rem;
   padding: 0.75rem;
   overflow-y: auto;
@@ -2636,4 +2680,22 @@ textarea {
 
 .rintawa-button[data-ui-traits~="world-edit-action"] {
   width: 100%;
+}
+
+.rintawa-row[data-ui-traits~="world-inspector-actions"] {
+  position: sticky;
+  z-index: 2;
+  bottom: -0.75rem;
+  width: calc(100% + 1.5rem);
+  margin: auto -0.75rem -0.75rem;
+  padding: 0.55rem 0.75rem 0.75rem;
+  flex-wrap: nowrap;
+  gap: 0.4rem;
+  border-top: 1px solid var(--rintawa-web-color-border);
+  background: var(--rintawa-ui-color-surface-primary);
+}
+
+.rintawa-row[data-ui-traits~="world-inspector-actions"] > .rintawa-button {
+  min-width: 0;
+  flex: 1 1 0;
 }

@@ -1,13 +1,16 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type {
   ShellLayoutNode,
   WebExperiencePack,
 } from "../src/experience/types";
 import {
+  EMPTY_WORKSPACE_PREFERENCES,
+  readWorkspacePreferences,
   shellLayoutIdentity,
   shellLayoutLabel,
   shellResizeBounds,
+  writeWorkspacePreferences,
 } from "../src/renderer/workspaceLayout";
 
 const workspace: ShellLayoutNode = {
@@ -46,6 +49,8 @@ const pack: WebExperiencePack = {
 };
 
 describe("workspace layout policy", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   test("derives persistent split identity from stable topology rather than labels", () => {
     expect(shellLayoutIdentity(workspace)).toBe(
       "split:horizontal(region:left|region:main)",
@@ -55,6 +60,25 @@ describe("workspace layout policy", () => {
     renamed.shell.region_presentations![0]!.label = "Renamed Navigation";
     expect(shellLayoutIdentity(renamed.shell.workspace)).toBe(
       shellLayoutIdentity(workspace),
+    );
+  });
+
+  test("persists activity section navigation widths with workspace preferences", () => {
+    const values = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => values.set(key, value),
+      },
+    });
+    const preferences = {
+      ...EMPTY_WORKSPACE_PREFERENCES,
+      sectionNavigationWidths: { "activity:rintawa.management": 284 },
+    };
+
+    writeWorkspacePreferences(pack, preferences);
+    expect(readWorkspacePreferences(pack).sectionNavigationWidths).toEqual(
+      preferences.sectionNavigationWidths,
     );
   });
 

@@ -3,7 +3,7 @@ schema = 1
 [package]
 id = "rintawa.character-library"
 name = "Character Library"
-version = "0.0.1"
+version = "0.0.2"
 description = "Standard CharacterTemplate library and Tavern V2 compatibility package"
 license = "GPL-3.0-only"
 authors = ["martrtr"]

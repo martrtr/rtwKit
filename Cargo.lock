@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-character-library"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-character-library-handler"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "rintawa-character-library",
  "wit-bindgen",
@@ -361,7 +361,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-character-library-runtime"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "rintawa-artifacts",
  "rintawa-character-library",
@@ -374,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-chat"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "rintawa-artifacts",
@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-chat-runtime"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "rintawa-artifacts",
  "rintawa-chat",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-package-manager"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "base64",
  "semver",
@@ -440,7 +440,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-web-runtime"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "base64",
  "httparse",
@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-world-manager"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "rintawa-sdk",
@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-world-manager-runtime"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "rintawa-sdk",
  "rintawa-shell-contracts",

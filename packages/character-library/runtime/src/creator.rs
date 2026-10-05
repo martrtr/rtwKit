@@ -4,12 +4,12 @@
 //! World mutations run later from the provider's cooperative task callback, where
 //! normal Host access is active and nested-service reentrancy is avoided.
 
-use std::{cell::RefCell, collections::BTreeMap};
+use std::{cell::RefCell, collections::BTreeMap, mem};
 
 use rintawa_artifacts::{ArtifactDigest, AssetDigest, AssetRef};
 use rintawa_character_library::{
-    CHARACTER_TEMPLATE_CONTENT_V1, CharacterTemplate, encode_character_template_rtw,
-    import_tavern_v2_with_artwork,
+    CHARACTER_TEMPLATE_CONTENT_V1, CharacterTemplate, TavernV2DecodedSource, TavernV2Import,
+    decode_tavern_v2_source, encode_character_template_rtw, normalize_tavern_v2_source,
 };
 use rintawa_sdk::world::EntityId;
 use rintawa_world_creator_contracts::{
@@ -32,10 +32,26 @@ const CREATOR_TASK_INTERVAL_MS: u32 = 50;
 const MAX_CREATOR_OPERATIONS: usize = 8;
 const MAX_CREATOR_POLLS: u16 = 600;
 const MAX_CREATOR_DIAGNOSTIC_BYTES: usize = 2 * 1024;
+const PORTRAIT_UPLOAD_CHUNK_BYTES: usize = 64 * 1024;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum CreatorOperationState {
     Queued(WorldCreatorResourceRef),
+    LoadedResource(Vec<u8>),
+    DecodedResource(TavernV2DecodedSource),
+    ParsedResource(TavernV2Import),
+    UploadingPortrait {
+        imported: TavernV2Import,
+        upload_handle: u64,
+        offset: usize,
+    },
+    PreparedTemplate(CharacterTemplate),
+    EncodedContent {
+        template: CharacterTemplate,
+        rtw: Vec<u8>,
+        expected_revision: String,
+    },
+    Processing,
     AwaitingContent {
         write_operation_id: String,
         template: CharacterTemplate,
@@ -62,7 +78,7 @@ enum CreatorOperationState {
     Completed(Result<String, String>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct CreatorOperation {
     polls: u16,
     state: CreatorOperationState,
@@ -119,9 +135,26 @@ pub(crate) fn start() -> Result<(), String> {
 }
 
 pub(crate) fn stop() {
-    let task_handle = STATE.with(|slot| slot.borrow_mut().task_handle.take());
+    let (task_handle, upload_handles) = STATE.with(|slot| {
+        let mut state = slot.borrow_mut();
+        let task_handle = state.task_handle.take();
+        let upload_handles = state
+            .operations
+            .values()
+            .filter_map(|operation| match &operation.state {
+                CreatorOperationState::UploadingPortrait { upload_handle, .. } => {
+                    Some(*upload_handle)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        (task_handle, upload_handles)
+    });
     if let Some(task_handle) = task_handle {
         let _ = runtime_tasks::cancel(task_handle);
+    }
+    for upload_handle in upload_handles {
+        let _ = asset_store::cancel_upload(upload_handle);
     }
     STATE.with(|slot| *slot.borrow_mut() = CreatorRuntimeState::default());
 }
@@ -168,11 +201,8 @@ pub(crate) fn on_task(handle: u64) -> CreatorTaskOutcome {
         };
         let operation = state.operations.get_mut(&operation_id)?;
         operation.polls = operation.polls.saturating_add(1);
-        Some(Some((
-            operation_id,
-            operation.polls,
-            operation.state.clone(),
-        )))
+        let operation_state = mem::replace(&mut operation.state, CreatorOperationState::Processing);
+        Some(Some((operation_id, operation.polls, operation_state)))
     });
     let Some(next) = next else {
         return CreatorTaskOutcome::Ignored;
@@ -286,7 +316,30 @@ fn poll_operation(operation_id: &str) -> WorldCreatorResponse {
 
 fn advance_operation(operation: CreatorOperationState) -> (CreatorOperationState, bool) {
     match operation {
-        CreatorOperationState::Queued(resource) => (queue_content(resource), false),
+        CreatorOperationState::Queued(resource) => (load_resource(resource), false),
+        CreatorOperationState::LoadedResource(bytes) => (decode_resource(bytes), false),
+        CreatorOperationState::DecodedResource(source) => (normalize_resource(source), false),
+        CreatorOperationState::ParsedResource(imported) => (begin_portrait_upload(imported), false),
+        CreatorOperationState::UploadingPortrait {
+            imported,
+            upload_handle,
+            offset,
+        } => (
+            upload_portrait_chunk(imported, upload_handle, offset),
+            false,
+        ),
+        CreatorOperationState::PreparedTemplate(template) => (encode_content(template), false),
+        CreatorOperationState::EncodedContent {
+            template,
+            rtw,
+            expected_revision,
+        } => (queue_content(template, rtw, expected_revision), false),
+        CreatorOperationState::Processing => (
+            CreatorOperationState::Completed(Err(String::from(
+                "Character importer operation was left in an in-flight state",
+            ))),
+            false,
+        ),
         CreatorOperationState::AwaitingContent {
             write_operation_id,
             template,
@@ -319,34 +372,169 @@ fn advance_operation(operation: CreatorOperationState) -> (CreatorOperationState
     }
 }
 
-fn queue_content(resource: WorldCreatorResourceRef) -> CreatorOperationState {
+fn load_resource(resource: WorldCreatorResourceRef) -> CreatorOperationState {
     let reference = user_resources::ResourceRef {
         id: resource.id,
         size: resource.size,
         media_type: resource.media_type,
         name: resource.name,
     };
-    let result: Result<CreatorOperationState, String> = (|| {
-        let bytes = user_resources::read_resource(&reference, MAX_WORLD_CREATOR_RESOURCE_BYTES)
-            .map_err(|error| format!("Could not read selected file: {error:?}"))?;
-        let imported = import_tavern_v2_with_artwork(&bytes)
-            .map_err(|error| format!("Unsupported Tavern/Character Card: {error}"))?;
-        let template = bind_portrait(imported)?;
-        let rtw = encode_character_template_rtw(&template)
-            .map_err(|error| format!("Could not encode CharacterTemplate: {error}"))?;
-        let expected_revision = ArtifactDigest::sha256(&rtw).to_string();
-        let accepted = user_content::request_import(&rtw)
-            .map_err(|error| format!("Could not queue reusable CharacterTemplate: {error:?}"))?;
-        Ok(CreatorOperationState::AwaitingContent {
-            write_operation_id: accepted.operation_id,
-            template,
-            expected_revision,
-        })
-    })();
+    let result = user_resources::read_resource(&reference, MAX_WORLD_CREATOR_RESOURCE_BYTES)
+        .map(CreatorOperationState::LoadedResource)
+        .map_err(|error| format!("Could not read selected file: {error:?}"));
     let _ = user_resources::release_resource(&reference);
     match result {
         Ok(state) => state,
         Err(reason) => CreatorOperationState::Completed(Err(bounded_reason(&reason))),
+    }
+}
+
+fn decode_resource(bytes: Vec<u8>) -> CreatorOperationState {
+    match decode_tavern_v2_source(&bytes) {
+        Ok(source) => CreatorOperationState::DecodedResource(source),
+        Err(error) => CreatorOperationState::Completed(Err(bounded_reason(&format!(
+            "Unsupported Tavern/Character Card transport: {error}"
+        )))),
+    }
+}
+
+fn normalize_resource(source: TavernV2DecodedSource) -> CreatorOperationState {
+    match normalize_tavern_v2_source(source) {
+        Ok(imported) => CreatorOperationState::ParsedResource(imported),
+        Err(error) => CreatorOperationState::Completed(Err(bounded_reason(&format!(
+            "Unsupported Tavern/Character Card: {error}"
+        )))),
+    }
+}
+
+fn begin_portrait_upload(imported: TavernV2Import) -> CreatorOperationState {
+    let Some(artwork) = imported.portrait.as_ref() else {
+        return CreatorOperationState::PreparedTemplate(imported.into_template());
+    };
+    let expected_size = match u64::try_from(artwork.bytes().len()) {
+        Ok(value) => value,
+        Err(_) => {
+            return CreatorOperationState::Completed(Err(String::from(
+                "Character portrait exceeds addressable upload bounds",
+            )));
+        }
+    };
+    match asset_store::begin_upload(artwork.media_type(), expected_size) {
+        Ok(upload_handle) => CreatorOperationState::UploadingPortrait {
+            imported,
+            upload_handle,
+            offset: 0,
+        },
+        Err(error) => CreatorOperationState::Completed(Err(bounded_reason(&format!(
+            "Could not begin Character portrait publication: {error:?}"
+        )))),
+    }
+}
+
+fn upload_portrait_chunk(
+    imported: TavernV2Import,
+    upload_handle: u64,
+    offset: usize,
+) -> CreatorOperationState {
+    let Some(artwork) = imported.portrait.as_ref() else {
+        let _ = asset_store::cancel_upload(upload_handle);
+        return CreatorOperationState::Completed(Err(String::from(
+            "Character portrait disappeared during publication",
+        )));
+    };
+    if offset < artwork.bytes().len() {
+        let end = offset
+            .saturating_add(PORTRAIT_UPLOAD_CHUNK_BYTES)
+            .min(artwork.bytes().len());
+        if let Err(error) = asset_store::append_upload(upload_handle, &artwork.bytes()[offset..end])
+        {
+            let _ = asset_store::cancel_upload(upload_handle);
+            return CreatorOperationState::Completed(Err(bounded_reason(&format!(
+                "Could not publish Character portrait chunk: {error:?}"
+            ))));
+        }
+        return CreatorOperationState::UploadingPortrait {
+            imported,
+            upload_handle,
+            offset: end,
+        };
+    }
+
+    let published = match asset_store::finish_upload(upload_handle) {
+        Ok(reference) => reference,
+        Err(error) => {
+            let _ = asset_store::cancel_upload(upload_handle);
+            return CreatorOperationState::Completed(Err(bounded_reason(&format!(
+                "Could not finalize Character portrait publication: {error:?}"
+            ))));
+        }
+    };
+    let expected_size = artwork.bytes().len();
+    if published.size != u64::try_from(expected_size).unwrap_or(u64::MAX)
+        || published.media_type != artwork.media_type()
+    {
+        return CreatorOperationState::Completed(Err(String::from(
+            "Host returned mismatched Character portrait metadata",
+        )));
+    }
+    let digest = match AssetDigest::parse(&published.digest) {
+        Ok(value) => value,
+        Err(error) => {
+            return CreatorOperationState::Completed(Err(bounded_reason(&format!(
+                "Host returned invalid portrait digest: {error}"
+            ))));
+        }
+    };
+    let reference = match AssetRef::new(digest, published.size, published.media_type) {
+        Ok(value) => value,
+        Err(error) => {
+            return CreatorOperationState::Completed(Err(bounded_reason(&format!(
+                "Host returned invalid portrait reference: {error}"
+            ))));
+        }
+    };
+
+    // Exact size/media are checked before consuming the host-issued reference.
+    // The owner-scoped streaming upload accepted only bytes from `artwork` and
+    // `finish-upload` returned the immutable reference for that exact staged buffer.
+    // Re-hashing the complete PNG again inside WASM would defeat bounded chunking.
+    let mut template = imported.template;
+    template.assets.portrait = Some(reference);
+    match template.validate() {
+        Ok(()) => CreatorOperationState::PreparedTemplate(template),
+        Err(error) => CreatorOperationState::Completed(Err(bounded_reason(&format!(
+            "Could not validate Character portrait binding: {error}"
+        )))),
+    }
+}
+
+fn encode_content(template: CharacterTemplate) -> CreatorOperationState {
+    match encode_character_template_rtw(&template) {
+        Ok(rtw) => CreatorOperationState::EncodedContent {
+            expected_revision: ArtifactDigest::sha256(&rtw).to_string(),
+            template,
+            rtw,
+        },
+        Err(error) => CreatorOperationState::Completed(Err(bounded_reason(&format!(
+            "Could not encode CharacterTemplate: {error}"
+        )))),
+    }
+}
+
+fn queue_content(
+    template: CharacterTemplate,
+    rtw: Vec<u8>,
+    expected_revision: String,
+) -> CreatorOperationState {
+    match user_content::request_import(&rtw) {
+        Ok(accepted) => CreatorOperationState::AwaitingContent {
+            write_operation_id: accepted.operation_id,
+            template,
+            expected_revision,
+        },
+        Err(error) => CreatorOperationState::Completed(Err(bounded_reason(&format!(
+            "Could not queue reusable CharacterTemplate: {error:?}"
+        )))),
     }
 }
 
@@ -522,6 +710,10 @@ fn rollback_world(world_id: String, reason: String) -> CreatorOperationState {
 fn timed_out_state(operation: CreatorOperationState) -> CreatorOperationState {
     let reason = String::from("Character World import timed out before durable completion");
     match operation {
+        CreatorOperationState::UploadingPortrait { upload_handle, .. } => {
+            let _ = asset_store::cancel_upload(upload_handle);
+            CreatorOperationState::Completed(Err(reason))
+        }
         CreatorOperationState::AwaitingActivation { world_id, .. }
         | CreatorOperationState::AwaitingCharacterCommit { world_id, .. }
         | CreatorOperationState::AwaitingChatCommit { world_id } => {
@@ -536,23 +728,6 @@ fn find_world(world_id: &str) -> Option<world_sessions::Summary> {
         .ok()?
         .into_iter()
         .find(|world| world.world_id == world_id)
-}
-
-fn bind_portrait(
-    imported: rintawa_character_library::TavernV2Import,
-) -> Result<CharacterTemplate, String> {
-    let Some(artwork) = imported.portrait.as_ref() else {
-        return Ok(imported.into_template());
-    };
-    let published = asset_store::import_asset(artwork.bytes(), artwork.media_type())
-        .map_err(|error| format!("Could not publish Character portrait: {error:?}"))?;
-    let digest = AssetDigest::parse(&published.digest)
-        .map_err(|error| format!("Host returned invalid portrait digest: {error}"))?;
-    let reference = AssetRef::new(digest, published.size, published.media_type)
-        .map_err(|error| format!("Host returned invalid portrait reference: {error}"))?;
-    imported
-        .bind_portrait(reference)
-        .map_err(|error| format!("Could not bind Character portrait: {error}"))
 }
 
 fn validate_resource(resource: &WorldCreatorResourceRef) -> Result<(), String> {

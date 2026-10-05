@@ -6,9 +6,11 @@
 
 use std::{cell::RefCell, collections::BTreeSet};
 
+mod catalog_refresh_task;
 mod creator;
 mod import;
 mod materialization;
+mod materialization_task;
 
 use rintawa_character_library::{
     CHARACTER_LIBRARY_SURFACE_ID, CHARACTER_TEMPLATE_CONTENT_V1, CharacterContentDocument,
@@ -100,17 +102,14 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
             log_error(&error);
         }
 
-        let mut controller = CharacterLibraryController::new(WitCharacterLibraryGateway);
-        if let Err(error) = controller.refresh() {
-            log_error(&format!(
-                "Character Library initial catalog refresh failed: {error}"
-            ));
-            return;
-        }
+        let controller = CharacterLibraryController::new(WitCharacterLibraryGateway);
         STATE.with(|slot| {
             *slot.borrow_mut() = Some(controller);
         });
         if let Err(error) = render_surface() {
+            log_error(&error);
+        }
+        if let Err(error) = catalog_refresh_task::schedule() {
             log_error(&error);
         }
     }
@@ -118,6 +117,8 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
     fn stop() {
         creator::stop();
         import::stop();
+        materialization_task::stop();
+        catalog_refresh_task::stop();
         STATE.with(|slot| {
             *slot.borrow_mut() = None;
         });
@@ -169,7 +170,7 @@ impl exports::rintawa::engine::guest::Guest for CharacterLibraryRuntime {
             }
             intent @ (CharacterLibraryIntent::InstantiateCast { .. }
             | CharacterLibraryIntent::InstantiateInWorld { .. }) => {
-                if let Err(error) = materialization::execute_intent(intent) {
+                if let Err(error) = materialization_task::begin(intent) {
                     log_error(&error);
                     return;
                 }
@@ -213,6 +214,33 @@ impl exports::rintawa::engine::task_handler::Guest for CharacterLibraryRuntime {
                 return;
             }
             creator::CreatorTaskOutcome::Ignored => {}
+        }
+        match materialization_task::poll(handle) {
+            materialization_task::MaterializationPoll::Pending
+            | materialization_task::MaterializationPoll::Succeeded => return,
+            materialization_task::MaterializationPoll::Failed(error) => {
+                log_error(&error);
+                return;
+            }
+            materialization_task::MaterializationPoll::Ignored => {}
+        }
+        if catalog_refresh_task::take(handle) {
+            let refresh = STATE.with(|slot| {
+                let mut state = slot.borrow_mut();
+                let controller = state.as_mut().ok_or_else(|| {
+                    String::from("Character catalog refresh ran while library runtime is inactive")
+                })?;
+                controller
+                    .refresh()
+                    .map_err(|error| format!("Character catalog refresh failed: {error}"))
+            });
+            if let Err(error) = refresh {
+                log_error(&error);
+            }
+            if let Err(error) = render_surface() {
+                log_error(&error);
+            }
+            return;
         }
         let terminal = match import::poll(handle) {
             import::ImportPoll::Ignored | import::ImportPoll::Pending => false,

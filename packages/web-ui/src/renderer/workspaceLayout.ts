@@ -9,6 +9,7 @@ export interface WorkspacePreferences {
   activeByRegion: Record<string, string>;
   collapsed: Record<string, boolean>;
   splitWeights: Record<string, number[]>;
+  sectionNavigationWidths: Record<string, number>;
 }
 
 export const EMPTY_WORKSPACE_PREFERENCES: WorkspacePreferences = {
@@ -16,6 +17,7 @@ export const EMPTY_WORKSPACE_PREFERENCES: WorkspacePreferences = {
   activeByRegion: {},
   collapsed: {},
   splitWeights: {},
+  sectionNavigationWidths: {},
 };
 
 export function workspaceStorageKey(pack: WebExperiencePack): string {
@@ -43,6 +45,7 @@ export function readWorkspacePreferences(
       activeByRegion: parsed.activeByRegion ?? {},
       collapsed: parsed.collapsed ?? {},
       splitWeights: parsed.splitWeights ?? {},
+      sectionNavigationWidths: parsed.sectionNavigationWidths ?? {},
     };
   } catch {
     return EMPTY_WORKSPACE_PREFERENCES;

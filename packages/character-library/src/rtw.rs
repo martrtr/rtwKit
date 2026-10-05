@@ -4,8 +4,8 @@
 use std::{fs, path::Path};
 
 use rintawa_artifacts::{
-    ArtifactPath, ContentType, RTW_FORMAT_VERSION, RtwError, RtwLimits, RtwManifest, RtwPackEntry,
-    pack_entries,
+    ArtifactPath, ContentType, RTW_FORMAT_VERSION, RtwCompression, RtwError, RtwLimits,
+    RtwManifest, RtwPackEntry, pack_entries_with_compression,
 };
 use rintawa_sdk::content::MAX_CONTENT_HANDLER_ENTRY_BYTES;
 use thiserror::Error;
@@ -59,10 +59,11 @@ pub fn encode_character_template_rtw(
         content: ContentType::parse(CHARACTER_TEMPLATE_CONTENT_V1)?,
         entry: entry.clone(),
     };
-    let bytes = pack_entries(
+    let bytes = pack_entries_with_compression(
         &manifest,
         [RtwPackEntry::new(entry, descriptor)],
         RtwLimits::default(),
+        RtwCompression::Stored,
     )?;
     Ok(bytes)
 }

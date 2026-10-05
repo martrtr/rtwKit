@@ -219,11 +219,33 @@ fn test_should_normalize_catalog_and_mount_valid_portable_ui_snapshot() -> anyho
     assert_eq!(workspace.axis, UiSplitAxis::Horizontal);
     assert_eq!(workspace.weights, vec![100, 27]);
     let selected_world = controller.state().selected_world().expect("selected world");
+    let open_node = world_open_node_id(selected_world.world_id);
+    let toggle_node = world_toggle_node_id(selected_world.world_id);
     let delete_node = world_delete_node_id(selected_world.world_id);
-    assert!(
-        snapshot.nodes.iter().all(|node| node.id != delete_node),
-        "destructive lifecycle actions belong outside the launcher inspector"
-    );
+    for node_id in [&open_node, &toggle_node, &delete_node] {
+        assert!(
+            snapshot.nodes.iter().any(|node| node.id == *node_id),
+            "selected World lifecycle action must remain visible in the inspector"
+        );
+    }
+    let toggle = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.id == toggle_node)
+        .expect("selected World lifecycle toggle");
+    assert!(matches!(
+        &toggle.kind,
+        UiNodeKind::Button(button) if button.label == "Starting…" && !button.is_enabled
+    ));
+    let delete = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.id == delete_node)
+        .expect("selected World delete action");
+    assert!(matches!(
+        &delete.kind,
+        UiNodeKind::Button(button) if !button.is_enabled
+    ));
     let inspector = snapshot
         .nodes
         .iter()
@@ -243,6 +265,7 @@ fn test_should_normalize_catalog_and_mount_valid_portable_ui_snapshot() -> anyho
             "selection.title-input",
             "selection.description-input",
             "selection.edit",
+            "selection.actions",
         ]
     );
     let ui = UiRuntime::new();

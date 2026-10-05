@@ -288,6 +288,51 @@ describe("web UI bridge", () => {
     ).toThrow();
   });
 
+  test("accepts bounded asset-backed images above the legacy one MiB bridge limit", () => {
+    const message = (size: number) => ({
+      type: "state",
+      protocol_major: 1,
+      surfaces: [
+        {
+          owner: { instance_id: "feature", component_id: "runtime" },
+          contribution: {
+            id: "main",
+            placement: "primary",
+            semantic: null,
+            activity: null,
+            traits: [],
+            required_capabilities: ["rintawa.ui.asset-image@1"],
+          },
+          snapshot: {
+            surface_id: "main",
+            revision: "1",
+            root: "image",
+            nodes: [
+              {
+                id: "image",
+                kind: {
+                  type: "asset-image",
+                  data: {
+                    digest: `sha256:${"a".repeat(64)}`,
+                    size,
+                    media_type: "image/png",
+                    alt: "Large image",
+                    width: null,
+                    height: null,
+                  },
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(parseHostMessage(message(2 * 1024 * 1024)).type).toBe("state");
+    expect(parseHostMessage(message(32 * 1024 * 1024)).type).toBe("state");
+    expect(() => parseHostMessage(message(32 * 1024 * 1024 + 1))).toThrow();
+  });
+
   test("rejects invalid revisions at the web boundary", () => {
     const message = (revision: unknown) => ({
       type: "state",
