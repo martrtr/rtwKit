@@ -325,6 +325,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 [[package]]
 name = "rintawa-artifacts"
 version = "0.0.1"
+source = "git+https://github.com/martrtr/rintawa.git?rev=8293141717be81d2eb47d262c27e30bb1af68659#8293141717be81d2eb47d262c27e30bb1af68659"
 dependencies = [
  "serde",
  "sha2",
@@ -413,6 +414,7 @@ dependencies = [
 [[package]]
 name = "rintawa-sdk"
 version = "0.0.1"
+source = "git+https://github.com/martrtr/rintawa.git?rev=8293141717be81d2eb47d262c27e30bb1af68659#8293141717be81d2eb47d262c27e30bb1af68659"
 dependencies = [
  "secrecy",
  "serde",
@@ -433,6 +435,7 @@ dependencies = [
 [[package]]
 name = "rintawa-ui-runtime"
 version = "0.0.1"
+source = "git+https://github.com/martrtr/rintawa.git?rev=8293141717be81d2eb47d262c27e30bb1af68659#8293141717be81d2eb47d262c27e30bb1af68659"
 dependencies = [
  "rintawa-sdk",
  "serde",
