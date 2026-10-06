@@ -536,7 +536,17 @@ fn build_pending_install(ui: &mut UiBuilder, pending: &PendingInstall) -> String
             ui.column(rows)
         };
 
-        packages.push(ui.column(vec![heading, identity, origin, permissions]));
+        let mut details = vec![heading, identity, origin];
+        if !item.replaces.is_empty() {
+            let label = if item.replaces.len() == 1 {
+                "Replaces legacy package ID"
+            } else {
+                "Replaces legacy package IDs"
+            };
+            details.push(ui.text(format!("{label}: {}", item.replaces.join(", "))));
+        }
+        details.push(permissions);
+        packages.push(ui.column(details));
     }
 
     let package_list = ui.list(packages);

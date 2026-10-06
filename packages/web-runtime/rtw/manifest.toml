@@ -1,6 +1,6 @@
-id = "rintawa.web-runtime"
-name = "Web Runtime"
-version = "0.0.3"
+id = "rintawa.rtwkit.web-runtime"
+name = "rtwKit Web Runtime"
+version = "0.0.4"
 sdk = "^0.0"
 
 [[components]]

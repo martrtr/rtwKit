@@ -1,6 +1,6 @@
-id = "rintawa.web-ui"
-name = "Web UI"
-version = "0.0.6"
+id = "rintawa.rtwkit.web-ui"
+name = "rtwKit Web UI"
+version = "0.0.7"
 sdk = "^0.0"
 
 [[components]]

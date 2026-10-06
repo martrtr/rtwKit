@@ -233,9 +233,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.189"
+version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
 name = "linux-raw-sys"
@@ -337,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-character-library"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "base64",
@@ -354,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-character-library-handler"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "rintawa-character-library",
  "wit-bindgen",
@@ -362,7 +362,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-character-library-runtime"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "rintawa-artifacts",
  "rintawa-character-library",
@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-chat"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "rintawa-artifacts",
@@ -389,7 +389,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-chat-runtime"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "rintawa-artifacts",
  "rintawa-chat",
@@ -401,7 +401,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-package-manager"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "base64",
  "semver",
@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-web-runtime"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "base64",
  "httparse",
@@ -466,7 +466,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-world-manager"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "rintawa-sdk",
@@ -476,7 +476,7 @@ dependencies = [
 
 [[package]]
 name = "rintawa-world-manager-runtime"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "rintawa-sdk",
  "rintawa-shell-contracts",
@@ -752,9 +752,9 @@ checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
 name = "uuid"
-version = "1.26.1"
+version = "1.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
+checksum = "97277d36b9c3ace13e58fa6e753f8b0bbbf302a18dd193240d70f9e29681059a"
 dependencies = [
  "getrandom",
  "js-sys",

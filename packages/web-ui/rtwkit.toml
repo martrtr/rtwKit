@@ -1,14 +1,15 @@
-schema = 1
+schema = 2
 
 [package]
-id = "rintawa.web-ui"
-name = "Web UI"
-version = "0.0.6"
+id = "rintawa.rtwkit.web-ui"
+name = "rtwKit Web UI"
+version = "0.0.7"
+replaces = ["rintawa.web-ui"]
 description = "Default web UI layer for Rintawa"
 license = "GPL-3.0-only"
 
 [[package.dependencies]]
-id = "rintawa.web-runtime"
+id = "rintawa.rtwkit.web-runtime"
 requirement = ">=0.0.1, <0.1.0"
 
 [build]

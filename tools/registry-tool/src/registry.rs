@@ -10,9 +10,9 @@ use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
 
 use crate::model::{
-    DEPENDENCY_REGISTRY_SCHEMA, LEGACY_REGISTRY_SCHEMA, PublishedAsset, PublishedRepository,
-    REGISTRY_SCHEMA, RegistryIndex, RegistryPackage, RegistryVersion, ReleaseMetadata,
-    RepositoryManifest,
+    DEPENDENCY_REGISTRY_SCHEMA, LEGACY_REGISTRY_SCHEMA, PRESENTATION_REGISTRY_SCHEMA,
+    PublishedAsset, PublishedRepository, REGISTRY_SCHEMA, RegistryIndex, RegistryPackage,
+    RegistryVersion, ReleaseMetadata, RepositoryManifest,
 };
 
 const REPOSITORY_MANIFEST_FILE: &str = "registry.toml";
@@ -37,7 +37,10 @@ pub fn build_index(metadata_directory: &Path, output: &Path) -> Result<()> {
             ensure!(
                 matches!(
                     metadata.schema,
-                    LEGACY_REGISTRY_SCHEMA | DEPENDENCY_REGISTRY_SCHEMA | REGISTRY_SCHEMA
+                    LEGACY_REGISTRY_SCHEMA
+                        | DEPENDENCY_REGISTRY_SCHEMA
+                        | PRESENTATION_REGISTRY_SCHEMA
+                        | REGISTRY_SCHEMA
                 ),
                 "unsupported release metadata schema {} in {}",
                 metadata.schema,
@@ -88,6 +91,7 @@ fn assemble_index(
             source_url: latest.package.source_url.clone(),
             logo: latest.package.logo.clone(),
             readme: latest.package.readme.clone(),
+            replaces: latest.package.replaces.clone(),
             latest: latest.package.version.clone(),
             versions: versions.into_iter().map(to_registry_version).collect(),
         });
@@ -247,6 +251,10 @@ fn validate_group(id: &str, versions: &[ReleaseMetadata]) -> Result<()> {
             "package '{id}' changed slug across releases"
         );
         ensure!(
+            release.package.replaces == first.package.replaces,
+            "package '{id}' changed replacement aliases across releases"
+        );
+        ensure!(
             seen_versions.insert(release.package.version.clone()),
             "duplicate version '{}' for package '{id}'",
             release.package.version
@@ -287,6 +295,7 @@ mod tests {
                 source_url: None,
                 logo: None,
                 readme: None,
+                replaces: Vec::new(),
             },
             content: "rintawa.extension@1".into(),
             dependencies: Vec::new(),
@@ -326,6 +335,17 @@ mod tests {
             index.packages[0].versions[0].version,
             Version::parse("2.0.0-alpha.1").unwrap()
         );
+    }
+
+    #[test]
+    fn test_should_publish_package_replacement_aliases() {
+        let mut item = release("1.2.0");
+        item.package.id = "rintawa.rtwkit.example".into();
+        item.package.replaces = vec!["rintawa.example".into()];
+
+        let index = assemble_index(vec![item], None).expect("registry should assemble");
+        assert_eq!(index.schema, REGISTRY_SCHEMA);
+        assert_eq!(index.packages[0].replaces, vec!["rintawa.example"]);
     }
 
     #[test]

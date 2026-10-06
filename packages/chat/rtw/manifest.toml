@@ -1,6 +1,6 @@
-id = "rintawa.chat"
-name = "Chat"
-version = "0.0.2"
+id = "rintawa.rtwkit.chat"
+name = "rtwKit Chat"
+version = "0.0.3"
 sdk = "^0.0"
 
 [[components]]

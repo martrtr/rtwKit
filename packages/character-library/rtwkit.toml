@@ -1,9 +1,10 @@
-schema = 1
+schema = 2
 
 [package]
-id = "rintawa.character-library"
-name = "Character Library"
-version = "0.0.2"
+id = "rintawa.rtwkit.character-library"
+name = "rtwKit Character Library"
+version = "0.0.3"
+replaces = ["rintawa.character-library"]
 description = "Standard CharacterTemplate library and Tavern V2 compatibility package"
 license = "GPL-3.0-only"
 authors = ["martrtr"]

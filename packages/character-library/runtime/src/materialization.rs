@@ -21,7 +21,7 @@ use crate::rintawa::engine::{
     world_registration, world_sessions,
 };
 
-const CHARACTER_LIBRARY_SUBJECT: &str = "rintawa.character-library";
+const CHARACTER_LIBRARY_SUBJECT: &str = "rintawa.rtwkit.character-library";
 
 const DIAGNOSTIC_INVALID_REQUEST: &str = "invalid Character System request";
 const DIAGNOSTIC_INVALID_COMMAND: &str = "invalid Character instantiation command";

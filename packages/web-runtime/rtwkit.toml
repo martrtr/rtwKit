@@ -1,9 +1,10 @@
-schema = 1
+schema = 2
 
 [package]
-id = "rintawa.web-runtime"
-name = "Web Runtime"
-version = "0.0.3"
+id = "rintawa.rtwkit.web-runtime"
+name = "rtwKit Web Runtime"
+version = "0.0.4"
+replaces = ["rintawa.web-runtime"]
 description = "External Web bundle execution runtime for Rintawa"
 license = "GPL-3.0-only"
 

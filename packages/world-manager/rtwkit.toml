@@ -1,9 +1,10 @@
-schema = 1
+schema = 2
 
 [package]
-id = "rintawa.world-manager"
-name = "World Manager"
-version = "0.0.2"
+id = "rintawa.rtwkit.world-manager"
+name = "rtwKit World Manager"
+version = "0.0.3"
+replaces = ["rintawa.world-manager"]
 description = "Standard World catalog and lifecycle management UI for Rintawa"
 license = "GPL-3.0-only"
 authors = ["martrtr"]

@@ -1,6 +1,6 @@
-id = "rintawa.package-manager"
-name = "Package Manager"
-version = "0.0.3"
+id = "rintawa.rtwkit.package-manager"
+name = "rtwKit Package Manager"
+version = "0.0.4"
 sdk = "^0.0"
 
 [[components]]

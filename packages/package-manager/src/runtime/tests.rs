@@ -29,6 +29,7 @@ fn published_package(subject: &str, version: &str, digest: &str) -> CatalogPacka
         source_url: None,
         logo: None,
         readme: None,
+        replaces: Vec::new(),
         latest: version.clone(),
         versions: vec![RegistryVersion {
             version,
@@ -74,6 +75,7 @@ fn prepared(dependencies: Option<Vec<&str>>) -> PreparedInstallItem {
         origin: "test".to_string(),
         dependencies: dependencies
             .map(|items| items.into_iter().map(str::to_string).collect::<Vec<_>>()),
+        replaces: Vec::new(),
         permissions: vec![
             PreparedPermission {
                 component_id: "runtime".to_string(),
@@ -110,6 +112,38 @@ fn seed_dependency_state(runtime_enabled: bool) {
             },
         );
     });
+}
+
+#[test]
+fn test_should_inherit_replaced_activation_enabled_state_only_for_new_identity() {
+    let mut item = prepared(None);
+    item.subject = "rintawa.rtwkit.example".to_string();
+    item.replaces = vec!["rintawa.example".to_string()];
+
+    let mut activations = BTreeMap::new();
+    activations.insert(
+        "rintawa.example".to_string(),
+        installed("rintawa.example", "0.0.1", true),
+    );
+    assert_eq!(
+        replacement_enabled_override(&item, &activations),
+        Some(true)
+    );
+
+    activations
+        .get_mut("rintawa.example")
+        .expect("legacy activation should exist")
+        .enabled = false;
+    assert_eq!(
+        replacement_enabled_override(&item, &activations),
+        Some(false)
+    );
+
+    activations.insert(
+        "rintawa.rtwkit.example".to_string(),
+        installed("rintawa.rtwkit.example", "0.0.2", false),
+    );
+    assert_eq!(replacement_enabled_override(&item, &activations), None);
 }
 
 #[test]
@@ -429,6 +463,11 @@ fn test_should_render_install_rtw_picker_in_general_actions_without_dead_add_fil
         .collect::<Vec<_>>();
     assert_eq!(pickers.len(), 1);
     assert_eq!(pickers[0]["kind"]["data"]["label"], "Install RTW");
+    let max_bytes = pickers[0]["kind"]["data"]["max_bytes"]
+        .as_u64()
+        .expect("Install RTW picker max_bytes should be numeric");
+    assert_eq!(max_bytes, MAX_FILE_IMPORT_BYTES);
+    assert!(max_bytes > 1024 * 1024);
     assert!(!rendered.nodes.iter().any(|node| {
         node.get("kind")
             .and_then(|kind| kind.get("type"))

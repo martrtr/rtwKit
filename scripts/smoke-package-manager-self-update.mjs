@@ -16,7 +16,7 @@ const REGISTRY_RETRY_MS = Number(process.env.RINTAWA_REGISTRY_RETRY_MS ?? "2000"
 const PORT = Number(process.env.RINTAWA_SMOKE_PORT ?? "44719");
 const HOST = `127.0.0.1:${PORT}`;
 const WS_URL = `ws://${HOST}/__rintawa/ws`;
-const PM_ID = "rintawa.package-manager";
+const PM_ID = "rintawa.rtwkit.package-manager";
 
 const UI_CAPABILITIES = [
   "rintawa.ui.text@1",
@@ -299,8 +299,8 @@ try {
     process.exit(0);
   }
   const latestPackageManager = latestRelease(packageManager);
-  const webRuntime = latestRelease(packageById(registry, "rintawa.web-runtime"));
-  const webUi = latestRelease(packageById(registry, "rintawa.web-ui"));
+  const webRuntime = latestRelease(packageById(registry, "rintawa.rtwkit.web-runtime"));
+  const webUi = latestRelease(packageById(registry, "rintawa.rtwkit.web-ui"));
 
   const selected = [
     ["web-runtime.rtw", webRuntime],
@@ -314,7 +314,7 @@ try {
   }
 
   for (const permission of ["background-task", "loopback-listen"]) {
-    grant(home, "rintawa.web-ui", "web", permission);
+    grant(home, "rintawa.rtwkit.web-ui", "web", permission);
   }
   for (const permission of [
     "background-task",

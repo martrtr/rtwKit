@@ -13,8 +13,8 @@ use rintawa_artifacts::{RtwArchive, RtwLimits, pack_directory};
 use sha2::{Digest, Sha256};
 
 use crate::model::{
-    PackageManifest, PublishedArtifact, PublishedAsset, PublishedPackage, PublishedSource,
-    REGISTRY_SCHEMA, RTWKIT_MANIFEST_SCHEMA, ReleaseMetadata,
+    LEGACY_RTWKIT_MANIFEST_SCHEMA, PackageManifest, PublishedArtifact, PublishedAsset,
+    PublishedPackage, PublishedSource, REGISTRY_SCHEMA, RTWKIT_MANIFEST_SCHEMA, ReleaseMetadata,
 };
 
 const PACKAGES_DIRECTORY: &str = "packages";
@@ -156,6 +156,7 @@ pub fn build_package(
             source_url: package.manifest.package.source_url.clone(),
             logo,
             readme,
+            replaces: package.manifest.package.replaces.clone(),
         },
         content,
         dependencies: package.manifest.package.dependencies.clone(),
@@ -298,10 +299,19 @@ fn run_build(package: &LoadedPackage) -> Result<()> {
 
 fn validate_manifest(manifest: &PackageManifest, slug: &str) -> Result<()> {
     ensure!(
-        manifest.schema == RTWKIT_MANIFEST_SCHEMA,
+        matches!(
+            manifest.schema,
+            LEGACY_RTWKIT_MANIFEST_SCHEMA | RTWKIT_MANIFEST_SCHEMA
+        ),
         "unsupported rtwkit.toml schema {}",
         manifest.schema
     );
+    if manifest.schema == LEGACY_RTWKIT_MANIFEST_SCHEMA {
+        ensure!(
+            manifest.package.replaces.is_empty(),
+            "rtwkit.toml schema 1 cannot declare package replacements"
+        );
+    }
     validate_package_id(&manifest.package.id)?;
     let mut dependencies = HashSet::new();
     for dependency in &manifest.package.dependencies {
@@ -314,6 +324,22 @@ fn validate_manifest(manifest: &PackageManifest, slug: &str) -> Result<()> {
             dependencies.insert(dependency.id.clone()),
             "duplicate dependency '{}'",
             dependency.id
+        );
+    }
+    let mut replacements = HashSet::new();
+    for replaced in &manifest.package.replaces {
+        validate_package_id(replaced)?;
+        ensure!(
+            replaced != &manifest.package.id,
+            "package cannot replace itself"
+        );
+        ensure!(
+            !dependencies.contains(replaced),
+            "package cannot both depend on and replace '{replaced}'"
+        );
+        ensure!(
+            replacements.insert(replaced.clone()),
+            "duplicate replacement '{replaced}'"
         );
     }
     ensure!(

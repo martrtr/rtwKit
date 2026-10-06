@@ -1,4 +1,4 @@
-# Rintawa Character Library
+# rtwKit Character Library
 
 Character Library is the recommended first-party package for reusable
 `rintawa.character-template@1` content. It lives in the separate rtwKit repository

@@ -1,9 +1,10 @@
-schema = 1
+schema = 2
 
 [package]
-id = "rintawa.chat"
-name = "Chat"
-version = "0.0.2"
+id = "rintawa.rtwkit.chat"
+name = "rtwKit Chat"
+version = "0.0.3"
+replaces = ["rintawa.chat"]
 description = "Standard persistent branching Chat domain and Portable UI for Rintawa"
 license = "GPL-3.0-only"
 authors = ["martrtr"]

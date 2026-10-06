@@ -1,4 +1,4 @@
-# World Manager
+# rtwKit World Manager
 
 World Manager is the recommended first-party Rintawa package for browsing persistent worlds, creating new worlds, and requesting their active or inactive lifecycle state through the generic `world-sessions` host capability.
 

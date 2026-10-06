@@ -6,7 +6,7 @@ use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
 pub(crate) const BUILTIN_REPOSITORY: &str = "https://martrtr.github.io/rtwKit/index.json";
-pub(crate) const SUPPORTED_REGISTRY_SCHEMAS: &[u32] = &[1, 2, 3];
+pub(crate) const SUPPORTED_REGISTRY_SCHEMAS: &[u32] = &[1, 2, 3, 4];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct RepositoryPreference {
@@ -58,6 +58,8 @@ pub(crate) struct RegistryPackage {
     pub(crate) logo: Option<PublishedAsset>,
     #[serde(default)]
     pub(crate) readme: Option<PublishedAsset>,
+    #[serde(default)]
+    pub(crate) replaces: Vec<String>,
     pub(crate) latest: Version,
     pub(crate) versions: Vec<RegistryVersion>,
 }
@@ -114,6 +116,7 @@ pub(crate) struct CatalogPackage {
     pub(crate) source_url: Option<String>,
     pub(crate) logo: Option<PublishedAsset>,
     pub(crate) readme: Option<PublishedAsset>,
+    pub(crate) replaces: Vec<String>,
     pub(crate) latest: Version,
     pub(crate) versions: Vec<RegistryVersion>,
 }
@@ -129,6 +132,7 @@ pub(crate) struct InstallSelection {
     pub(crate) package_id: String,
     pub(crate) repository_url: String,
     pub(crate) version: RegistryVersion,
+    pub(crate) replaces: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -258,6 +262,7 @@ fn validate_registry(index: &RegistryIndex) -> Result<(), String> {
         }
     }
     let mut ids = BTreeSet::new();
+    let mut replacement_owners: BTreeMap<String, String> = BTreeMap::new();
     for package in &index.packages {
         if package.id.trim().is_empty() || package.name.trim().is_empty() {
             return Err("registry package id/name cannot be empty".to_string());
@@ -267,6 +272,27 @@ fn validate_registry(index: &RegistryIndex) -> Result<(), String> {
         }
         if !ids.insert(package.id.clone()) {
             return Err(format!("duplicate package id '{}'", package.id));
+        }
+        let mut replacements = BTreeSet::new();
+        for replaced in &package.replaces {
+            if replaced.trim().is_empty() || replaced == &package.id {
+                return Err(format!(
+                    "package '{}' has invalid replacement id",
+                    package.id
+                ));
+            }
+            if !replacements.insert(replaced.clone()) {
+                return Err(format!(
+                    "package '{}' repeats replacement '{}'",
+                    package.id, replaced
+                ));
+            }
+            if let Some(owner) = replacement_owners.insert(replaced.clone(), package.id.clone()) {
+                return Err(format!(
+                    "replacement '{}' is claimed by both '{}' and '{}'",
+                    replaced, owner, package.id
+                ));
+            }
         }
         if package.authors.len() > 32
             || package
@@ -416,10 +442,27 @@ pub(crate) fn merge_catalog(
                     source_url: package.source_url,
                     logo: package.logo,
                     readme: package.readme,
+                    replaces: package.replaces,
                     latest: package.latest,
                     versions,
                 },
             );
+        }
+    }
+
+    let replacements = packages
+        .values()
+        .flat_map(|package| {
+            package
+                .replaces
+                .iter()
+                .map(|legacy| (legacy.clone(), package.id.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    for (legacy, canonical) in replacements {
+        if packages.remove(&legacy).is_some() {
+            warnings.push(format!("package '{legacy}' is superseded by '{canonical}'"));
         }
     }
 
@@ -479,6 +522,7 @@ pub(crate) fn solve_install_plan(
             package_id: package_id.clone(),
             repository_url: package.repository_url.clone(),
             version: release,
+            replaces: package.replaces.clone(),
         });
     }
 
@@ -681,6 +725,7 @@ mod tests {
                 source_url: None,
                 logo: None,
                 readme: None,
+                replaces: Vec::new(),
                 latest: Version::parse(latest).unwrap(),
                 versions,
             },
@@ -755,6 +800,45 @@ mod tests {
             .expect("repository identity should be present");
         assert_eq!(repository.id, "example");
         assert_eq!(repository.name, "Example Repository");
+    }
+
+    #[test]
+    fn test_should_hide_superseded_legacy_package_from_merged_catalog() {
+        let version = release("1.0.0", &[]);
+        let registry_package = |id: &str, replaces: Vec<&str>| RegistryPackage {
+            id: id.to_string(),
+            slug: id.rsplit('.').next().unwrap().to_string(),
+            name: id.to_string(),
+            description: "test".to_string(),
+            license: "GPL-3.0-only".to_string(),
+            authors: Vec::new(),
+            homepage: None,
+            source_url: None,
+            logo: None,
+            readme: None,
+            replaces: replaces.into_iter().map(str::to_string).collect(),
+            latest: Version::parse("1.0.0").unwrap(),
+            versions: vec![version.clone()],
+        };
+        let index = RegistryIndex {
+            schema: 4,
+            repository: None,
+            packages: vec![
+                registry_package("rintawa.chat", Vec::new()),
+                registry_package("rintawa.rtwkit.chat", vec!["rintawa.chat"]),
+            ],
+        };
+        validate_registry(&index).expect("replacement registry should validate");
+
+        let catalog = merge_catalog([(BUILTIN_REPOSITORY.to_string(), index)]);
+        assert!(!catalog.packages.contains_key("rintawa.chat"));
+        assert!(catalog.packages.contains_key("rintawa.rtwkit.chat"));
+        assert!(
+            catalog
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("superseded"))
+        );
     }
 
     #[test]

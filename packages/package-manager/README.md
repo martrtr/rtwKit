@@ -1,4 +1,4 @@
-# Package Manager
+# rtwKit Package Manager
 
 Repository-backed extension management for Rintawa.
 

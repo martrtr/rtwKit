@@ -19,10 +19,10 @@ const TAVERN_EXPECTED_GREETING =
   process.env.RINTAWA_TAVERN_EXPECTED_GREETING ?? "Hello from V3.";
 const TAVERN_EXPECTED_GREETING_PROBE = TAVERN_EXPECTED_GREETING.slice(0, 512);
 const WS_URL = `ws://${HOST}/__rintawa/ws`;
-const WORLD_MANAGER_ID = "rintawa.world-manager";
-const PACKAGE_MANAGER_ID = "rintawa.package-manager";
-const CHARACTER_ID = "rintawa.character-library";
-const CHAT_ID = "rintawa.chat";
+const WORLD_MANAGER_ID = "rintawa.rtwkit.world-manager";
+const PACKAGE_MANAGER_ID = "rintawa.rtwkit.package-manager";
+const CHARACTER_ID = "rintawa.rtwkit.character-library";
+const CHAT_ID = "rintawa.rtwkit.chat";
 const WORLD_REFRESH_ACTION = "rintawa.world-manager.refresh";
 const WORLD_TOGGLE_ACTION = "rintawa.world-manager.toggle-active";
 const WORLD_SELECT_ACTION = "rintawa.world-manager.select";

@@ -1,4 +1,4 @@
-# Web UI
+# rtwKit Web UI
 
 Default React UI layer for Rintawa.
 

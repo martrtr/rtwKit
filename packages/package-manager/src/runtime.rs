@@ -259,6 +259,7 @@ struct PreparedInstallItem {
     version: String,
     origin: String,
     dependencies: Option<Vec<String>>,
+    replaces: Vec<String>,
     permissions: Vec<PreparedPermission>,
 }
 
@@ -1635,6 +1636,7 @@ fn prepare_catalog_selection(
         policy,
         origin,
         Some(dependencies),
+        selection.replaces.clone(),
     ))
 }
 
@@ -1643,6 +1645,7 @@ fn prepared_item_from_policy(
     policy: rintawa::engine::runtime_policy::ArtifactPolicy,
     origin: String,
     dependencies: Option<Vec<String>>,
+    replaces: Vec<String>,
 ) -> PreparedInstallItem {
     let mut seen = BTreeSet::new();
     let mut permissions = Vec::new();
@@ -1665,6 +1668,7 @@ fn prepared_item_from_policy(
         version: policy.version,
         origin,
         dependencies,
+        replaces,
         permissions,
     }
 }
@@ -1766,6 +1770,35 @@ fn snapshot_runtime_policy() -> Result<PolicySnapshot, String> {
         .collect())
 }
 
+fn existing_replacements<'a>(
+    item: &'a PreparedInstallItem,
+    activations: &'a BTreeMap<String, InstalledPackage>,
+) -> impl Iterator<Item = &'a str> {
+    item.replaces
+        .iter()
+        .map(String::as_str)
+        .filter(|subject| activations.contains_key(*subject))
+}
+
+fn replacement_enabled_override(
+    item: &PreparedInstallItem,
+    activations: &BTreeMap<String, InstalledPackage>,
+) -> Option<bool> {
+    if activations.contains_key(&item.subject) {
+        return None;
+    }
+
+    let replacements = existing_replacements(item, activations).collect::<Vec<_>>();
+    if replacements.is_empty() {
+        return None;
+    }
+    Some(replacements.iter().any(|subject| {
+        activations
+            .get(*subject)
+            .is_some_and(|activation| activation.enabled)
+    }))
+}
+
 fn managed_install_record_for(
     item: &PreparedInstallItem,
     previous: Option<&ManagedInstallRecord>,
@@ -1795,7 +1828,9 @@ fn confirm_pending_install() -> Result<(), String> {
 
     let scope_id = selected_scope_id();
     for item in &pending.items {
-        let activation = match select_artifact_for_scope(&scope_id, &item.digest, None) {
+        let enabled_override = replacement_enabled_override(item, &before_activations);
+        let activation = match select_artifact_for_scope(&scope_id, &item.digest, enabled_override)
+        {
             Ok(activation) => activation,
             Err(error) => {
                 return install_failure_with_rollback(
@@ -1823,6 +1858,22 @@ fn confirm_pending_install() -> Result<(), String> {
                 &mutated_subjects,
             );
         }
+
+        for legacy_subject in existing_replacements(item, &before_activations) {
+            if let Err(error) = remove_activation_for_scope(&scope_id, legacy_subject) {
+                return install_failure_with_rollback(
+                    format!(
+                        "could not replace legacy activation '{legacy_subject}' with '{}': {error}",
+                        item.subject
+                    ),
+                    &before_activations,
+                    &before_policy,
+                    &mutated_subjects,
+                );
+            }
+            mutated_subjects.push(legacy_subject.to_string());
+        }
+
         selected_principals.insert(
             item.subject.clone(),
             (activation.scope_id, activation.instance_id),
@@ -1873,6 +1924,10 @@ fn confirm_pending_install() -> Result<(), String> {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         for item in &pending.items {
+            for legacy_subject in &item.replaces {
+                let legacy_key = managed_install_key(&state.selected_scope_id, legacy_subject);
+                state.managed_installs.remove(&legacy_key);
+            }
             let key = managed_install_key(&state.selected_scope_id, &item.subject);
             let record = managed_install_record_for(item, state.managed_installs.get(&key));
             state.managed_installs.insert(key, record);
@@ -2099,7 +2154,8 @@ fn import_package_resource(reference: UiActionResourceRef) -> Result<(), String>
             .as_deref()
             .map(|name| format!("local file {name}"))
             .unwrap_or_else(|| String::from("local RTW file"));
-        let item = prepared_item_from_policy(imported.digest, policy, origin.clone(), None);
+        let item =
+            prepared_item_from_policy(imported.digest, policy, origin.clone(), None, Vec::new());
         STATE.with(|state| {
             state.borrow_mut().pending_install = Some(PendingInstall {
                 origin,
@@ -2137,8 +2193,13 @@ fn install_direct_url() -> Result<(), String> {
     }
     let policy = rintawa::engine::runtime_policy::inspect_artifact(&imported.digest)
         .map_err(|error| format!("could not inspect imported RTW: {error:?}"))?;
-    let item =
-        prepared_item_from_policy(imported.digest, policy, format!("direct URL {url}"), None);
+    let item = prepared_item_from_policy(
+        imported.digest,
+        policy,
+        format!("direct URL {url}"),
+        None,
+        Vec::new(),
+    );
     STATE.with(|state| {
         state.borrow_mut().pending_install = Some(PendingInstall {
             origin: format!("direct URL {url}"),

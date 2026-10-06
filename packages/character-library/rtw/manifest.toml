@@ -1,6 +1,6 @@
-id = "rintawa.character-library"
-name = "Character Library"
-version = "0.0.2"
+id = "rintawa.rtwkit.character-library"
+name = "rtwKit Character Library"
+version = "0.0.3"
 sdk = "^0.0"
 
 [[components]]

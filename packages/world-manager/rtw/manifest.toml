@@ -1,6 +1,6 @@
-id = "rintawa.world-manager"
-name = "World Manager"
-version = "0.0.2"
+id = "rintawa.rtwkit.world-manager"
+name = "rtwKit World Manager"
+version = "0.0.3"
 sdk = "^0.0"
 
 [[components]]

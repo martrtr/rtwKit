@@ -59,7 +59,7 @@ jobs:
           cargo run --locked -p rtwkit-registry-tool -- \
             build-index _smoke-release-metadata _smoke-registry/index.json
           version="$(
-            jq -er '.packages[] | select(.id == "rintawa.package-manager") | .latest' \
+            jq -er '.packages[] | select(.id == "rintawa.rtwkit.package-manager") | .latest' \
               _smoke-registry/index.json
           )"
           echo "RINTAWA_EXPECTED_PM_VERSION=$version" >> "$GITHUB_ENV"
