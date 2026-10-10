@@ -43,6 +43,7 @@ const MAX_CARD_AUTHORS_BYTES: usize = 256;
 const MAX_SEARCH_QUERY_BYTES: usize = 512;
 const MAX_REPOSITORY_INPUT_BYTES: usize = 2048;
 const MAX_DIRECT_URL_INPUT_BYTES: usize = 4096;
+const MAX_HTTP_ORIGIN_INPUT_BYTES: usize = 256;
 const INITIAL_REFRESH_DELAY_MS: u32 = 100;
 const HOST_SCOPE_ID: &str = "host";
 const WORLD_SCOPE_PREFIX: &str = "world:";
@@ -274,7 +275,21 @@ enum ActionTarget {
     Package(String),
     Activation(String),
     Repository(usize),
-    Permission { item: usize, permission: usize },
+    Permission {
+        item: usize,
+        permission: usize,
+    },
+    HttpOriginPrincipal {
+        scope_id: String,
+        instance_id: String,
+        component_id: String,
+    },
+    HttpOriginGrant {
+        scope_id: String,
+        instance_id: String,
+        component_id: String,
+        origin: String,
+    },
 }
 
 struct ManagerState {
@@ -285,6 +300,9 @@ struct ManagerState {
     installed: BTreeMap<String, InstalledPackage>,
     installed_policy: BTreeMap<(String, String), Vec<InstalledComponentPolicy>>,
     installed_policy_error: Option<String>,
+    installed_http_origins: Vec<rintawa::engine::runtime_policy::HttpOriginGrant>,
+    installed_http_origins_error: Option<String>,
+    http_origin_inputs: BTreeMap<(String, String, String), String>,
     managed_installs: BTreeMap<String, ManagedInstallRecord>,
     management_scopes: Vec<ManagementScope>,
     selected_scope_id: String,
@@ -326,6 +344,9 @@ impl Default for ManagerState {
             installed: BTreeMap::new(),
             installed_policy: BTreeMap::new(),
             installed_policy_error: None,
+            installed_http_origins: Vec::new(),
+            installed_http_origins_error: None,
+            http_origin_inputs: BTreeMap::new(),
             managed_installs: BTreeMap::new(),
             management_scopes: vec![ManagementScope::host()],
             selected_scope_id: HOST_SCOPE_ID.to_string(),
@@ -747,7 +768,35 @@ fn refresh_installed() {
     refresh_installed_policy();
 }
 
+fn refresh_installed_http_origins() {
+    let scope_id = selected_scope_id();
+    match rintawa::engine::runtime_policy::list_http_origins(&scope_id) {
+        Ok(mut origins) => {
+            origins.sort_by(|left, right| {
+                left.instance_id
+                    .cmp(&right.instance_id)
+                    .then_with(|| left.component_id.cmp(&right.component_id))
+                    .then_with(|| left.origin.cmp(&right.origin))
+            });
+            STATE.with(|state| {
+                let mut state = state.borrow_mut();
+                state.installed_http_origins = origins;
+                state.installed_http_origins_error = None;
+            });
+        }
+        Err(error) => {
+            STATE.with(|state| {
+                let mut state = state.borrow_mut();
+                state.installed_http_origins.clear();
+                state.installed_http_origins_error =
+                    Some(format!("Local HTTP origin policy unavailable: {error:?}"));
+            });
+        }
+    }
+}
+
 fn refresh_installed_policy() {
+    refresh_installed_http_origins();
     let scope_id = selected_scope_id();
     match list_policy_for_scope(&scope_id) {
         Ok(entries) => {
@@ -895,6 +944,65 @@ fn dispatch_action(event: UiActionEvent) -> Result<(), String> {
         "management.scope" => {
             let scope_id = text_payload(event.payload)?;
             select_management_scope(&scope_id)?;
+        }
+        "http-origin.input" => {
+            let (scope_id, instance_id, component_id) =
+                target_http_origin_principal(&event.node_id)?;
+            let value = bounded_text_payload(
+                event.payload,
+                MAX_HTTP_ORIGIN_INPUT_BYTES,
+                "local HTTP origin",
+            )?;
+            require_current_http_scope(&scope_id, &instance_id, &component_id)?;
+            STATE.with(|state| {
+                state
+                    .borrow_mut()
+                    .http_origin_inputs
+                    .insert((scope_id, instance_id, component_id), value);
+            });
+        }
+        "http-origin.grant" => {
+            let (scope_id, instance_id, component_id) =
+                target_http_origin_principal(&event.node_id)?;
+            require_current_http_scope(&scope_id, &instance_id, &component_id)?;
+            let origin = STATE.with(|state| {
+                state
+                    .borrow()
+                    .http_origin_inputs
+                    .get(&(scope_id.clone(), instance_id.clone(), component_id.clone()))
+                    .cloned()
+                    .unwrap_or_default()
+            });
+            if origin.trim().is_empty() {
+                return Err("Enter a full local origin such as http://127.0.0.1:11434".to_string());
+            }
+            rintawa::engine::runtime_policy::grant_http_origin(
+                &scope_id,
+                &instance_id,
+                &component_id,
+                &origin,
+            )
+            .map_err(|error| format!("Could not approve HTTP origin: {error:?}"))?;
+            refresh_installed_http_origins();
+            set_status(format!(
+                "Approved {origin} for {component_id}. Restart this runtime to apply the new policy."
+            ));
+        }
+        "http-origin.revoke" => {
+            let (scope_id, instance_id, component_id, origin) =
+                target_http_origin_grant(&event.node_id)?;
+            require_current_http_scope(&scope_id, &instance_id, &component_id)?;
+            rintawa::engine::runtime_policy::revoke_http_origin(
+                &scope_id,
+                &instance_id,
+                &component_id,
+                &origin,
+            )
+            .map_err(|error| format!("Could not revoke HTTP origin: {error:?}"))?;
+            refresh_installed_http_origins();
+            set_status(format!(
+                "Revoked {origin} for {component_id}. Restart this runtime to apply the new policy."
+            ));
         }
         "package.file-import" => {
             let UiActionPayload::Resource(reference) = event.payload else {
@@ -1200,6 +1308,63 @@ fn target_repository(node_id: &str) -> Result<usize, String> {
     STATE.with(|state| match state.borrow().action_targets.get(node_id) {
         Some(ActionTarget::Repository(index)) => Ok(*index),
         _ => Err("repository action target is stale".to_string()),
+    })
+}
+
+fn target_http_origin_principal(node_id: &str) -> Result<(String, String, String), String> {
+    STATE.with(|state| match state.borrow().action_targets.get(node_id) {
+        Some(ActionTarget::HttpOriginPrincipal {
+            scope_id,
+            instance_id,
+            component_id,
+        }) => Ok((scope_id.clone(), instance_id.clone(), component_id.clone())),
+        _ => Err("HTTP origin principal target is stale".to_string()),
+    })
+}
+
+fn target_http_origin_grant(node_id: &str) -> Result<(String, String, String, String), String> {
+    STATE.with(|state| match state.borrow().action_targets.get(node_id) {
+        Some(ActionTarget::HttpOriginGrant {
+            scope_id,
+            instance_id,
+            component_id,
+            origin,
+        }) => Ok((
+            scope_id.clone(),
+            instance_id.clone(),
+            component_id.clone(),
+            origin.clone(),
+        )),
+        _ => Err("HTTP origin grant target is stale".to_string()),
+    })
+}
+
+fn require_current_http_scope(
+    scope_id: &str,
+    instance_id: &str,
+    component_id: &str,
+) -> Result<(), String> {
+    STATE.with(|state| {
+        let state = state.borrow();
+        if state.selected_scope_id != scope_id {
+            return Err("Selected management scope has changed".to_string());
+        }
+        let valid = state
+            .installed_policy
+            .get(&(scope_id.to_owned(), instance_id.to_owned()))
+            .is_some_and(|components| {
+                components.iter().any(|component| {
+                    component.component_id == component_id
+                        && component
+                            .requested
+                            .iter()
+                            .any(|value| value == "http-request")
+                })
+            });
+        if !valid {
+            return Err("Target no longer requests HTTP access".to_string());
+        }
+        Ok(())
     })
 }
 

@@ -233,6 +233,64 @@ interface network {
     close: func(handle: handle) -> result<_, error>;
 }
 
+/// Owner-scoped bounded asynchronous HTTP requests without implicit redirects.
+interface http-request {
+    /// One validated outbound HTTP header.
+    record header {
+        name: string,
+        value: string,
+    }
+
+    /// HTTP method, target, request headers and bounded body.
+    record request {
+        method: string,
+        url: string,
+        headers: list<header>,
+        body: list<u8>,
+        max-response-bytes: u32,
+    }
+
+    /// Headers are delivered before response bytes.
+    record response-head {
+        status: u16,
+        headers: list<header>,
+    }
+
+    /// One nonblocking poll result. Bytes remain provisional until completed.
+    variant event {
+        pending,
+        response(response-head),
+        data(list<u8>),
+        completed,
+        failed(error),
+    }
+
+    /// Transport/policy failures are distinct from HTTP response status codes.
+    variant error {
+        access-not-active,
+        permission-denied,
+        invalid-url,
+        invalid-method,
+        invalid-header,
+        forbidden-destination,
+        request-too-large,
+        response-too-large,
+        limit-exceeded,
+        unknown-handle,
+        timeout,
+        unavailable,
+    }
+
+    /// Starts one request without blocking on DNS, TLS, upload or response.
+    start: func(request: request) -> result<u64, error>;
+
+    /// Reads at most the requested number of response bytes without blocking.
+    poll: func(handle: u64, max-bytes: u32) -> result<event, error>;
+
+    /// Cancels and closes the exact request owned by this component.
+    close: func(handle: u64) -> result<_, error>;
+}
+
 /// Bounded outbound HTTPS reads available only with an explicit host grant.
 interface http-fetch {
     /// One completed response after safe redirect handling.
@@ -723,6 +781,14 @@ interface runtime-policy {
         granted: list<string>,
     }
 
+    /// One exact Host-approved local HTTP origin for a component principal.
+    record http-origin-grant {
+        scope-id: string,
+        instance-id: string,
+        component-id: string,
+        origin: string,
+    }
+
     /// Failure while reading or mutating runtime permission policy.
     variant error {
         access-not-active,
@@ -755,6 +821,29 @@ interface runtime-policy {
         instance-id: string,
         component-id: string,
         permission: string,
+    ) -> result<_, error>;
+
+    /// Lists exact Host-approved loopback HTTP origins within a chosen scope.
+    /// Requires runtime-policy-read. Results are bounded by the Host.
+    list-http-origins: func(scope-id: string) -> result<list<http-origin-grant>, error>;
+
+    /// Approves one exact HTTP loopback origin, never a path or wildcard.
+    /// The component must have separately received http-request permission.
+    /// Requires runtime-policy-write. Takes effect at next activation.
+    grant-http-origin: func(
+        scope-id: string,
+        instance-id: string,
+        component-id: string,
+        origin: string,
+    ) -> result<_, error>;
+
+    /// Removes one exact HTTP origin approval without affecting adjacent ports.
+    /// Requires runtime-policy-write. Takes effect at next activation.
+    revoke-http-origin: func(
+        scope-id: string,
+        instance-id: string,
+        component-id: string,
+        origin: string,
     ) -> result<_, error>;
 }
 
@@ -1081,6 +1170,7 @@ world plugin {
     import runtime-tasks;
     import network;
     import http-fetch;
+    import http-request;
     import artifact-store;
     import asset-store;
     import user-resources;
@@ -1122,6 +1212,7 @@ world task-runtime-plugin {
     import runtime-tasks;
     import network;
     import http-fetch;
+    import http-request;
     import artifact-store;
     import asset-store;
     import user-resources;
@@ -1153,6 +1244,7 @@ world runtime-provider-plugin {
     import runtime-tasks;
     import network;
     import http-fetch;
+    import http-request;
     import artifact-store;
     import asset-store;
     import user-resources;
@@ -1184,6 +1276,7 @@ world runtime-provider-task-plugin {
     import runtime-tasks;
     import network;
     import http-fetch;
+    import http-request;
     import artifact-store;
     import asset-store;
     import user-resources;

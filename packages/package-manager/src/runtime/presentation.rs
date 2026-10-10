@@ -1045,7 +1045,8 @@ fn build_installed_permissions(
     }
 
     let permissions = ui.list(rows);
-    ui.column(vec![title, permissions])
+    let http_origins = build_http_origin_editor(ui, state, package);
+    ui.column(vec![title, permissions, http_origins])
 }
 
 fn build_installed_details(
@@ -1515,4 +1516,237 @@ fn build_direct_url(ui: &mut UiBuilder, state: &ManagerState) -> String {
         None,
     );
     ui.column(vec![title_row, intro, input, install])
+}
+
+fn build_http_origin_editor(
+    ui: &mut UiBuilder,
+    state: &ManagerState,
+    package: &InstalledPackage,
+) -> String {
+    let key = (package.scope_id.clone(), package.instance_id.clone());
+    let Some(components) = state.installed_policy.get(&key) else {
+        return ui.text("Local HTTP permissions unavailable.");
+    };
+    let mut children = vec![ui.markdown("### Local HTTP origins")];
+    if let Some(error) = state.installed_http_origins_error.as_deref() {
+        children.push(ui.text(error.to_owned()));
+        return ui.column(children);
+    }
+
+    let mut has_http_component = false;
+    for component in components {
+        if !component
+            .requested
+            .iter()
+            .any(|item| item == "http-request")
+        {
+            continue;
+        }
+        has_http_component = true;
+        let is_http_granted = component.granted.iter().any(|item| item == "http-request");
+        children.push(ui.text(format!(
+            "{} · {}",
+            component.component_id,
+            if is_http_granted {
+                "HTTP enabled"
+            } else {
+                "HTTP denied"
+            }
+        )));
+
+        for grant in state.installed_http_origins.iter().filter(|grant| {
+            grant.scope_id == package.scope_id
+                && grant.instance_id == package.instance_id
+                && grant.component_id == component.component_id
+        }) {
+            let label = ui.text(grant.origin.clone());
+            let button = ui.button_with_appearance(
+                "Revoke",
+                "http-origin.revoke",
+                true,
+                Some(ActionTarget::HttpOriginGrant {
+                    scope_id: grant.scope_id.clone(),
+                    instance_id: grant.instance_id.clone(),
+                    component_id: grant.component_id.clone(),
+                    origin: grant.origin.clone(),
+                }),
+                ButtonAppearance::Danger,
+            );
+            children.push(ui.row(vec![label, button]));
+        }
+        if is_http_granted {
+            let target = ActionTarget::HttpOriginPrincipal {
+                scope_id: package.scope_id.clone(),
+                instance_id: package.instance_id.clone(),
+                component_id: component.component_id.clone(),
+            };
+            let key = (
+                package.scope_id.clone(),
+                package.instance_id.clone(),
+                component.component_id.clone(),
+            );
+            let value = state
+                .http_origin_inputs
+                .get(&key)
+                .map(String::as_str)
+                .unwrap_or_default();
+            let input = ui.input(value, "http://127.0.0.1:11434", "http-origin.input", None);
+            ui.action_targets.insert(input.clone(), target.clone());
+            let button = ui.button(
+                "Approve exact origin",
+                "http-origin.grant",
+                !value.trim().is_empty(),
+                Some(target),
+            );
+            children.push(ui.row(vec![input, button]));
+        }
+    }
+    if !has_http_component {
+        return ui.column(Vec::new());
+    }
+    children.push(ui.text(
+        "An explicit http-request grant and an exact local origin approval are both required. Restart the affected runtime to apply changes."
+    ));
+    ui.column(children)
+}
+
+#[cfg(test)]
+mod http_origin_editor_tests {
+    use super::*;
+    use crate::runtime::InstalledComponentPolicy;
+    use crate::runtime::rintawa::engine::runtime_policy::HttpOriginGrant;
+
+    fn installed_provider_state(has_permission: bool) -> (ManagerState, InstalledPackage) {
+        let package = InstalledPackage {
+            subject: "example.provider".to_owned(),
+            name: "Example Provider".to_owned(),
+            version_text: Some("0.0.1".to_owned()),
+            version: None,
+            digest: "sha256:test".to_owned(),
+            instance_id: "test-instance".to_owned(),
+            scope_id: "world:one".to_owned(),
+            enabled: true,
+        };
+        let mut state = ManagerState {
+            selected_scope_id: package.scope_id.clone(),
+            ..ManagerState::default()
+        };
+        state.installed_policy.insert(
+            (package.scope_id.clone(), package.instance_id.clone()),
+            vec![InstalledComponentPolicy {
+                component_id: "runtime".to_owned(),
+                requested: vec!["http-request".to_owned()],
+                granted: if has_permission {
+                    vec!["http-request".to_owned()]
+                } else {
+                    Vec::new()
+                },
+            }],
+        );
+        (state, package)
+    }
+
+    #[test]
+    fn test_should_render_owner_bound_local_origin_grant_and_revoke_controls() {
+        let (mut state, package) = installed_provider_state(true);
+        let key = (
+            package.scope_id.clone(),
+            package.instance_id.clone(),
+            "runtime".to_owned(),
+        );
+        state
+            .http_origin_inputs
+            .insert(key, "http://127.0.0.1:11434".to_owned());
+        state.installed_http_origins.push(HttpOriginGrant {
+            scope_id: package.scope_id.clone(),
+            instance_id: package.instance_id.clone(),
+            component_id: "runtime".to_owned(),
+            origin: "http://127.0.0.1:11434".to_owned(),
+        });
+
+        let mut builder = UiBuilder::new();
+        let id = build_http_origin_editor(&mut builder, &state, &package);
+        assert!(!id.is_empty());
+        let mut inputs = 0;
+        let mut grants = 0;
+        let mut revokes = 0;
+        for target in builder.action_targets.values() {
+            match target {
+                ActionTarget::HttpOriginPrincipal {
+                    scope_id,
+                    instance_id,
+                    component_id,
+                } => {
+                    assert_eq!(scope_id, "world:one");
+                    assert_eq!(instance_id, "test-instance");
+                    assert_eq!(component_id, "runtime");
+                    inputs += 1;
+                }
+                ActionTarget::HttpOriginGrant {
+                    scope_id,
+                    instance_id,
+                    component_id,
+                    origin,
+                } => {
+                    assert_eq!(scope_id, "world:one");
+                    assert_eq!(instance_id, "test-instance");
+                    assert_eq!(component_id, "runtime");
+                    assert_eq!(origin, "http://127.0.0.1:11434");
+                    revokes += 1;
+                }
+                _ => {}
+            }
+        }
+        // Text input and Approve button share the same principal identity.
+        assert_eq!(inputs, 2);
+        assert_eq!(revokes, 1);
+        for node in &builder.nodes {
+            let data = &node["kind"]["data"];
+            if data["change_action"] == "http-origin.input" {
+                assert_eq!(data["value"], "http://127.0.0.1:11434");
+            }
+            if data["action"] == "http-origin.grant" {
+                grants += 1;
+            }
+        }
+        assert_eq!(grants, 1);
+    }
+
+    #[test]
+    fn test_should_not_offer_new_origin_approval_without_http_request_permission() {
+        let (state, package) = installed_provider_state(false);
+        let mut builder = UiBuilder::new();
+        build_http_origin_editor(&mut builder, &state, &package);
+        assert!(
+            builder
+                .action_targets
+                .values()
+                .all(|target| !matches!(target, ActionTarget::HttpOriginPrincipal { .. }))
+        );
+    }
+
+    #[test]
+    fn test_should_not_render_other_components_or_scope_origin_grants() {
+        let (mut state, package) = installed_provider_state(true);
+        for (scope_id, instance_id, component_id) in [
+            ("world:two", "test-instance", "runtime"),
+            ("world:one", "another-instance", "runtime"),
+            ("world:one", "test-instance", "another-component"),
+        ] {
+            state.installed_http_origins.push(HttpOriginGrant {
+                scope_id: scope_id.to_owned(),
+                instance_id: instance_id.to_owned(),
+                component_id: component_id.to_owned(),
+                origin: "http://127.0.0.1:10001".to_owned(),
+            });
+        }
+        let mut builder = UiBuilder::new();
+        build_http_origin_editor(&mut builder, &state, &package);
+        assert!(
+            builder
+                .action_targets
+                .values()
+                .all(|target| !matches!(target, ActionTarget::HttpOriginGrant { .. }))
+        );
+    }
 }

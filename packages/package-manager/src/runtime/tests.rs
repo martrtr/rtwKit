@@ -476,3 +476,83 @@ fn test_should_render_install_rtw_picker_in_general_actions_without_dead_add_fil
             && node["kind"]["data"]["label"] == "Add File"
     }));
 }
+
+#[test]
+fn test_should_reject_stale_http_origin_action_after_scope_switch() {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        *state = ManagerState::default();
+        state.selected_scope_id = String::from("world:other");
+        state.installed_policy.insert(
+            (String::from("world:one"), String::from("provider")),
+            vec![InstalledComponentPolicy {
+                component_id: String::from("runtime"),
+                requested: vec![String::from("http-request")],
+                granted: vec![String::from("http-request")],
+            }],
+        );
+    });
+    assert!(require_current_http_scope("world:one", "provider", "runtime").is_err());
+}
+
+#[test]
+fn test_should_reject_http_origin_action_for_unrequested_component() {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        *state = ManagerState::default();
+        state.installed_policy.insert(
+            (String::from("host"), String::from("provider")),
+            vec![InstalledComponentPolicy {
+                component_id: String::from("runtime"),
+                requested: vec![String::from("background-task")],
+                granted: vec![String::from("background-task")],
+            }],
+        );
+    });
+    assert!(require_current_http_scope("host", "provider", "runtime").is_err());
+}
+
+#[test]
+fn test_should_allow_only_current_principal_http_origin_action() {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        *state = ManagerState::default();
+        state.installed_policy.insert(
+            (String::from("host"), String::from("provider")),
+            vec![InstalledComponentPolicy {
+                component_id: String::from("runtime"),
+                requested: vec![String::from("http-request")],
+                granted: vec![String::from("http-request")],
+            }],
+        );
+    });
+    assert!(require_current_http_scope("host", "provider", "runtime").is_ok());
+    assert!(require_current_http_scope("host", "provider", "adjacent").is_err());
+    assert!(require_current_http_scope("host", "different", "runtime").is_err());
+}
+
+#[test]
+fn test_should_not_use_unbound_http_origin_action_targets() {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        *state = ManagerState::default();
+        state.action_targets.insert(
+            String::from("bound-node"),
+            ActionTarget::HttpOriginPrincipal {
+                scope_id: String::from("host"),
+                instance_id: String::from("provider"),
+                component_id: String::from("runtime"),
+            },
+        );
+    });
+    assert!(target_http_origin_principal("unbound-node").is_err());
+    assert_eq!(
+        target_http_origin_principal("bound-node").expect("test target should exist"),
+        (
+            String::from("host"),
+            String::from("provider"),
+            String::from("runtime")
+        )
+    );
+    assert!(target_http_origin_grant("bound-node").is_err());
+}
