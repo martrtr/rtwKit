@@ -111,6 +111,7 @@ struct WebComponent {
     task: Option<u64>,
     clients: BTreeMap<u64, Client>,
     management_context: ShellManagementContext,
+    last_broadcast_signature: Option<(u64, u64)>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -307,6 +308,7 @@ impl exports::rintawa::engine::target_provider::Guest for WebRuntime {
                     task: None,
                     clients: BTreeMap::new(),
                     management_context: ShellManagementContext::default(),
+                    last_broadcast_signature: None,
                 },
             );
             Ok(handle)
@@ -2129,6 +2131,10 @@ fn client_hello_complete(component_handle: u64, client_id: u64) -> bool {
     })
 }
 
+fn needs_presentation_snapshot(last: Option<(u64, u64)>, now: (u64, u64)) -> bool {
+    last != Some(now)
+}
+
 fn broadcast_state_if_changed(component_handle: u64) {
     let has_ready_clients = STATE.with(|state| {
         state
@@ -2149,6 +2155,39 @@ fn broadcast_state_if_changed(component_handle: u64) {
     if !has_ready_clients {
         return;
     }
+    // The idle 10ms network tick checks only a constant-size generation, not
+    // the full UI tree and its JSON serialization.
+    let generation = match rintawa::engine::ui_layer::presentation_generation() {
+        Ok(value) => value,
+        Err(error) => {
+            rintawa::engine::host::log(
+                rintawa::engine::host::LogLevel::Error,
+                &format!("Web UI could not read presentation generation: {error:?}"),
+            );
+            return;
+        }
+    };
+    let signature = STATE.with(|state| {
+        state
+            .borrow()
+            .components
+            .get(&component_handle)
+            .map(|component| (generation, component.management_context.revision))
+    });
+    let Some(signature) = signature else {
+        return;
+    };
+    if STATE.with(|state| {
+        state
+            .borrow()
+            .components
+            .get(&component_handle)
+            .is_some_and(|component| {
+                !needs_presentation_snapshot(component.last_broadcast_signature, signature)
+            })
+    }) {
+        return;
+    }
     let Some(message) = current_state_message(component_handle) else {
         return;
     };
@@ -2158,6 +2197,7 @@ fn broadcast_state_if_changed(component_handle: u64) {
         let Some(component) = state.components.get_mut(&component_handle) else {
             return Vec::new();
         };
+        component.last_broadcast_signature = Some(signature);
         component
             .clients
             .iter_mut()
@@ -2649,5 +2689,33 @@ mod config_tests {
             validate_config(&config),
             Err(TargetError::InvalidDescriptor)
         ));
+    }
+}
+
+#[cfg(test)]
+mod idle_presentation_tests {
+    use super::*;
+
+    #[test]
+    fn unchanged_generation_and_context_skip_full_ui_snapshot() {
+        let current = (42, 3);
+        assert!(needs_presentation_snapshot(None, current));
+        assert!(!needs_presentation_snapshot(Some(current), current));
+        assert!(!needs_presentation_snapshot(Some(current), current));
+    }
+
+    #[test]
+    fn both_surface_and_management_context_invalidate_cached_presentation() {
+        let previous = Some((42, 3));
+        assert!(needs_presentation_snapshot(previous, (43, 3)));
+        assert!(needs_presentation_snapshot(previous, (42, 4)));
+        assert!(needs_presentation_snapshot(previous, (43, 4)));
+    }
+
+    #[test]
+    fn new_component_without_snapshot_requires_full_presentation() {
+        let previous = None;
+        assert!(needs_presentation_snapshot(previous, (1, 0)));
+        assert!(needs_presentation_snapshot(previous, (1, 0)));
     }
 }
