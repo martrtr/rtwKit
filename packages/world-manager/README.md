@@ -1,7 +1,9 @@
-# rtwKit World Manager
+# World Manager
 
-World Manager is the recommended first-party Rintawa package for browsing persistent worlds, creating new worlds, and requesting their active or inactive lifecycle state through the generic `world-sessions` host capability.
+World Manager is the standard interface for browsing and managing Rintawa Worlds.
+It lists stored Worlds, initiates World creation and controls activation and focus
+through the Host's world-session capabilities.
 
-The package owns product policy and Portable UI presentation only. World identity, durable storage, activation authority, permissions, and lifecycle execution remain generic Rintawa Core mechanisms. Another package can replace World Manager without changing Core.
-
-The `0.0.1` package contains the bounded deterministic catalog/controller, Portable UI rendering model, and a thin WASM adapter over the public `world-sessions` and `portable-ui` WIT contracts. The adapter requests only `world-session-read` and `world-session-write`; it does not receive privileged Core integration.
+The package renders its interface through Portable UI and requests
+`world-session-read` and `world-session-write` permissions. Its runtime component
+uses the public `world-sessions` and `portable-ui` contracts.

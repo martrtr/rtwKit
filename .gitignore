@@ -5,6 +5,10 @@
 __pycache__/
 *.pyc
 
+# Local editor and planning files
+.vscode/
+.idea/
+
 # Local secrets and credentials
 .env
 .env.*

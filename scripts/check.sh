@@ -5,6 +5,11 @@ set -euo pipefail
 repository_root="$(git rev-parse --show-toplevel)"
 cd "$repository_root"
 
+if git ls-files -- .vscode/ .idea/ | grep -q .; then
+    echo "Local editor and planning files must not be tracked." >&2
+    exit 1
+fi
+
 bash scripts/test-secret-scan.sh
 bash scripts/scan-secrets.sh
 

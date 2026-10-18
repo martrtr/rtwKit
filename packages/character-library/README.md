@@ -1,35 +1,19 @@
-# rtwKit Character Library
+# Character Library
 
-Character Library is the recommended first-party package for reusable
-`rintawa.character-template@1` content. It lives in the separate rtwKit repository
-and owns CharacterTemplate semantics, bounded Tavern/Character Card V2 JSON+PNG
-compatibility, RTW content packing, content-handler validation, and runtime-neutral
-Character instantiation plans.
+Character Library provides reusable character templates and an import flow for
+Rintawa Worlds. It supports Tavern-compatible character data and keeps imported
+templates in the persistent user-content library.
 
-Rintawa Core remains feature-neutral: it provides generic content, asset, schema,
-world, and service mechanisms but contains no Character-specific implementation.
-The package ships a permissionless Component Model content-handler for
-`rintawa.character-template@1` plus a Portable UI/runtime component built only on generic
-`user-content-read`, deferred `user-content-write`, `background-task`,
-`world-session-write`, `world-command-submit`, read-only `composition-read`, world schema
-registration, and the public World System service protocol. The Library UI browses the real
-persistent user-content index and can submit bounded Tavern V2 JSON through the same
-handler-before-CAS publication path used by native imports. Creating a World captures the exact
-validated template into self-contained `rintawa.character.instantiate@2`; the World-scoped
-instance verifies its canonical RTW digest and proposes ordinary entity/facet/event changes.
-Core remains authoritative for validation and commit.
+The package contains:
 
-For the standard “Create World” flow, the exact Character Library activation must
-be selected as a `world-default` before the World is created. The runtime verifies
-this through read-only composition metadata before creating anything. Core then copies that
-exact immutable artifact and its granted component permissions into the new World scope. This is
-composition policy, not hidden package privilege.
+- a content handler for `rintawa.character-template@1`;
+- a library interface for browsing and importing templates;
+- a World creation provider that materializes a selected template into a new World;
+- support for associating validated portrait assets with character identities.
 
-Tavern PNG import now separates the embedded card metadata from sanitized portrait PNG bytes.
-The portrait bytes can be published through the generic immutable asset store and are bound only
-when the returned `AssetRef` matches the exact digest, size, and `image/png` media type. New live
-Characters persist that optional reference in `rintawa.character.identity@2`; the original
-`identity@1` schema remains unchanged for existing Worlds. Generic deferred user-content writes
-are now implemented and the production JSON import path is restart-tested. A renderer-neutral
-binary file/resource picker is still required before the same UI can ingest PNG cards directly;
-richer replace/edit/export UX remains package work rather than a Character-specific Core API.
+The creation flow requires the Character Library artifact to be selected in the
+`default-world` composition before a World is created. This ensures that each
+created World retains the exact extension version used for its character data.
+
+JSON import and persistent World creation are supported. Direct PNG card
+selection through the UI requires additional file-picker integration.

@@ -15,6 +15,12 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      - name: Check tracked local files
+        run: |
+          if git ls-files -- .vscode/ .idea/ | grep -q .; then
+            echo "Local editor and planning files must not be tracked." >&2
+            exit 1
+          fi
       - name: Scan repository for secrets
         run: |
           bash scripts/test-secret-scan.sh
