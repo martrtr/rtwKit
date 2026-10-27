@@ -331,13 +331,26 @@ fn tick() -> Result<(), &'static str> {
     }
 }
 
+/// Build a projection for the exact committed/anchored conversation, never
+/// auto-select whichever Chat surface happens to be open. A durable retry can
+/// run without a mounted Chat UI and still resolve the same World conversation.
+fn projection_input(purpose: &ProjectionPurpose) -> ChatProjectionInput {
+    let conversation_id = match purpose {
+        ProjectionPurpose::SelectTurn(trigger) => trigger.conversation_id,
+        ProjectionPurpose::Revalidate { controller, .. } => controller.anchor().conversation_id,
+    };
+    ChatProjectionInput {
+        conversation_id: Some(conversation_id),
+    }
+}
+
 fn request_projection(purpose: ProjectionPurpose) -> Result<Work, &'static str> {
     let world_id = STATE
         .with(|slot| slot.borrow().world_id.clone())
         .ok_or("Narrator has no bound World")?;
     let schema = chat_conversation_projection_schema_key()
         .map_err(|_| "Narrator Chat projection schema unavailable")?;
-    let input = serde_json::to_vec(&ChatProjectionInput::default())
+    let input = serde_json::to_vec(&projection_input(&purpose))
         .map_err(|_| "Narrator projection request encoding failed")?;
     let accepted = world_projections::request_read(&world_projections::Request {
         world_id,
@@ -590,6 +603,105 @@ export!(NarratorRuntime);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_should_pin_both_projection_rounds_to_original_conversation() {
+        use rintawa_narrator::{ControllerMode, ResponderSelection};
+
+        let world_id = WorldId::new();
+        let first = EntityId::new();
+        let second = EntityId::new();
+        let message_id = EntityId::new();
+        let revision_id = EntityId::new();
+        let author = EntityId::new();
+        let responder = EntityId::new();
+        let responder_entity = EntityId::new();
+        let trigger = QueuedTrigger {
+            source_event_id: WorldEventId::new(),
+            conversation_id: first,
+            message_id,
+            revision_id,
+            author_participant_id: author,
+            parent_message_id: None,
+            alternative_of: None,
+            commit_position: 5,
+        };
+        let initial = projection_input(&ProjectionPurpose::SelectTurn(trigger));
+        assert_eq!(initial.conversation_id, Some(first));
+        assert_ne!(initial.conversation_id, Some(second));
+        assert_eq!(
+            serde_json::to_value(&initial).unwrap()["conversation-id"],
+            serde_json::to_value(first).unwrap()
+        );
+
+        let anchor = TurnAnchor {
+            conversation_id: first,
+            trigger_message_id: message_id,
+            trigger_revision_id: revision_id,
+            trigger_author_participant_id: author,
+            trigger_parent_message_id: None,
+            trigger_alternative_of: None,
+            responder_selection: ResponderSelection::Explicit(responder),
+            responder_participant_id: responder,
+            responder_entity_id: responder_entity,
+            initial_position: 5,
+        };
+        let purpose = ProjectionPurpose::Revalidate {
+            controller: GenerationController::new(anchor),
+            policy: ControllerPolicy::new(world_id, 1, ControllerMode::UniqueAuthorized).unwrap(),
+        };
+        assert_eq!(projection_input(&purpose).conversation_id, Some(first));
+        assert_ne!(projection_input(&purpose).conversation_id, Some(second));
+    }
+
+    #[test]
+    fn test_should_ignore_cross_conversation_leaf_without_calling_inference() {
+        use rintawa_chat::ChatConversationView;
+        use rintawa_narrator::ControllerMode;
+
+        let world = WorldId::new();
+        let origin = EntityId::new();
+        let selected_elsewhere = EntityId::new();
+        let trigger_message = EntityId::new();
+        let event = QueuedTrigger {
+            source_event_id: WorldEventId::new(),
+            conversation_id: origin,
+            message_id: trigger_message,
+            revision_id: EntityId::new(),
+            author_participant_id: EntityId::new(),
+            parent_message_id: None,
+            alternative_of: None,
+            commit_position: 10,
+        };
+        let policy = ControllerPolicy::new(world, 1, ControllerMode::UniqueAuthorized)
+            .expect("valid controller policy");
+        let view = ChatConversationView {
+            conversations: vec![],
+            selected_conversation_id: Some(selected_elsewhere),
+            selected_leaf: Some(trigger_message),
+            participants: vec![],
+            messages: vec![],
+        };
+        // There is no installed provider, registered service, or active World
+        // in this test: any attempt to start inference would fail rather than
+        // return a rejected unrelated conversation.
+        assert!(matches!(
+            start_turn(&view, 10, &event, policy.clone()),
+            Ok(None)
+        ));
+        let mut same_conversation = view;
+        same_conversation.selected_conversation_id = Some(origin);
+        same_conversation.selected_leaf = Some(EntityId::new());
+        assert!(matches!(
+            start_turn(&same_conversation, 10, &event, policy.clone()),
+            Ok(None)
+        ));
+        same_conversation.selected_leaf = Some(trigger_message);
+        assert!(matches!(
+            start_turn(&same_conversation, 9, &event, policy),
+            Ok(None)
+        ));
+    }
 
     #[test]
     fn test_should_require_single_world_local_provider_without_implicit_fallback() {
