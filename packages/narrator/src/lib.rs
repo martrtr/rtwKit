@@ -14,6 +14,7 @@ pub mod controller;
 pub mod durable;
 pub mod intent;
 pub mod policy;
+pub mod route;
 
 pub use context::{
     MAX_BRANCH_DEPTH, MAX_MESSAGE_INPUT_BYTES, MAX_PROJECTED_MESSAGES, MAX_PROMPT_HISTORY,
@@ -29,6 +30,10 @@ pub use controller::{
 pub use policy::{
     CONTROLLER_POLICY_PREFERENCE, CONTROLLER_POLICY_VERSION, ControllerMode, ControllerPolicy,
     ControllerPolicyError, MAX_CONTROLLER_POLICY_BYTES,
+};
+pub use route::{
+    CommittedReactionSource, MAX_REPLAY_EVENT_PAYLOAD_BYTES, NarratorReactionRoute,
+    ReactionRouteDecision, ReactionRouteError,
 };
 
 pub use durable::{
