@@ -17,9 +17,10 @@ use rintawa_inference_contracts::{
 };
 use rintawa_narrator::{
     CONTROLLER_POLICY_PREFERENCE, ControllerPolicy, ControllerPolicyError, GenerationController,
-    GenerationProgress, NarratorContextError, TurnAnchor, prepare_turn, prepare_turn_for_responder,
+    GenerationProgress, NarratorContextError, ReactionIntent, TurnAnchor, prepare_turn,
+    prepare_turn_for_responder,
 };
-use rintawa_sdk::world::{EntityId, SchemaKey, WorldId};
+use rintawa_sdk::world::{EntityId, SchemaKey, WorldEventId, WorldId};
 use serde::Deserialize;
 
 wit_bindgen::generate!({
@@ -83,6 +84,7 @@ struct ActiveStream {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct QueuedTrigger {
+    source_event_id: WorldEventId,
     conversation_id: EntityId,
     message_id: EntityId,
     revision_id: EntityId,
@@ -122,6 +124,7 @@ fn enqueue_trigger(state: &mut RuntimeState, trigger: QueuedTrigger) -> bool {
 #[derive(Debug, Deserialize)]
 struct ChatMessageEnvelope {
     world_id: WorldId,
+    id: WorldEventId,
     commit_position: u64,
     schema: SchemaKey,
     payload: MessageAddedEvent,
@@ -138,14 +141,22 @@ fn decode_chat_event(topic: &str, bytes: &[u8], expected_world: &str) -> Option<
     {
         return None;
     }
+    let identity = ReactionIntent::from_committed_message(
+        envelope.world_id,
+        envelope.id,
+        envelope.commit_position,
+        &envelope.payload,
+    )
+    .ok()?;
     Some(QueuedTrigger {
-        conversation_id: envelope.payload.conversation_id,
-        message_id: envelope.payload.message_id,
-        revision_id: envelope.payload.revision_id,
-        author_participant_id: envelope.payload.participant_id,
-        parent_message_id: envelope.payload.parent_message_id,
-        alternative_of: envelope.payload.alternative_of,
-        commit_position: envelope.commit_position,
+        source_event_id: identity.event_id(),
+        conversation_id: identity.conversation_id(),
+        message_id: identity.message_id(),
+        revision_id: identity.revision_id(),
+        author_participant_id: identity.author_participant_id(),
+        parent_message_id: identity.parent_message_id(),
+        alternative_of: identity.alternative_of(),
+        commit_position: identity.source_position(),
     })
 }
 
@@ -594,9 +605,11 @@ mod tests {
         let message = EntityId::new();
         let revision = EntityId::new();
         let author = EntityId::new();
+        let source_event_id = WorldEventId::new();
         let event_schema: SchemaKey = CHAT_MESSAGE_ADDED_TOPIC.parse().unwrap();
         let envelope = serde_json::json!({
             "world_id": world,
+            "id": source_event_id,
             "schema": event_schema,
             "commit_position": 93,
             "payload": MessageAddedEvent {
@@ -613,6 +626,7 @@ mod tests {
             decode_chat_event(CHAT_MESSAGE_ADDED_TOPIC, &raw, &world.to_string()).unwrap();
         assert_eq!(accepted.conversation_id, conversation);
         assert_eq!(accepted.message_id, message);
+        assert_eq!(accepted.source_event_id, source_event_id);
         assert_eq!(accepted.commit_position, 93);
         assert_eq!(accepted.revision_id, revision);
         assert_eq!(accepted.author_participant_id, author);
@@ -629,6 +643,36 @@ mod tests {
             )
             .is_none()
         );
+        let mut absent_id = envelope.clone();
+        absent_id.as_object_mut().unwrap().remove("id");
+        assert!(
+            decode_chat_event(
+                CHAT_MESSAGE_ADDED_TOPIC,
+                &serde_json::to_vec(&absent_id).unwrap(),
+                &world.to_string(),
+            )
+            .is_none()
+        );
+        let mut zero_position = envelope.clone();
+        zero_position["commit_position"] = serde_json::json!(0);
+        assert!(
+            decode_chat_event(
+                CHAT_MESSAGE_ADDED_TOPIC,
+                &serde_json::to_vec(&zero_position).unwrap(),
+                &world.to_string(),
+            )
+            .is_none()
+        );
+        let mut invalid_link = envelope.clone();
+        invalid_link["payload"]["parent_message_id"] = serde_json::json!(message);
+        assert!(
+            decode_chat_event(
+                CHAT_MESSAGE_ADDED_TOPIC,
+                &serde_json::to_vec(&invalid_link).unwrap(),
+                &world.to_string(),
+            )
+            .is_none()
+        );
         let mut wrong = envelope;
         wrong["schema"] = serde_json::json!("rintawa.chat.message-edited@1");
         let wrong = serde_json::to_vec(&wrong).unwrap();
@@ -639,6 +683,7 @@ mod tests {
     fn test_should_keep_pending_events_fifo_and_de_duplicate_full_revision_identity() {
         let world = WorldId::new();
         let event = |n: u64| QueuedTrigger {
+            source_event_id: WorldEventId::new(),
             conversation_id: EntityId::new(),
             message_id: EntityId::new(),
             revision_id: EntityId::new(),
@@ -671,6 +716,7 @@ mod tests {
         let mut state = RuntimeState::default();
         for position in 0..MAX_QUEUED_TRIGGERS {
             state.queued_triggers.push_back(QueuedTrigger {
+                source_event_id: WorldEventId::new(),
                 conversation_id: EntityId::new(),
                 message_id: EntityId::new(),
                 revision_id: EntityId::new(),
@@ -682,6 +728,7 @@ mod tests {
         }
         let oldest = state.queued_triggers.front().unwrap().clone();
         let rejected = QueuedTrigger {
+            source_event_id: WorldEventId::new(),
             conversation_id: EntityId::new(),
             message_id: EntityId::new(),
             revision_id: EntityId::new(),
@@ -721,6 +768,7 @@ mod tests {
             initial_position: 9,
         };
         let trigger = QueuedTrigger {
+            source_event_id: WorldEventId::new(),
             conversation_id: conversation,
             message_id: message,
             revision_id: revision,

@@ -11,6 +11,7 @@
 
 pub mod context;
 pub mod controller;
+pub mod intent;
 pub mod policy;
 
 pub use context::{
@@ -27,4 +28,8 @@ pub use controller::{
 pub use policy::{
     CONTROLLER_POLICY_PREFERENCE, CONTROLLER_POLICY_VERSION, ControllerMode, ControllerPolicy,
     ControllerPolicyError, MAX_CONTROLLER_POLICY_BYTES,
+};
+
+pub use intent::{
+    MAX_REACTION_INTENT_BYTES, REACTION_INTENT_VERSION, ReactionIntent, ReactionIntentError,
 };

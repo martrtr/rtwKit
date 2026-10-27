@@ -36,3 +36,14 @@ The last command produces `build/rtw/runtime.wasm` for exact RTW local validatio
 ## Controller policy
 
 World-scoped Narrator configuration is stored under narrator.controller-policy.v1. Schema v1 supports disabled, unique-authorized, and explicit conversation/participant selection. The Host remains authoritative for every Chat message. An in-app policy editor and durable effect processing are not yet implemented.
+
+## Committed trigger identity (pre-durable foundation)
+
+The typed, versioned `ReactionIntent` captures an exact Host-committed
+`WorldEventId`, World, commit position, Chat message revision, author and
+branch links without copying the message text, provider credentials or
+Principal/ControlGrant. The live callback now requires the actual committed
+event ID before accepting a trigger. This portable record is intended for a
+future durable effect payload and has strict size/version/cross-World checks.
+It is **not** itself an EffectJob, a durable subscription, a source of
+controller authority, or an exactly-once delivery guarantee.
