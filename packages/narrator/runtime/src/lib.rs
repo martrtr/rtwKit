@@ -6,6 +6,8 @@
 //! authoritative write is a Host-authenticated Chat command. This does not
 //! promise crash-safe catch-up or durable effect/operation reconciliation.
 
+mod durable_effect;
+
 use std::{cell::RefCell, collections::VecDeque};
 
 use rintawa_chat::{
@@ -233,7 +235,8 @@ impl exports::rintawa::engine::guest::Guest for NarratorRuntime {
     fn handle_ui_action(_action_json: Vec<u8>) {}
 
     fn handle_service(contract: String, version: u32, payload: Vec<u8>) -> Vec<u8> {
-        handle_durable_world_system_service(&contract, version, &payload)
+        durable_effect::handle_service(&contract, version, &payload)
+            .unwrap_or_else(|| handle_durable_world_system_service(&contract, version, &payload))
     }
 }
 
@@ -289,6 +292,9 @@ fn register_durable_world_system() -> Result<(), String> {
     let contract = world_system_service_contract_key(&command);
     registration::provide_contract(&contract.id.to_string(), contract.version.major(), &[])
         .map_err(|_| String::from("Narrator enqueue World System service registration failed"))?;
+    let effect_contract = durable_effect::effect_service_contract()?;
+    registration::provide_contract(&effect_contract, 1, &[])
+        .map_err(|_| String::from("Narrator durable EffectJob service registration failed"))?;
     Ok(())
 }
 
@@ -344,6 +350,7 @@ fn ensure_policy_is_current(expected: &ControllerPolicy) -> Result<(), &'static 
 }
 
 fn stop_runtime() {
+    durable_effect::clear_jobs();
     let state = STATE.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
     if let Some(Work::Streaming(stream)) = state.work {
         release_observer(&stream.observer);

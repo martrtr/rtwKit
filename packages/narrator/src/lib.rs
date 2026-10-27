@@ -12,6 +12,7 @@
 pub mod context;
 pub mod controller;
 pub mod durable;
+pub mod durable_completion;
 pub mod intent;
 pub mod policy;
 pub mod route;
@@ -40,6 +41,9 @@ pub use durable::{
     DurableReaction, DurableReactionSchemaError, MAX_DURABLE_REACTION_BYTES,
     evaluate_narrator_durable_enqueue, narrator_durable_world_schemas,
     narrator_enqueue_reaction_schema_key, narrator_reaction_effect_schema_key,
+};
+pub use durable_completion::{
+    DurableCompletionIdentity, DurableReplyError, complete_durable_turn, prepare_durable_turn,
 };
 pub use intent::{
     MAX_REACTION_INTENT_BYTES, REACTION_INTENT_VERSION, ReactionIntent, ReactionIntentError,
