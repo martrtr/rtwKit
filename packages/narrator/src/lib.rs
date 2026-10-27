@@ -11,6 +11,7 @@
 
 pub mod context;
 pub mod controller;
+pub mod durable;
 pub mod intent;
 pub mod policy;
 
@@ -30,6 +31,11 @@ pub use policy::{
     ControllerPolicyError, MAX_CONTROLLER_POLICY_BYTES,
 };
 
+pub use durable::{
+    DurableReaction, DurableReactionSchemaError, MAX_DURABLE_REACTION_BYTES,
+    evaluate_narrator_durable_enqueue, narrator_durable_world_schemas,
+    narrator_enqueue_reaction_schema_key, narrator_reaction_effect_schema_key,
+};
 pub use intent::{
     MAX_REACTION_INTENT_BYTES, REACTION_INTENT_VERSION, ReactionIntent, ReactionIntentError,
 };

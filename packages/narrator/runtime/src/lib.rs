@@ -17,10 +17,16 @@ use rintawa_inference_contracts::{
 };
 use rintawa_narrator::{
     CONTROLLER_POLICY_PREFERENCE, ControllerPolicy, ControllerPolicyError, GenerationController,
-    GenerationProgress, NarratorContextError, ReactionIntent, TurnAnchor, prepare_turn,
-    prepare_turn_for_responder,
+    GenerationProgress, NarratorContextError, ReactionIntent, TurnAnchor,
+    evaluate_narrator_durable_enqueue, narrator_durable_world_schemas,
+    narrator_enqueue_reaction_schema_key, prepare_turn, prepare_turn_for_responder,
 };
-use rintawa_sdk::world::{EntityId, SchemaKey, WorldEventId, WorldId};
+use rintawa_sdk::{
+    world::{EntityId, SchemaKey, SchemaKind, WorldEventId, WorldId},
+    world_system::{
+        WorldSystemServiceRequest, WorldSystemServiceResponse, world_system_service_contract_key,
+    },
+};
 use serde::Deserialize;
 
 wit_bindgen::generate!({
@@ -226,8 +232,8 @@ impl exports::rintawa::engine::guest::Guest for NarratorRuntime {
 
     fn handle_ui_action(_action_json: Vec<u8>) {}
 
-    fn handle_service(_contract: String, _version: u32, _payload: Vec<u8>) -> Vec<u8> {
-        Vec::new()
+    fn handle_service(contract: String, version: u32, payload: Vec<u8>) -> Vec<u8> {
+        handle_durable_world_system_service(&contract, version, &payload)
     }
 }
 
@@ -241,6 +247,7 @@ impl exports::rintawa::engine::task_handler::Guest for NarratorRuntime {
 }
 
 fn register_runtime() -> Result<(), String> {
+    register_durable_world_system()?;
     registration::define_contract(
         INFERENCE_CONTRACT_ID,
         INFERENCE_CONTRACT_VERSION,
@@ -256,6 +263,57 @@ fn register_runtime() -> Result<(), String> {
     )
     .map_err(|_| String::from("Narrator could not declare inference consumer"))?;
     Ok(())
+}
+
+/// Registers the Narrator-owned enqueue command and inference EffectJob schemas.
+/// Neither registration nor this pure service grants any controller authority.
+fn register_durable_world_system() -> Result<(), String> {
+    for schema in narrator_durable_world_schemas()
+        .map_err(|_| String::from("Narrator durable schemas are invalid"))?
+    {
+        let kind = match schema.kind() {
+            SchemaKind::Command => rintawa::engine::world_registration::SchemaKind::Command,
+            SchemaKind::Effect => rintawa::engine::world_registration::SchemaKind::Effect,
+            _ => return Err(String::from("unexpected Narrator durable schema kind")),
+        };
+        rintawa::engine::world_registration::register_world_schema(
+            schema.key().id().as_str(),
+            schema.key().version().get(),
+            kind,
+            schema.definition_json(),
+        )
+        .map_err(|_| String::from("Narrator durable schema registration failed"))?;
+    }
+    let command = narrator_enqueue_reaction_schema_key()
+        .map_err(|_| String::from("Narrator enqueue command schema is invalid"))?;
+    let contract = world_system_service_contract_key(&command);
+    registration::provide_contract(&contract.id.to_string(), contract.version.major(), &[])
+        .map_err(|_| String::from("Narrator enqueue World System service registration failed"))?;
+    Ok(())
+}
+
+/// Dispatches only the registered Narrator-owned World System contract.
+fn handle_durable_world_system_service(contract: &str, version: u32, bytes: &[u8]) -> Vec<u8> {
+    let rejection = || WorldSystemServiceResponse::Rejected {
+        reason: String::from("Narrator durable enqueue service rejected"),
+    };
+    let response = (|| {
+        if bytes.len() > 32 * 1024 {
+            return rejection();
+        }
+        let Ok(schema) = narrator_enqueue_reaction_schema_key() else {
+            return rejection();
+        };
+        let expected = world_system_service_contract_key(&schema);
+        if expected.id.to_string() != contract || expected.version.major() != version {
+            return rejection();
+        }
+        let Ok(request) = serde_json::from_slice::<WorldSystemServiceRequest>(bytes) else {
+            return rejection();
+        };
+        evaluate_narrator_durable_enqueue(&request)
+    })();
+    serde_json::to_vec(&response).unwrap_or_default()
 }
 
 /// Reads only the preference belonging to this exact Narrator World scope.
@@ -700,6 +758,90 @@ mod tests {
         assert!(matches!(
             start_turn(&same_conversation, 9, &event, policy),
             Ok(None)
+        ));
+    }
+
+    #[test]
+    fn test_should_route_versioned_durable_world_system_service_without_guest_privilege() {
+        use rintawa_narrator::{DurableReaction, narrator_reaction_effect_schema_key};
+        use rintawa_sdk::world::{CommandId, CorrelationId, PrincipalId};
+        use rintawa_sdk::world_system::{
+            WorldSystemActor, WorldSystemCausation, WorldSystemCommand,
+        };
+
+        let world = WorldId::new();
+        let event = WorldEventId::new();
+        let entity = EntityId::new();
+        let added = MessageAddedEvent {
+            conversation_id: EntityId::new(),
+            message_id: EntityId::new(),
+            revision_id: EntityId::new(),
+            participant_id: EntityId::new(),
+            parent_message_id: None,
+            alternative_of: None,
+        };
+        let payload = DurableReaction {
+            intent: ReactionIntent::from_committed_message(world, event, 5, &added)
+                .expect("source event"),
+            responder_participant_id: EntityId::new(),
+            responder_entity_id: entity,
+            controller_policy_revision: 1,
+        };
+        let schema = narrator_enqueue_reaction_schema_key().expect("schema key");
+        let contract = world_system_service_contract_key(&schema);
+        let request = WorldSystemServiceRequest {
+            world_id: world,
+            snapshot_position: 5,
+            command: WorldSystemCommand {
+                id: CommandId::new(),
+                schema,
+                principal: PrincipalId::new(),
+                actor: WorldSystemActor::Entity(entity),
+                expected_position: None,
+                causation: Some(WorldSystemCausation::Event(event)),
+                correlation_id: CorrelationId::new(),
+                effective_at: None,
+                payload: serde_json::to_value(payload).expect("valid payload"),
+            },
+            reads: Vec::new(),
+        };
+        let encoded = serde_json::to_vec(&request).expect("request");
+        let dispatch = |name: &str, version, data: &[u8]| {
+            serde_json::from_slice::<WorldSystemServiceResponse>(
+                &handle_durable_world_system_service(name, version, data),
+            )
+            .expect("valid response")
+        };
+        let name = contract.id.to_string();
+        match dispatch(&name, contract.version.major(), &encoded) {
+            WorldSystemServiceResponse::Transaction { transaction } => {
+                assert_eq!(transaction.effects.len(), 1);
+                assert_eq!(
+                    transaction.effects[0].schema,
+                    narrator_reaction_effect_schema_key().expect("effect key")
+                );
+            }
+            response => panic!("expected one enqueue EffectJob, got {response:?}"),
+        }
+        assert!(matches!(
+            dispatch(&name, contract.version.major() + 1, &encoded),
+            WorldSystemServiceResponse::Rejected { .. }
+        ));
+        assert!(matches!(
+            dispatch(
+                "rintawa.unrelated.service",
+                contract.version.major(),
+                &encoded
+            ),
+            WorldSystemServiceResponse::Rejected { .. }
+        ));
+        assert!(matches!(
+            dispatch(&name, contract.version.major(), b"{"),
+            WorldSystemServiceResponse::Rejected { .. }
+        ));
+        assert!(matches!(
+            dispatch(&name, contract.version.major(), &vec![b'x'; 32 * 1024 + 1]),
+            WorldSystemServiceResponse::Rejected { .. }
         ));
     }
 
