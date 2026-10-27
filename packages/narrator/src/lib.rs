@@ -11,6 +11,7 @@
 
 pub mod context;
 pub mod controller;
+pub mod policy;
 
 pub use context::{
     MAX_BRANCH_DEPTH, MAX_MESSAGE_INPUT_BYTES, MAX_PROJECTED_MESSAGES, MAX_PROMPT_HISTORY,
@@ -21,4 +22,9 @@ pub use context::{
 pub use controller::{
     AuthorizedReply, GenerationController, GenerationError, GenerationPhase, GenerationProgress,
     MAX_GENERATION_POLLS, MAX_REVALIDATION_POLLS,
+};
+
+pub use policy::{
+    CONTROLLER_POLICY_PREFERENCE, CONTROLLER_POLICY_VERSION, ControllerMode, ControllerPolicy,
+    ControllerPolicyError, MAX_CONTROLLER_POLICY_BYTES,
 };

@@ -32,3 +32,7 @@ RUSTUP_TOOLCHAIN=stable bash packages/narrator/build.sh
 ```
 
 The last command produces `build/rtw/runtime.wasm` for exact RTW local validation. Core and other concrete packages are untouched.
+
+## Controller policy
+
+World-scoped Narrator configuration is stored under narrator.controller-policy.v1. Schema v1 supports disabled, unique-authorized, and explicit conversation/participant selection. The Host remains authoritative for every Chat message. An in-app policy editor and durable effect processing are not yet implemented.

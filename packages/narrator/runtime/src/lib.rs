@@ -16,7 +16,8 @@ use rintawa_inference_contracts::{
     INFERENCE_CONTRACT_ID, INFERENCE_CONTRACT_VERSION, InferenceResponse, decode_response, encode,
 };
 use rintawa_narrator::{
-    GenerationController, GenerationProgress, NarratorContextError, TurnAnchor, prepare_turn,
+    CONTROLLER_POLICY_PREFERENCE, ControllerPolicy, ControllerPolicyError, GenerationController,
+    GenerationProgress, NarratorContextError, TurnAnchor, prepare_turn, prepare_turn_for_responder,
 };
 use rintawa_sdk::world::{EntityId, SchemaKey, WorldId};
 use serde::Deserialize;
@@ -27,8 +28,8 @@ wit_bindgen::generate!({
 });
 
 use rintawa::engine::{
-    async_operations, host, registration, runtime_context, runtime_effects, runtime_tasks,
-    services, world_commands, world_projections,
+    async_operations, host, preferences, registration, runtime_context, runtime_effects,
+    runtime_tasks, services, world_commands, world_projections,
 };
 
 const CHAT_MESSAGE_ADDED_TOPIC: &str = "rintawa.chat.message-added@1";
@@ -68,12 +69,16 @@ struct ActiveProjection {
 
 enum ProjectionPurpose {
     SelectTurn(QueuedTrigger),
-    Revalidate(GenerationController),
+    Revalidate {
+        controller: GenerationController,
+        policy: ControllerPolicy,
+    },
 }
 
 struct ActiveStream {
     observer: String,
     controller: GenerationController,
+    policy: ControllerPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,6 +247,33 @@ fn register_runtime() -> Result<(), String> {
     Ok(())
 }
 
+/// Reads only the preference belonging to this exact Narrator World scope.
+///
+/// An absent preference is the narrowly defined legacy single-NPC mode.
+/// Corrupt data, a foreign World and I/O failure do NOT revert to that mode.
+fn read_controller_policy() -> Result<ControllerPolicy, &'static str> {
+    let world_text = STATE
+        .with(|slot| slot.borrow().world_id.clone())
+        .ok_or("Narrator has no active World for controller preference")?;
+    let world_id: WorldId = world_text
+        .parse()
+        .map_err(|_| "Narrator active World identity is invalid")?;
+    let raw = preferences::get(CONTROLLER_POLICY_PREFERENCE)
+        .map_err(|_| "Narrator controller preference is inaccessible")?;
+    ControllerPolicy::from_preference(world_id, raw.as_deref())
+        .map_err(|_| "Narrator controller preference was rejected")
+}
+
+/// No policy edit grants World authority. If the preference changes during
+/// external inference, discard the provisional response before Chat commit.
+fn ensure_policy_is_current(expected: &ControllerPolicy) -> Result<(), &'static str> {
+    let current = read_controller_policy()?;
+    if !expected.is_current(&current) {
+        return Err("Narrator controller policy changed during generation");
+    }
+    Ok(())
+}
+
 fn stop_runtime() {
     let state = STATE.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
     if let Some(Work::Streaming(stream)) = state.work {
@@ -318,7 +350,12 @@ fn poll_projection(mut pending: ActiveProjection) -> Result<Option<Work>, &'stat
         .map_err(|_| "Narrator projection status could not be read")?;
     match result {
         world_projections::ReadState::Pending => {
-            if let ProjectionPurpose::Revalidate(ref mut controller) = pending.purpose {
+            if let ProjectionPurpose::Revalidate {
+                ref mut controller,
+                ref policy,
+            } = pending.purpose
+            {
+                ensure_policy_is_current(policy)?;
                 controller
                     .poll_pending()
                     .map_err(|_| "Narrator fresh World validation exceeded its deadline")?;
@@ -340,15 +377,24 @@ fn poll_projection(mut pending: ActiveProjection) -> Result<Option<Work>, &'stat
                 .map_err(|_| "Narrator Chat projection was invalid")?;
             match pending.purpose {
                 ProjectionPurpose::SelectTurn(trigger) => {
-                    start_turn(&parsed, view.snapshot_position, &trigger)
+                    let policy = read_controller_policy()?;
+                    start_turn(&parsed, view.snapshot_position, &trigger, policy)
                 }
-                ProjectionPurpose::Revalidate(mut controller) => {
+                ProjectionPurpose::Revalidate {
+                    mut controller,
+                    policy,
+                } => {
+                    ensure_policy_is_current(&policy)?;
                     let authorized = controller
                         .prepare_reply(&parsed, view.snapshot_position)
                         .map_err(|_| "Narrator cancelled stale or unauthorized Chat response")?;
                     let world_id = world_id.ok_or("Narrator World disappeared")?;
                     let schema = chat_send_message_command_schema_key()
                         .map_err(|_| "Narrator Chat command schema unavailable")?;
+                    // A policy preference is not a capability grant. This
+                    // recheck limits stale intent; Host/Chat must still
+                    // evaluate Principal/ControlGrant at commit.
+                    ensure_policy_is_current(&policy)?;
                     let payload_json = serde_json::to_vec(&authorized.command)
                         .map_err(|_| "Narrator Chat command encoding failed")?;
                     world_commands::submit(&world_commands::Request {
@@ -383,6 +429,7 @@ fn start_turn(
     view: &ChatConversationView,
     position: u64,
     trigger: &QueuedTrigger,
+    policy: ControllerPolicy,
 ) -> Result<Option<Work>, &'static str> {
     if position < trigger.commit_position
         || view.selected_conversation_id != Some(trigger.conversation_id)
@@ -390,7 +437,20 @@ fn start_turn(
     {
         return Ok(None);
     }
-    let plan = match prepare_turn(view, position) {
+    let choice = match policy.selection(trigger.conversation_id) {
+        Ok(choice) => choice,
+        Err(ControllerPolicyError::Disabled | ControllerPolicyError::ConversationMismatch) => {
+            return Ok(None);
+        }
+        Err(_) => return Err("Narrator controller selection is invalid"),
+    };
+    let candidate = match choice {
+        rintawa_narrator::ResponderSelection::UniqueControlled => prepare_turn(view, position),
+        rintawa_narrator::ResponderSelection::Explicit(participant_id) => {
+            prepare_turn_for_responder(view, position, participant_id)
+        }
+    };
+    let plan = match candidate {
         Ok(plan) => plan,
         Err(NarratorContextError::NoEligibleTurn)
         | Err(NarratorContextError::ResponderUnavailable) => return Ok(None),
@@ -437,6 +497,7 @@ fn start_turn(
             Ok(Some(Work::Streaming(ActiveStream {
                 observer: observer_token,
                 controller: GenerationController::new(plan.anchor),
+                policy,
             })))
         }
         InferenceResponse::Rejected { .. } => {
@@ -447,6 +508,10 @@ fn start_turn(
 }
 
 fn poll_stream(mut streaming: ActiveStream) -> Result<Option<Work>, &'static str> {
+    if let Err(reason) = ensure_policy_is_current(&streaming.policy) {
+        release_observer(&streaming.observer);
+        return Err(reason);
+    }
     let event = match async_operations::poll_observer(&streaming.observer) {
         Ok(event) => event,
         Err(_) => {
@@ -479,7 +544,11 @@ fn poll_stream(mut streaming: ActiveStream) -> Result<Option<Work>, &'static str
             if result != Ok(GenerationProgress::ValidateWorld) {
                 return Err("Narrator inference completion was invalid");
             }
-            request_projection(ProjectionPurpose::Revalidate(streaming.controller)).map(Some)
+            request_projection(ProjectionPurpose::Revalidate {
+                controller: streaming.controller,
+                policy: streaming.policy,
+            })
+            .map(Some)
         }
         async_operations::Event::Failed(_) | async_operations::Event::Cancelled => {
             streaming.controller.provider_failed();

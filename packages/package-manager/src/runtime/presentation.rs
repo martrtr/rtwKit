@@ -1527,13 +1527,22 @@ fn build_http_origin_editor(
     let Some(components) = state.installed_policy.get(&key) else {
         return ui.text("Local HTTP permissions unavailable.");
     };
+    if !components.iter().any(|component| {
+        component
+            .requested
+            .iter()
+            .any(|permission| permission == "http-request")
+    }) {
+        return ui.column(Vec::new());
+    }
     let mut children = vec![ui.markdown("### Local HTTP origins")];
     if let Some(error) = state.installed_http_origins_error.as_deref() {
         children.push(ui.text(error.to_owned()));
         return ui.column(children);
     }
 
-    let mut has_http_component = false;
+    // An HTTP-capable component was confirmed above, before any UI nodes
+    // were constructed. Keep this branch free of unreachable empty renders.
     for component in components {
         if !component
             .requested
@@ -1542,7 +1551,6 @@ fn build_http_origin_editor(
         {
             continue;
         }
-        has_http_component = true;
         let is_http_granted = component.granted.iter().any(|item| item == "http-request");
         children.push(ui.text(format!(
             "{} · {}",
@@ -1600,9 +1608,6 @@ fn build_http_origin_editor(
             );
             children.push(ui.row(vec![input, button]));
         }
-    }
-    if !has_http_component {
-        return ui.column(Vec::new());
     }
     children.push(ui.text(
         "An explicit http-request grant and an exact local origin approval are both required. Restart the affected runtime to apply changes."
@@ -1710,6 +1715,112 @@ mod http_origin_editor_tests {
             }
         }
         assert_eq!(grants, 1);
+    }
+
+    #[test]
+    fn test_should_not_leave_orphan_nodes_for_non_http_extensions() {
+        let (mut state, package) = installed_provider_state(false);
+        let key = (package.scope_id.clone(), package.instance_id.clone());
+        state.installed_policy.get_mut(&key).unwrap()[0].requested =
+            vec!["background-task".to_owned()];
+
+        let mut builder = UiBuilder::new();
+        let root = build_http_origin_editor(&mut builder, &state, &package);
+        assert_eq!(builder.nodes.len(), 1);
+        assert_eq!(builder.nodes[0]["id"], root);
+    }
+
+    fn assert_only_reachable_nodes(builder: &UiBuilder, root: &str) {
+        let by_id = builder
+            .nodes
+            .iter()
+            .map(|node| (node["id"].as_str().expect("node id must be a string"), node))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(by_id.len(), builder.nodes.len(), "duplicate Portable UI id");
+        let mut reachable = BTreeSet::new();
+        let mut todo = vec![root];
+        while let Some(id) = todo.pop() {
+            assert!(by_id.contains_key(id), "missing child {id}");
+            if !reachable.insert(id) {
+                continue;
+            }
+            if let Some(children) = by_id[id]["kind"]["data"]["children"].as_array() {
+                for child in children {
+                    todo.push(child.as_str().expect("child id must be a string"));
+                }
+            }
+        }
+        assert_eq!(
+            reachable.len(),
+            builder.nodes.len(),
+            "orphaned Portable UI nodes would invalidate the extension details"
+        );
+        assert!(
+            builder
+                .action_targets
+                .keys()
+                .all(|id| reachable.contains(id.as_str())),
+            "action target must belong to the mounted tree"
+        );
+    }
+
+    #[test]
+    fn test_should_keep_complete_installed_permissions_tree_for_non_http_and_http_packages() {
+        for enabled in [false, true] {
+            let (mut state, package) = installed_provider_state(enabled);
+            let key = (package.scope_id.clone(), package.instance_id.clone());
+            for requested in [
+                vec!["background-task".to_owned()],
+                vec!["background-task".to_owned(), "http-request".to_owned()],
+            ] {
+                state.installed_policy.get_mut(&key).unwrap()[0].requested = requested.clone();
+                let mut builder = UiBuilder::new();
+                let root = build_installed_permissions(&mut builder, &state, &package);
+                assert_only_reachable_nodes(&builder, &root);
+                let rendered = builder
+                    .nodes
+                    .iter()
+                    .map(Value::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert_eq!(
+                    rendered.contains("Local HTTP origins"),
+                    requested.iter().any(|item| item == "http-request"),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_should_not_hide_http_error_when_permission_requested_but_denied() {
+        let (mut state, package) = installed_provider_state(false);
+        state.installed_http_origins_error = Some("HTTP origin list unavailable".to_owned());
+        let mut builder = UiBuilder::new();
+        let root = build_http_origin_editor(&mut builder, &state, &package);
+        assert_only_reachable_nodes(&builder, &root);
+        let texts = builder
+            .nodes
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(texts.contains("HTTP origin list unavailable"));
+        assert!(builder.action_targets.is_empty());
+    }
+
+    #[test]
+    fn test_should_not_leave_nodes_or_actions_when_http_policy_disappears() {
+        let (mut state, package) = installed_provider_state(true);
+        let key = (package.scope_id.clone(), package.instance_id.clone());
+        state.installed_policy.get_mut(&key).unwrap()[0].requested =
+            vec!["background-task".to_owned()];
+        state.installed_http_origins_error = Some("stale HTTP error".to_owned());
+        let mut builder = UiBuilder::new();
+        let root = build_http_origin_editor(&mut builder, &state, &package);
+        assert_only_reachable_nodes(&builder, &root);
+        assert_eq!(builder.nodes.len(), 1);
+        assert_eq!(builder.nodes[0]["kind"]["data"]["children"], json!([]));
+        assert!(builder.action_targets.is_empty());
     }
 
     #[test]
