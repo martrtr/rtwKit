@@ -1,0 +1,13 @@
+schema = 2
+[package]
+id = "rintawa.rtwkit.narrator"
+name = "rtwKit Narrator"
+version = "0.0.1"
+description = "World-local Chat reply orchestration using provider-neutral inference"
+license = "GPL-3.0-only"
+authors = ["martrtr"]
+readme = "README.md"
+
+[build]
+artifact-root = "build/rtw"
+command = ["bash", "build.sh"]

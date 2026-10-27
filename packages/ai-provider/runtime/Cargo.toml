@@ -1,0 +1,18 @@
+[package]
+name = "rintawa-ai-provider-runtime"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "WASM OpenAI-compatible inference provider"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rintawa-sdk.workspace = true
+rintawa-ai-provider = { path = ".." }
+rintawa-inference-contracts = { path = "../../../crates/inference-contracts" }
+serde_json.workspace = true
+wit-bindgen = "0.57.1"

@@ -1,0 +1,13 @@
+schema = 2
+[package]
+id = "rintawa.rtwkit.ai-provider"
+name = "rtwKit AI Provider"
+version = "0.0.1"
+description = "OpenAI-compatible text inference over bounded HTTP and async operation streams"
+license = "GPL-3.0-only"
+authors = ["martrtr"]
+readme = "README.md"
+
+[build]
+artifact-root = "build/rtw"
+command = ["bash", "build.sh"]

@@ -45,6 +45,9 @@ part of the public package source.
 - `world-manager` — standard replaceable World catalog/lifecycle Portable UI package.
 - `character-library` — CharacterTemplate content handler plus read-only Library
   Portable UI over the generic user-content capability.
+- chat — persistent World-local conversation, branching, and message UI.
+- ai-provider — initial OpenAI-compatible text inference service and bounded
+  ephemeral streams; settings UI and Narrator integration are not yet available.
 
 Published `(package id, version)` coordinates are immutable: a released version is
 never rebuilt or replaced in-place. The registry digest identifies and verifies the

@@ -1,0 +1,19 @@
+[package]
+name = "rintawa-narrator"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "World-scoped, bounded Chat context and inference turn orchestration"
+
+[dependencies]
+rintawa-sdk.workspace = true
+rintawa-chat = { path = "../chat" }
+rintawa-inference-contracts = { path = "../../crates/inference-contracts" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2"
+
+[dev-dependencies]
+anyhow.workspace = true

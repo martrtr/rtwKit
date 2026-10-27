@@ -1,0 +1,20 @@
+[package]
+name = "rintawa-narrator-runtime"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Ordinary world-scoped Narrator WebAssembly Component Model adapter"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rintawa-narrator = { path = ".." }
+rintawa-chat = { path = "../../chat" }
+rintawa-inference-contracts = { path = "../../../crates/inference-contracts" }
+rintawa-sdk.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+wit-bindgen = "0.57.1"
