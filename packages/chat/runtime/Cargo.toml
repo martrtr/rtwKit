@@ -1,19 +1,17 @@
 [package]
 name = "rintawa-chat-runtime"
-version = "0.0.3"
+version = "0.0.4"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "WASM adapter for the standard Rintawa Chat package"
+description = "WASM World System provider for the minimal Chat"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-serde.workspace = true
-serde_json.workspace = true
-wit-bindgen = "0.57.1"
-rintawa-sdk.workspace = true
-rintawa-artifacts.workspace = true
+rintawa-sdk = { path = "../../../../rintawa-mvp-cut-list/crates/sdk" }
 rintawa-chat = { path = ".." }
+serde_json.workspace = true
+wit-bindgen = "=0.57.1"

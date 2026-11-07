@@ -1,6 +1,6 @@
 id = "rintawa.rtwkit.chat"
 name = "rtwKit Chat"
-version = "0.0.3"
+version = "0.0.4"
 sdk = "^0.0"
 
 [[components]]
@@ -9,10 +9,3 @@ kind = "runtime"
 target = "rintawa.runtime.wasm-component@1"
 entry = "runtime.wasm"
 required = true
-
-[components.permissions]
-runtime = [
-    "background-task",
-    "world-command-submit",
-    "world-projection-read",
-]

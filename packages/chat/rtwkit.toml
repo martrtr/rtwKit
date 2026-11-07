@@ -3,9 +3,9 @@ schema = 2
 [package]
 id = "rintawa.rtwkit.chat"
 name = "rtwKit Chat"
-version = "0.0.3"
+version = "0.0.4"
 replaces = ["rintawa.chat"]
-description = "Standard persistent branching Chat domain and Portable UI for Rintawa"
+description = "Minimal World-owned persistent Chat System for Rintawa MVP"
 license = "GPL-3.0-only"
 authors = ["martrtr"]
 readme = "README.md"
