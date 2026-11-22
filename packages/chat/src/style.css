@@ -1,0 +1,13 @@
+.chat { height: 100%; min-height: 0; display: grid; grid-template-columns: minmax(180px, 260px) minmax(0, 1fr); color: var(--rtw-text); background: var(--rtw-background); }
+.sidebar { padding: 18px; border-right: 1px solid var(--rtw-border); display: flex; flex-direction: column; gap: 10px; overflow: auto; }
+h1, h2, p { margin: 0; } h1 { font-size: 22px; } h2 { font-size: 15px; } label { font-size: 12px; }
+.sidebar nav { display: flex; flex-direction: column; gap: 4px; }
+.conversation { text-align: left; color: inherit; background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 8px; cursor: pointer; overflow-wrap: anywhere; }
+.conversation.selected { border-color: var(--rtw-accent); }
+.workspace { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 18px; }
+.workspace header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.transcript { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+.message { padding: 12px; border: 1px solid var(--rtw-border); border-radius: 6px; } .message strong { color: var(--rtw-accent); font-size: 12px; } .message p { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.composer { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; } textarea { box-sizing: border-box; width: 100%; resize: vertical; color: var(--rtw-text); background: var(--rtw-background); border: 1px solid var(--rtw-border); border-radius: 5px; padding: 8px; font: inherit; }
+.unknown { font-size: 12px; overflow-wrap: anywhere; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+@media (max-width: 560px) { .chat { grid-template-columns: 1fr; grid-template-rows: minmax(120px, 35%) minmax(0, 1fr); } .sidebar { border-right: 0; border-bottom: 1px solid var(--rtw-border); } }

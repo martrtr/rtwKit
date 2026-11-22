@@ -1,4 +1,4 @@
-//! Tavern/Character Card V2 import and compatibility-preserving JSON export.
+//! Character Card V2/V3 JSON/PNG import and compatibility-preserving V2 JSON export.
 
 use std::{collections::BTreeMap, io::Read};
 
@@ -16,7 +16,8 @@ use crate::{
 /// Maximum accepted JSON payload after decoding PNG/base64/zlib carriage layers.
 pub const MAX_TAVERN_CARD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PNG_BYTES: usize = 16 * 1024 * 1024;
-const MAX_PNG_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PORTRAIT_SIDE: u32 = 4096;
+const MAX_PORTRAIT_PIXELS: u64 = 4_000_000;
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const TAVERN_PNG_MEDIA_TYPE: &str = "image/png";
 
@@ -204,7 +205,10 @@ pub fn import_tavern_v2(bytes: &[u8]) -> TavernV2Result<CharacterTemplate> {
     Ok(import_tavern_v2_with_artwork(bytes)?.into_template())
 }
 
-/// Exports a normalized template back to Character Card V2 JSON while preserving escrow fields.
+/// Exports a normalized template as Character Card V2 JSON while preserving escrow fields.
+///
+/// V3 inputs also produce a V2 `2.0` envelope. The source template's recorded
+/// version remains unchanged; unknown V3 data is preserved as inert extra fields.
 ///
 /// Unknown source top-level/data fields, arbitrary `extensions`, and `character_book`
 /// survive a JSON import/export cycle. Known V2 fields are regenerated from the
@@ -220,14 +224,10 @@ pub fn export_tavern_v2_json(template: &CharacterTemplate) -> TavernV2Result<Vec
         .map(|value| map_from_btree(&value.top_level_unknown))
         .unwrap_or_default();
     root.insert("spec".into(), Value::String("chara_card_v2".into()));
-    root.insert(
-        "spec_version".into(),
-        Value::String(
-            compatibility
-                .map(|value| value.spec_version.clone())
-                .unwrap_or_else(|| "2.0".into()),
-        ),
-    );
+    // This API explicitly exports V2, including when the source card was V3.
+    // Source compatibility retains its original version separately; pairing V2
+    // with a 3.x spec_version creates an invalid card which cannot be reimported.
+    root.insert("spec_version".into(), Value::String("2.0".into()));
 
     let mut data = compatibility
         .map(|value| map_from_btree(&value.data_unknown))
@@ -410,14 +410,13 @@ fn import_tavern_v2_json(json: &[u8]) -> TavernV2Result<CharacterTemplate> {
 }
 
 fn is_supported_v3_version(version: &str) -> bool {
-    let mut parts = version.split('.');
-    let Some(major) = parts.next() else {
+    let Some((major, rest)) = version.split_once('.') else {
         return false;
     };
-    if major != "3" || parts.next().is_none() {
-        return false;
-    }
-    parts.all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    major == "3"
+        && rest
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -438,6 +437,11 @@ fn extract_png_chara_and_artwork(bytes: &[u8]) -> TavernV2Result<(Vec<u8>, Vec<u
     let mut chunk_index = 0_usize;
     let mut card_payload: Option<(PngCardMetadataKind, Vec<u8>)> = None;
     let mut saw_iend = false;
+    let mut image_bytes = 0_usize;
+    let mut saw_image = false;
+    let mut image_ended = false;
+    let mut saw_palette = false;
+    let mut color_type = 0;
     let mut artwork = PNG_SIGNATURE.to_vec();
     while cursor < bytes.len() {
         let chunk_start = cursor;
@@ -449,7 +453,7 @@ fn extract_png_chara_and_artwork(bytes: &[u8]) -> TavernV2Result<(Vec<u8>, Vec<u
                 .try_into()
                 .map_err(|_| TavernV2Error::InvalidPng("invalid chunk length"))?,
         ) as usize;
-        if length > MAX_PNG_CHUNK_BYTES {
+        if length > MAX_PNG_BYTES {
             return Err(TavernV2Error::InputTooLarge);
         }
         let chunk_type_start = cursor + 4;
@@ -465,20 +469,61 @@ fn extract_png_chara_and_artwork(bytes: &[u8]) -> TavernV2Result<(Vec<u8>, Vec<u
         }
         let chunk_type = &bytes[chunk_type_start..data_start];
         let data = &bytes[data_start..data_end];
-        verify_crc(chunk_type, data, &bytes[data_end..crc_end])?;
-
         if chunk_index == 0 && (chunk_type != b"IHDR" || data.len() != 13) {
             return Err(TavernV2Error::InvalidPng(
                 "first PNG chunk must be a 13-byte IHDR",
             ));
         }
+        if !chunk_type.iter().all(u8::is_ascii_alphabetic) || chunk_type[2] & 0x20 != 0 {
+            return Err(TavernV2Error::InvalidPng("invalid PNG chunk type"));
+        }
+        match chunk_type {
+            b"IHDR" => {
+                if chunk_index != 0 {
+                    return Err(TavernV2Error::InvalidPng("duplicate IHDR"));
+                }
+                validate_portrait_header(data)?;
+                color_type = data[9];
+            }
+            b"acTL" | b"fcTL" | b"fdAT" => {
+                return Err(TavernV2Error::InvalidPng("animated PNG is not supported"));
+            }
+            b"PLTE" => {
+                if saw_palette
+                    || saw_image
+                    || matches!(color_type, 0 | 4)
+                    || data.is_empty()
+                    || data.len() > 768
+                    || !data.len().is_multiple_of(3)
+                {
+                    return Err(TavernV2Error::InvalidPng("invalid PLTE structure"));
+                }
+                saw_palette = true;
+            }
+            b"IDAT" => {
+                if image_ended || (color_type == 3 && !saw_palette) {
+                    return Err(TavernV2Error::InvalidPng("invalid IDAT order"));
+                }
+                saw_image = true;
+                image_bytes += data.len();
+            }
+            b"IEND" => {}
+            _ if chunk_type[0].is_ascii_uppercase() => {
+                return Err(TavernV2Error::InvalidPng("unsupported critical PNG chunk"));
+            }
+            _ => {}
+        }
+        if saw_image && chunk_type != b"IDAT" {
+            image_ended = true;
+        }
+        verify_crc(chunk_type, data, &bytes[data_end..crc_end])?;
         let card_chunk = text_chunk_payload(chunk_type, data)?;
         if let Some((kind, payload)) = card_chunk {
             match &card_payload {
                 Some((current_kind, _)) if *current_kind > kind => {}
                 _ => card_payload = Some((kind, payload)),
             }
-        } else {
+        } else if portrait_chunk_allowed(chunk_type, data.len()) {
             artwork.extend_from_slice(&bytes[chunk_start..crc_end]);
         }
 
@@ -497,8 +542,49 @@ fn extract_png_chara_and_artwork(bytes: &[u8]) -> TavernV2Result<(Vec<u8>, Vec<u
     if !saw_iend {
         return Err(TavernV2Error::InvalidPng("PNG is missing IEND"));
     }
+    if image_bytes == 0 {
+        return Err(TavernV2Error::InvalidPng("PNG is missing image data"));
+    }
     let (_, payload) = card_payload.ok_or(TavernV2Error::MissingPngCardPayload)?;
     Ok((decode_metadata_payload(&payload)?, artwork))
+}
+
+/// Header/structure limits do not validate or decompress the pixel stream.
+fn validate_portrait_header(data: &[u8]) -> TavernV2Result<()> {
+    if data.len() != 13 {
+        return Err(TavernV2Error::InvalidPng("invalid IHDR length"));
+    }
+    let width = u32::from_be_bytes(data[..4].try_into().unwrap());
+    let height = u32::from_be_bytes(data[4..8].try_into().unwrap());
+    if width == 0
+        || height == 0
+        || width > MAX_PORTRAIT_SIDE
+        || height > MAX_PORTRAIT_SIDE
+        || u64::from(width) * u64::from(height) > MAX_PORTRAIT_PIXELS
+    {
+        return Err(TavernV2Error::InvalidPng(
+            "portrait dimensions exceed package bounds",
+        ));
+    }
+    let valid_depth = match data[9] {
+        0 => matches!(data[8], 1 | 2 | 4 | 8 | 16),
+        2 | 4 | 6 => matches!(data[8], 8 | 16),
+        3 => matches!(data[8], 1 | 2 | 4 | 8),
+        _ => false,
+    };
+    if !valid_depth || data[10] != 0 || data[11] != 0 || data[12] > 1 {
+        return Err(TavernV2Error::InvalidPng("unsupported IHDR encoding"));
+    }
+    Ok(())
+}
+
+fn portrait_chunk_allowed(kind: &[u8], length: usize) -> bool {
+    matches!(kind, b"IHDR" | b"PLTE" | b"IDAT" | b"IEND" | b"tRNS")
+        || (length <= MAX_TAVERN_CARD_BYTES
+            && matches!(
+                kind,
+                b"gAMA" | b"cHRM" | b"sRGB" | b"pHYs" | b"sBIT" | b"bKGD" | b"hIST" | b"tEXt"
+            ))
 }
 
 fn metadata_kind(keyword: &[u8]) -> Option<PngCardMetadataKind> {

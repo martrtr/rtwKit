@@ -1,0 +1,8 @@
+package rintawa:engine@0.0.2;
+
+/// Package authoring composition of existing interfaces; no extra Host capability.
+world domain-plugin {
+    include plugin;
+    export world-system;
+    export task-handler;
+}

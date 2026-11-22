@@ -335,7 +335,7 @@ dependencies = [
 [[package]]
 name = "rintawa-artifacts"
 version = "0.0.1"
-source = "git+https://github.com/martrtr/rintawa.git?rev=256081cbfb2d608ca08362853fab452448768147#256081cbfb2d608ca08362853fab452448768147"
+source = "git+https://github.com/martrtr/rintawa.git?rev=cef1d86f87cbef45c3b7e34df97be154b1f4a41d#cef1d86f87cbef45c3b7e34df97be154b1f4a41d"
 dependencies = [
  "serde",
  "sha2",
@@ -358,6 +358,25 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "rintawa-chat"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "rintawa-domain-operations",
+ "serde",
+ "serde_json",
+ "uuid",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "rintawa-domain-operations"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -655,6 +674,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a06f08a856b009bc7bbaf7d3e79808595d032dd19074c0c2ef26e49e03e6bdc"
 dependencies = [
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

@@ -192,12 +192,7 @@ fn test_should_extract_and_bind_png_portrait_through_asset_store() -> anyhow::Re
     let mut text = b"chara\0".to_vec();
     text.extend_from_slice(BASE64.encode(json).as_bytes());
 
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(&[0, 0x10, 0x20, 0x30, 0xff])?;
-    let image_data = encoder.finish()?;
-
     let mut png = png_header();
-    push_png_chunk(&mut png, b"IDAT", &image_data);
     push_png_chunk(&mut png, b"tEXt", b"note\0preserve-me");
     push_png_chunk(&mut png, b"tEXt", &text);
     push_png_chunk(&mut png, b"IEND", &[]);
@@ -362,6 +357,9 @@ fn png_header() -> Vec<u8> {
         0, // interlace
     ];
     push_png_chunk(&mut png, b"IHDR", &ihdr);
+    let mut image = ZlibEncoder::new(Vec::new(), Compression::default());
+    image.write_all(&[0, 0x10, 0x20, 0x30, 0xff]).unwrap();
+    push_png_chunk(&mut png, b"IDAT", &image.finish().unwrap());
     png
 }
 
@@ -373,4 +371,149 @@ fn push_png_chunk(png: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) {
     hasher.update(chunk_type);
     hasher.update(data);
     png.extend_from_slice(&hasher.finalize().to_be_bytes());
+}
+
+#[test]
+fn test_v3_source_exported_as_v2_has_a_valid_matching_envelope() -> anyhow::Result<()> {
+    for version in ["3.0", "3.0.0"] {
+        let mut source = card_json();
+        source["spec"] = json!("chara_card_v3");
+        source["spec_version"] = json!(version);
+        source["data"]["group_only_greetings"] = json!(["Group greeting"]);
+        source["data"]["assets"] = json!([{
+            "type": "icon", "uri": "embed://portrait.png", "name": "main", "ext": "png"
+        }]);
+        let template = import_tavern_v2(&serde_json::to_vec(&source)?)?;
+        let exported = export_tavern_v2_json(&template)?;
+        let document: Value = serde_json::from_slice(&exported)?;
+        assert_eq!(document["spec"], "chara_card_v2");
+        assert_eq!(document["spec_version"], "2.0");
+        assert_eq!(document["data"]["assets"], source["data"]["assets"]);
+        assert_eq!(
+            document["data"]["group_only_greetings"],
+            source["data"]["group_only_greetings"]
+        );
+        assert_eq!(document["data"]["extensions"], source["data"]["extensions"]);
+        let reimported = import_tavern_v2(&exported)?;
+        assert_eq!(reimported.name, template.name);
+        assert_eq!(reimported.narration, template.narration);
+        // Exporting V2 does not mutate the original card's recorded source version.
+        assert_eq!(
+            template
+                .compatibility
+                .tavern_v2
+                .as_ref()
+                .unwrap()
+                .spec_version,
+            version
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_v3_version_checks_every_numeric_component() -> anyhow::Result<()> {
+    for version in ["3.bad", "3.", "3..0", "3.-1", "3.bad.0", "3.0.bad"] {
+        let mut source = card_json();
+        source["spec"] = json!("chara_card_v3");
+        source["spec_version"] = json!(version);
+        assert!(matches!(
+            import_tavern_v2(&serde_json::to_vec(&source)?),
+            Err(TavernV2Error::UnsupportedVersion(_))
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_png_prefers_v3_card_and_removes_both_card_chunks_from_portrait() -> anyhow::Result<()> {
+    let v2 = serde_json::to_vec(&card_json())?;
+    let mut v3 = card_json();
+    v3["spec"] = json!("chara_card_v3");
+    v3["spec_version"] = json!("3.0");
+    v3["data"]["name"] = json!("V3 character");
+    let v3 = serde_json::to_vec(&v3)?;
+    let mut v2_text = b"chara\0".to_vec();
+    v2_text.extend_from_slice(BASE64.encode(v2).as_bytes());
+    let mut v3_text = b"ccv3\0".to_vec();
+    v3_text.extend_from_slice(BASE64.encode(v3).as_bytes());
+    for chunks in [[&v2_text, &v3_text], [&v3_text, &v2_text]] {
+        let mut png = png_header();
+        for chunk in chunks {
+            push_png_chunk(&mut png, b"tEXt", chunk);
+        }
+        push_png_chunk(&mut png, b"IEND", &[]);
+        let imported = import_tavern_v2_with_artwork(&png)?;
+        assert_eq!(imported.template.name, "V3 character");
+        let portrait = imported.portrait.unwrap();
+        assert!(matches!(
+            import_tavern_v2(portrait.bytes()),
+            Err(TavernV2Error::MissingPngCardPayload)
+        ));
+    }
+    Ok(())
+}
+
+fn png_card_with_dimensions(width: u32, height: u32) -> Vec<u8> {
+    let mut png = png_header();
+    png[16..20].copy_from_slice(&width.to_be_bytes());
+    png[20..24].copy_from_slice(&height.to_be_bytes());
+    let crc = crc32fast::hash(&png[12..29]);
+    png[29..33].copy_from_slice(&crc.to_be_bytes());
+    let mut text = b"chara\0".to_vec();
+    text.extend_from_slice(
+        BASE64
+            .encode(serde_json::to_vec(&card_json()).unwrap())
+            .as_bytes(),
+    );
+    push_png_chunk(&mut png, b"tEXt", &text);
+    push_png_chunk(&mut png, b"IEND", &[]);
+    png
+}
+
+#[test]
+fn test_portrait_header_bounds_without_claiming_pixel_stream_validation() {
+    for (width, height) in [(4096, 1), (1, 4096), (2000, 2000)] {
+        assert!(import_tavern_v2(&png_card_with_dimensions(width, height)).is_ok());
+    }
+    for (width, height) in [(4097, 1), (1, 4097), (2001, 2000), (0, 1), (1, 0)] {
+        assert!(matches!(
+            import_tavern_v2(&png_card_with_dimensions(width, height)),
+            Err(TavernV2Error::InvalidPng(
+                "portrait dimensions exceed package bounds"
+            ))
+        ));
+    }
+}
+
+#[test]
+fn test_animated_png_is_rejected_instead_of_silently_stripping_animation() {
+    for kind in [b"acTL", b"fcTL", b"fdAT"] {
+        let mut png = png_header();
+        push_png_chunk(&mut png, kind, &[0; 8]);
+        push_png_chunk(&mut png, b"IEND", &[]);
+        assert!(matches!(
+            import_tavern_v2(&png),
+            Err(TavernV2Error::InvalidPng("animated PNG is not supported"))
+        ));
+    }
+}
+
+#[test]
+fn test_card_metadata_decompression_stops_at_the_output_bound() -> anyhow::Result<()> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&vec![
+        b'a';
+        rintawa_character_library::MAX_TAVERN_CARD_BYTES + 1
+    ])?;
+    let mut text = b"chara\0\0".to_vec();
+    text.extend_from_slice(&encoder.finish()?);
+    let mut png = png_header();
+    push_png_chunk(&mut png, b"zTXt", &text);
+    push_png_chunk(&mut png, b"IEND", &[]);
+    assert!(matches!(
+        import_tavern_v2(&png),
+        Err(TavernV2Error::InputTooLarge)
+    ));
+    Ok(())
 }

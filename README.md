@@ -9,8 +9,9 @@ scoped transport, permissions and atomic World storage.
 The experimental Portable UI/runtime stack has been retired. Its replacement is
 the P10 browser foundation: a sandboxed WASM web runtime, a browser SDK, a
 React/Dockview shell and an independent Dice panel. The browser foundation has
-local acceptance coverage; it does not yet provide Character import, Chat or an
-AI runtime.
+local acceptance coverage. Chat now stores conversations and messages through
+its own WASM/System backend and survives Host restart. Character import and AI
+runtime integration remain in progress.
 See [implementation and acceptance](docs/specs/p10-browser-bridge.md).
 
 Useful domain libraries are retained under `crates/`: Tavern JSON/PNG import and
@@ -41,12 +42,14 @@ cargo run --locked -p rtwkit-registry-tool -- build-package \
   . web-runtime /tmp/rtwkit-artifacts local/source pkg-web-runtime-v0.1.0 local-test
 ```
 
-Repeat for `web-ui` and `dice`. To run the isolated Host/Chromium smoke, set
+Repeat for `web-ui`, `dice` and `chat`. To run the isolated Host/Chromium smoke, set
 `RINTAWA_BINARY` to the CLI built from the pinned Core revision and
 `RTWKIT_SMOKE_ARTIFACTS` to that directory, then run
 `node scripts/browser-smoke.mjs`. `python3 scripts/native-bridge-smoke.py`
 checks protocol isolation and multi-session logout with the same environment.
-Both install only into temporary homes and
+`node scripts/chat-smoke.mjs` additionally checks Chat COMMIT, stale-entry
+rejection, two-World isolation and restart using runtime/UI/Chat RTWs.
+All install only into temporary homes and
 preserves redacted logs there. Chromium must be installed; the test requires
 local loopback sockets and uses headless Chromium with its OS sandbox disabled
 for test-environment compatibility. Application iframe sandbox/CSP remain enabled.

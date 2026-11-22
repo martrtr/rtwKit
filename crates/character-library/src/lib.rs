@@ -1,6 +1,9 @@
 //! Bounded CharacterTemplate/Tavern parsing, portrait binding and immutable RTW encoding.
 //!
 //! This library performs no World mutation, Host activation or UI composition.
+//! The historical `tavern_v2` API names import both V2 and V3 JSON/PNG cards.
+//! Export through `export_tavern_v2_json` explicitly emits a V2 `2.0` envelope;
+//! full V3 asset URI resolution and CHARX containers are outside this codec.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs, rustdoc::broken_intra_doc_links)]

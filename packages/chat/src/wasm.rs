@@ -1,0 +1,455 @@
+//! Scoped Chat service: short polled requests, retained command outcomes and pure Systems.
+use std::cell::RefCell;
+
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use rintawa_domain_operations::{Caller, Operations, Outcome};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+use crate::model::{self, Append, Conversation, Create};
+wit_bindgen::generate!({ path: "../../wit", world: "domain-plugin" });
+use rintawa::engine::{
+    host, registration, runtime_context, runtime_tasks, transport, world_data, world_registration,
+    world_system_snapshot,
+};
+
+const POINT: &str = "rintawa/chat/v1";
+const CONTRACT: &str = "rintawa.chat";
+const CONVERSATION: &str = "rintawa.chat.conversation@1";
+const MESSAGE: &str = "rintawa.chat.message@1";
+const ENTRY: &str = "rintawa.chat.entry@1";
+const MAX_REPLY: usize = 64 * 1024;
+struct Pending {
+    ticket: Option<u64>,
+    item_ids: Vec<String>,
+}
+#[derive(Default)]
+struct State {
+    task: Option<u64>,
+    declaration: Option<u64>,
+    operations: Operations<Pending>,
+}
+thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
+struct Chat;
+
+#[derive(Deserialize)]
+#[serde(
+    tag = "method",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum Call {
+    Allocate {
+        count: u32,
+    },
+    BeginCreate {
+        conversation_id: Uuid,
+        title: String,
+        #[serde(default)]
+        character_id: Option<Uuid>,
+    },
+    BeginSend {
+        conversation_id: Uuid,
+        message_id: Uuid,
+        entry_id: Uuid,
+        text: String,
+    },
+    Status {
+        operation: String,
+    },
+    Release {
+        operation: String,
+    },
+    List {
+        #[serde(default)]
+        after: Option<Uuid>,
+    },
+    Page {
+        conversation_id: Uuid,
+        #[serde(default)]
+        after: Option<Uuid>,
+    },
+}
+fn caller(value: &runtime_context::Principal) -> Caller {
+    Caller {
+        instance_id: value.instance_id.clone(),
+        component_id: value.component_id.clone(),
+        activation: value.activation,
+    }
+}
+fn selected(context: &runtime_context::Context) -> bool {
+    runtime_context::selected_providers(CONTRACT, 1).is_ok_and(|providers| {
+        providers.len() == 1
+            && providers[0].instance_id == context.principal.instance_id
+            && providers[0].component_id == context.principal.component_id
+            && providers[0].activation == context.principal.activation
+    })
+}
+fn world_error(error: world_data::Error) -> &'static str {
+    match error {
+        world_data::Error::AccessNotActive => "access-not-active",
+        world_data::Error::InvalidRequest => "invalid-request",
+        world_data::Error::AccessDenied => "access-denied",
+        world_data::Error::QueueFull => "queue-full",
+        world_data::Error::Unavailable => "unavailable",
+        world_data::Error::MessageTooLarge => "message-too-large",
+    }
+}
+fn property_data(value: String) -> Result<Value, &'static str> {
+    serde_json::from_str::<Value>(&value)
+        .map(|record| record["data"].clone())
+        .map_err(|_| "invalid-stored-data")
+}
+fn response(result: Result<Value, &str>) -> Vec<u8> {
+    let value = match result {
+        Ok(value) => json!({"ok":true,"value":value}),
+        Err(code) => json!({"ok":false,"error":{"code":code}}),
+    };
+    match serde_json::to_vec(&value) {
+        Ok(bytes) if bytes.len() <= MAX_REPLY => bytes,
+        _ => br#"{"ok":false,"error":{"code":"message-too-large"}}"#.to_vec(),
+    }
+}
+impl exports::rintawa::engine::guest::Guest for Chat {
+    fn register() {
+        registration::define_contract(CONTRACT, 1, registration::ResolutionPolicy::Single)
+            .expect("Chat contract");
+        registration::provide_contract(CONTRACT, 1, &[]).expect("Chat provider");
+        for (name, schema) in model::property_schemas() {
+            world_registration::register_world_schema(
+                name,
+                1,
+                world_registration::SchemaKind::Property,
+                &schema.to_string(),
+            )
+            .expect("Chat property");
+        }
+        for (name, schema) in model::command_schemas() {
+            world_registration::register_world_schema(
+                name,
+                1,
+                world_registration::SchemaKind::Command,
+                &schema.to_string(),
+            )
+            .expect("Chat command");
+        }
+    }
+    fn start() {
+        let task = runtime_tasks::spawn_periodic(10).expect("Chat background-task permission");
+        STATE.with_borrow_mut(|state| {
+            *state = State::default();
+            state.task = Some(task);
+        });
+    }
+    fn stop() {
+        // Core revokes native tickets/receivers. Closing does not cancel admitted writes.
+        STATE.with_borrow_mut(|state| {
+            *state = State::default();
+        });
+    }
+}
+impl exports::rintawa::engine::task_handler::Guest for Chat {
+    fn on_task(handle: u64) {
+        let Ok(context) = runtime_context::current() else {
+            return;
+        };
+        if context.world_id.is_none() || !selected(&context) {
+            return;
+        }
+        STATE.with_borrow_mut(|state| {
+            if state.task != Some(handle) {
+                return;
+            }
+            state.poll_operations();
+            let declaration = match state.declaration {
+                Some(handle) => handle,
+                None => match transport::declare_polled(POINT) {
+                    Ok(handle) => {
+                        state.declaration = Some(handle);
+                        handle
+                    }
+                    Err(_) => return,
+                },
+            };
+            for _ in 0..4 {
+                let query = match transport::next_query(declaration) {
+                    Ok(Some(query)) => query,
+                    _ => break,
+                };
+                let bytes = response(state.dispatch(&context, &query.caller, &query.payload));
+                // Reply loss never repeats the operation; its handle/result remain retained.
+                let _ = transport::reply_query(query.handle, Some(&bytes));
+            }
+        });
+    }
+}
+
+impl State {
+    fn poll_operations(&mut self) {
+        for token in self.operations.pending_ids() {
+            let work = self.operations.work_mut(&token).unwrap();
+            let Some(ticket) = work.ticket else { continue };
+            let outcome = match world_data::poll(ticket) {
+                Ok(world_data::TicketStatus::Pending) => continue,
+                Ok(world_data::TicketStatus::Committed) => Outcome::Committed {
+                    item_ids: work.item_ids.clone(),
+                },
+                Ok(world_data::TicketStatus::Failed(reason)) => Outcome::Failed { reason },
+                Err(_) => {
+                    let _ = world_data::close(ticket);
+                    Outcome::Unknown {
+                        item_ids: work.item_ids.clone(),
+                    }
+                }
+            };
+            let _ = self.operations.finish(&token, outcome);
+        }
+    }
+    fn begin(
+        &mut self,
+        who: Caller,
+        schema: &str,
+        payload: Value,
+        item_ids: Vec<String>,
+    ) -> Result<Value, &'static str> {
+        if self.operations.len() >= 16 {
+            return Err("limit-exceeded");
+        }
+        let token = URL_SAFE_NO_PAD.encode(host::random_bytes(32).map_err(|_| "unavailable")?);
+        self.operations
+            .admit(
+                token.clone(),
+                who.clone(),
+                Pending {
+                    ticket: None,
+                    item_ids: item_ids.clone(),
+                },
+            )
+            .map_err(|_| "limit-exceeded")?;
+        match world_data::submit(schema, &payload.to_string()) {
+            Ok(ticket) => self.operations.work_mut(&token).unwrap().ticket = Some(ticket),
+            Err(error) => {
+                let _ = self.operations.release(&token, &who);
+                let _ = self.operations.finish(
+                    &token,
+                    Outcome::Failed {
+                        reason: world_error(error).into(),
+                    },
+                );
+                return Err(world_error(error));
+            }
+        }
+        Ok(json!({"status":"pending","operation":token,"itemIds":item_ids}))
+    }
+    fn dispatch(
+        &mut self,
+        context: &runtime_context::Context,
+        principal: &runtime_context::Principal,
+        bytes: &[u8],
+    ) -> Result<Value, &'static str> {
+        if bytes.len() > MAX_REPLY {
+            return Err("message-too-large");
+        }
+        let call: Call = serde_json::from_slice(bytes).map_err(|_| "invalid-request")?;
+        let who = caller(principal);
+        let own_ui = principal.instance_id == context.principal.instance_id
+            && principal.component_id == "ui";
+        match call {
+            Call::List { after } => list_conversations(after),
+            Call::Page {
+                conversation_id,
+                after,
+            } => page(conversation_id, after),
+            Call::Status { operation } => match self
+                .operations
+                .status(&operation, &who)
+                .map_err(|_| "invalid-operation")?
+            {
+                Some(outcome) => serde_json::to_value(outcome).map_err(|_| "unavailable"),
+                None => Ok(json!({"status":"pending"})),
+            },
+            Call::Release { operation } => {
+                self.operations
+                    .release(&operation, &who)
+                    .map_err(|_| "invalid-operation")?;
+                Ok(Value::Null)
+            }
+            Call::Allocate { count } => {
+                if !own_ui {
+                    return Err("access-denied");
+                }
+                if !(1..=3).contains(&count) {
+                    return Err("invalid-request");
+                }
+                Ok(json!(world_data::new_item_ids(count).map_err(world_error)?))
+            }
+            Call::BeginCreate {
+                conversation_id,
+                title,
+                character_id,
+            } => {
+                if !own_ui {
+                    return Err("access-denied");
+                }
+                let input = Create {
+                    conversation_id,
+                    title,
+                    character_id,
+                };
+                model::create_changes(&input, false, true)?;
+                self.begin(
+                    who,
+                    "rintawa.chat.create@1",
+                    serde_json::to_value(input).map_err(|_| "invalid-request")?,
+                    vec![conversation_id.to_string()],
+                )
+            }
+            Call::BeginSend {
+                conversation_id,
+                message_id,
+                entry_id,
+                text,
+            } => {
+                if !own_ui {
+                    return Err("access-denied");
+                }
+                let input = Append {
+                    conversation_id,
+                    message_id,
+                    entry_id,
+                    text,
+                };
+                let provisional = Conversation {
+                    title: String::new(),
+                    character_id: None,
+                    last_entry_id: None,
+                };
+                model::append_changes(&input, &provisional, false, false)?;
+                self.begin(
+                    who,
+                    "rintawa.chat.append@1",
+                    serde_json::to_value(input).map_err(|_| "invalid-request")?,
+                    vec![message_id.to_string(), entry_id.to_string()],
+                )
+            }
+        }
+    }
+}
+fn list_conversations(after: Option<Uuid>) -> Result<Value, &'static str> {
+    let cursor = after.map(|id| id.to_string());
+    let rows =
+        world_data::find_properties(CONVERSATION, cursor.as_deref(), 32).map_err(world_error)?;
+    let mut items = Vec::new();
+    for row in &rows {
+        let record: Value = serde_json::from_str(row).map_err(|_| "invalid-stored-data")?;
+        items.push(json!({"id":record["item"],"conversation":record["data"]}));
+    }
+    let next = if rows.len() == 32 {
+        items.last().map(|row| row["id"].clone())
+    } else {
+        None
+    };
+    Ok(json!({"items":items,"next":next}))
+}
+fn page(conversation: Uuid, after: Option<Uuid>) -> Result<Value, &'static str> {
+    let id = conversation.to_string();
+    let metadata = world_data::load_property(&id, CONVERSATION)
+        .map_err(world_error)?
+        .ok_or("not-found")?;
+    let metadata = property_data(metadata)?;
+    let cursor = after.map(|id| id.to_string());
+    let rows = world_data::find_relations(
+        &[id],
+        world_system_snapshot::Direction::Outgoing,
+        Some(ENTRY),
+        cursor.as_deref(),
+        32,
+    )
+    .map_err(world_error)?;
+    let mut items = Vec::new();
+    let mut next: Option<Value> = None;
+    for (index, row) in rows.iter().enumerate() {
+        let relation: Value = serde_json::from_str(row).map_err(|_| "invalid-stored-data")?;
+        let message_id = relation["object"].as_str().ok_or("invalid-stored-data")?;
+        let message = world_data::load_property(message_id, MESSAGE)
+            .map_err(world_error)?
+            .ok_or("invalid-stored-data")?;
+        let entry = json!({"entryId":relation["id"],"messageId":message_id,"message":property_data(message)?});
+        items.push(entry);
+        let candidate = json!({"ok":true,"value":{"conversation":metadata,"items":items,"next":relation["id"]}});
+        if serde_json::to_vec(&candidate)
+            .map_err(|_| "unavailable")?
+            .len()
+            > MAX_REPLY
+        {
+            items.pop();
+            if items.is_empty() {
+                return Err("message-too-large");
+            }
+            next = items.last().map(|row| row["entryId"].clone());
+            break;
+        }
+        if index == 31 {
+            next = Some(relation["id"].clone());
+        }
+    }
+    Ok(json!({"conversation":metadata,"items":items,"next":next}))
+}
+fn system_item(id: Uuid) -> Result<Option<Value>, String> {
+    world_system_snapshot::load_item(&id.to_string())
+        .map_err(|_| String::from("snapshot-unavailable"))?
+        .map(|text| serde_json::from_str(&text).map_err(|_| "invalid-stored-data".into()))
+        .transpose()
+}
+impl exports::rintawa::engine::world_system::Guest for Chat {
+    fn evaluate(command: String) -> Result<String, exports::rintawa::engine::world_system::Error> {
+        use exports::rintawa::engine::world_system::Error;
+        let result = (|| -> Result<Value, String> {
+            let envelope: Value = serde_json::from_str(&command).map_err(|_| "invalid-command")?;
+            match envelope["schema"].as_str() {
+                Some("rintawa.chat.create@1") => {
+                    let input: Create = serde_json::from_value(envelope["payload"].clone())
+                        .map_err(|_| "invalid-command")?;
+                    let exists = system_item(input.conversation_id)?.is_some();
+                    let character_object = match input.character_id {
+                        None => true,
+                        Some(id) => system_item(id)?.is_some_and(|item| item["kind"] == "object"),
+                    };
+                    model::create_changes(&input, exists, character_object).map_err(str::to_owned)
+                }
+                Some("rintawa.chat.append@1") => {
+                    let input: Append = serde_json::from_value(envelope["payload"].clone())
+                        .map_err(|_| "invalid-command")?;
+                    if !system_item(input.conversation_id)?
+                        .is_some_and(|item| item["kind"] == "object")
+                    {
+                        return Err("not-found".into());
+                    }
+                    let value = world_system_snapshot::load_property(
+                        &input.conversation_id.to_string(),
+                        CONVERSATION,
+                    )
+                    .map_err(|_| "snapshot-unavailable")?
+                    .ok_or("not-found")?;
+                    let conversation: Conversation =
+                        serde_json::from_value(property_data(value).map_err(str::to_owned)?)
+                            .map_err(|_| "invalid-stored-data")?;
+                    model::append_changes(
+                        &input,
+                        &conversation,
+                        system_item(input.message_id)?.is_some(),
+                        system_item(input.entry_id)?.is_some(),
+                    )
+                    .map_err(str::to_owned)
+                }
+                _ => Err("invalid-command".into()),
+            }
+        })();
+        result
+            .map(|transaction| transaction.to_string())
+            .map_err(Error::Rejected)
+    }
+}
+export!(Chat);

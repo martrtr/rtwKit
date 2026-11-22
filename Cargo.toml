@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["tools/*", "crates/*", "packages/web-runtime"]
+members = ["tools/*", "crates/*", "packages/web-runtime", "packages/chat"]
 
 [workspace.package]
 edition = "2024"
@@ -15,7 +15,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 toml = "0.9"
-rintawa-artifacts = { git = "https://github.com/martrtr/rintawa.git", rev = "256081cbfb2d608ca08362853fab452448768147" }
+rintawa-artifacts = { git = "https://github.com/martrtr/rintawa.git", rev = "cef1d86f87cbef45c3b7e34df97be154b1f4a41d" }
 
 [profile.dev]
 debug = 0

@@ -6,6 +6,7 @@ been removed. Their P10 replacements are real packages, with local browser/proto
 - `web-runtime`: ordinary WASM provider for `rintawa.runtime.web-bundle@2`.
 - `web-ui`: React/Dockview shell, explicit World lifecycle and saved layouts.
 - `dice`: independent Canvas/queryable panel demonstrating the browser SDK.
+- `chat`: persistent conversations/messages with an ordinary WASM/System owner.
 
 The web packages use the runtime provider; each has its own immutable RTW.
 Reusable native/WASM libraries live under `crates/`. Browser authoring code lives

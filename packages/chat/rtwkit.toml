@@ -1,0 +1,14 @@
+schema = 2
+[package]
+id = "rintawa.rtwkit.chat"
+name = "Chat"
+version = "0.1.0"
+description = "Persistent World conversations and messages"
+license = "GPL-3.0-only"
+authors = ["martrtr"]
+[[package.dependencies]]
+id = "rintawa.rtwkit.web-runtime"
+requirement = "^0.1.0"
+[build]
+artifact-root = "build/rtw"
+command = ["bash", "build.sh"]
