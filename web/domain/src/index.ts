@@ -61,7 +61,18 @@ export class DomainClient {
     if ((result.status === 'committed' || result.status === 'unknown') && ids(result.itemIds) && result.itemIds.length === operation.itemIds.length && result.itemIds.every((id, index) => id === operation.itemIds[index])) return { status: result.status, itemIds: result.itemIds };
     throw new DomainError('protocol-error');
   }
-  async release(operation: Operation): Promise<void> { await this.request('release', { operation: operation.operation }); }
+  async release(operation: Operation): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try { await this.request('release', { operation: operation.operation }); return; }
+      catch (error) {
+        const code = error instanceof DomainError || error instanceof BridgeError ? error.code : null;
+        // A lost cleanup acknowledgement can leave the handle already retired.
+        if (code === 'invalid-operation') return;
+        if (attempt >= 4 || (code !== 'unavailable' && code !== 'limit-exceeded')) throw error;
+        await pause();
+      }
+    }
+  }
   async wait(operation: Operation, signal?: AbortSignal): Promise<OperationStatus> {
     for (;;) {
       cancelled(signal);

@@ -1,17 +1,19 @@
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 const slug = process.argv[2];
-if (!['web-ui', 'dice', 'chat'].includes(slug)) throw new Error('Unknown web package');
+if (!['web-ui', 'dice', 'chat', 'character'].includes(slug)) throw new Error('Unknown web package');
 const root = resolve(import.meta.dirname, '..');
 const target = resolve(root, 'packages', slug, 'build/rtw');
 await rm(target, { recursive: true, force: true });
 await mkdir(target, { recursive: true });
-if (slug === 'chat') {
-  if (!process.argv[3]) throw new Error('Chat assembly requires its built WASM backend');
+if (['chat', 'character'].includes(slug)) {
+  if (!process.argv[3]) throw new Error('Domain assembly requires its built WASM backend');
   await cp(resolve(process.argv[3]), resolve(target, 'backend.wasm'));
+  if (process.argv[4]) await cp(resolve(process.argv[4]), resolve(target, 'world-portability.json'));
 }
 await cp(resolve(root, 'packages', slug, 'dist'), resolve(target, 'web'), { recursive: true, force: true });
 for (const name of ['rtw.toml', 'manifest.toml', 'web-bundle.toml']) await cp(resolve(root, 'packages', slug, name), resolve(target, name));
+if (slug === 'character') await cp(resolve(root, 'packages/character/story-bundle.toml'), resolve(target, 'story-bundle.toml'));
 await cp(resolve(root, 'LICENSE'), resolve(target, 'LICENSE'));
 const names = ['react', 'react-dom', 'scheduler', ...(slug === 'web-ui' ? ['dockview-react', 'dockview', 'dockview-core'] : [])];
 let notices = '';

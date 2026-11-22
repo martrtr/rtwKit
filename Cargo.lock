@@ -335,7 +335,7 @@ dependencies = [
 [[package]]
 name = "rintawa-artifacts"
 version = "0.0.1"
-source = "git+https://github.com/martrtr/rintawa.git?rev=cef1d86f87cbef45c3b7e34df97be154b1f4a41d#cef1d86f87cbef45c3b7e34df97be154b1f4a41d"
+source = "git+https://github.com/martrtr/rintawa.git?rev=b997e98e489cf6eee27e9a21a249a666d7a5df61#b997e98e489cf6eee27e9a21a249a666d7a5df61"
 dependencies = [
  "serde",
  "sha2",
@@ -343,6 +343,19 @@ dependencies = [
  "thiserror",
  "toml",
  "zip",
+]
+
+[[package]]
+name = "rintawa-character"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "rintawa-character-library",
+ "rintawa-domain-operations",
+ "serde",
+ "serde_json",
+ "uuid",
+ "wit-bindgen",
 ]
 
 [[package]]

@@ -1,0 +1,26 @@
+id = "rintawa.rtwkit.character"
+name = "Characters"
+version = "0.1.0"
+sdk = "^0.0"
+[[components]]
+id = "backend"
+kind = "runtime"
+target = "rintawa.runtime.wasm-component@1"
+entry = "backend.wasm"
+[components.permissions]
+runtime = ["background-task", "user-resource-read", "asset-import"]
+[[components]]
+id = "ui"
+kind = "ui"
+target = "rintawa.runtime.web-bundle@2"
+entry = "web-bundle.toml"
+[components.permissions]
+runtime = ["background-task", "user-resource-import", "asset-read"]
+
+[[components]]
+id = "story"
+kind = "ui"
+target = "rintawa.runtime.web-bundle@2"
+entry = "story-bundle.toml"
+[components.permissions]
+runtime = ["background-task", "user-resource-import"]

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { Rpc, Client, BridgeError, handle, encodeBytes, decodeBytes, resolveView } from '../src/index.ts';
+import { Rpc, Client, BridgeError, handle, encodeBytes, decodeBytes, resolveView, viewState } from '../src/index.ts';
 
 test('u64 values remain strings and byte payloads survive the full bound', () => {
   assert.equal(handle('18446744073709551615'), '18446744073709551615');
@@ -57,4 +57,25 @@ test('disposing a channel aborts handlers and releases a non-cooperating query l
   assert.equal(signal.aborted, true);
   await service.done;
   assert.deepEqual(calls, ['transport.declare-polled', 'transport.next-query']);
+});
+
+test('a poll rejected before dispatch cannot undo an already-admitted query', async () => {
+  const calls = [];
+  const client = new Client(async method => {
+    calls.push(method);
+    if (method === 'transport.begin-query') return '1';
+    if (method === 'transport.poll-query') throw new BridgeError('limit-exceeded', 'not-started');
+  });
+  await assert.rejects(client.query('domain/mutate', new Uint8Array()), error => error.code === 'limit-exceeded' && error.outcome === 'unknown');
+  assert.deepEqual(calls, ['transport.begin-query', 'transport.poll-query', 'transport.close-query']);
+});
+
+test('view selection state is bounded inert strings and never selects preference authority', async () => {
+  const state = { conversationId: '018f0000-0000-7000-8000-000000000001' };
+  assert.equal(viewState(state), true);
+  for (const bad of [{ nested: {} }, { value: 'é'.repeat(129) }, { ['x'.repeat(65)]: 'id' }, Object.fromEntries(Array.from({length:9}, (_,i)=>[String(i),'id'])), { a:'x'.repeat(256),b:'x'.repeat(256),c:'x'.repeat(256),d:'x'.repeat(256) }]) assert.equal(viewState(bad), false);
+  const calls=[];const client=new Client(async(method,args)=>{calls.push({method,args});return method==='ui.state.get'?state:null;});
+  assert.deepEqual(await client.getState(),state);await client.setState(state);
+  assert.deepEqual(calls,[{method:'ui.state.get',args:{}},{method:'ui.state.set',args:{state}}]);
+  await assert.rejects(client.setState({nested:{}}),error=>error.code==='invalid-request');
 });

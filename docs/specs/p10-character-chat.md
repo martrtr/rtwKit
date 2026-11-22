@@ -76,9 +76,8 @@ Release intermediate buffers between stages and retain the existing WASM memory
 limit. An input below these maxima may still fail on memory exhaustion; failure
 must not leave a partial Character in World.
 
-Current Core source has an 8 MiB per-resource limit
-(`crates/host/src/runtime.rs`, `MAX_USER_RESOURCE_BYTES`). To implement the 16 MiB
-PNG path, this proposal also raises that generic limit to 16 MiB; the 32-resource
+The accepted Core amendment raises the former 8 MiB per-resource limit
+(`crates/host/src/runtime.rs`, `MAX_USER_RESOURCE_BYTES`) to 16 MiB; the 32-resource
 count and 32 MiB aggregate remain unchanged. WASM import/upload byte budgets
 already allow 32 MiB. No WIT/API or extra streaming service is introduced.
 Test the exact per-file and aggregate limits with the ordinary resource path.
@@ -191,9 +190,8 @@ replays begin. The browser smoke exercises COMMIT, late-ID rejection with no ext
 message, reload, a second isolated World and complete Host restart.
 
 Real Chat testing exposed loss of System rejection text at the Core guest poll
-boundary. A focused Core fix preserves that reason within the existing 2048-byte
-UTF-8 limit; runtime acceptance uses this fix in addition to the pinned ABI.
-Advance the Core pin when that fix is committed. This changes no WIT signature.
+boundary. Core `2f1cf07625cd848176c05cb5507aa80ac497022c` preserves that reason within
+the existing 2048-byte UTF-8 limit and is now the pinned revision. WIT is unchanged.
 
 PNG parsing now checks dimensions, static structure and CRC, rejects APNG, keeps
 an explicit portrait chunk set and bounds metadata decompression. It does not
@@ -202,9 +200,112 @@ for V3 inputs; original source-version metadata is not mutated. The owner's loca
 19-card corpus has 17 accepted cards and two explicit dimension-limit rejections;
 private card files are not fixtures in Git. Synthetic tests exercise V3.
 
-Still pending: the Character backend and browser file-import UI, actual
-`take-resource` use at domain admission, staged source/portrait CAS writes, and the
-combined browser Character import/portrait/restart acceptance. The complete P10
-Character/Chat scenario is not yet declared finished.
+Character now implements its actual WASM/System backend and browser file picker.
+Admission checks the initiating UI and selected authority, reserves one of 16
+slots and acquires a private resource ref with `take-resource`. FIFO preparation
+holds one file at a time, releases the resource after reading, separates decoding
+and normalization, streams exact source and sanitized portrait to CAS, and submits
+one atomic Character transaction. Released pending work retains its slot; stop
+uses native ownership cleanup. Transient preparation cleanup retains its slot
+until cleanup can finish. Unreferenced CAS bytes on failed World commands remain
+allowed.
+
+`node scripts/character-smoke.mjs` exercises real V3 PNG and V2 JSON browser
+imports, source fidelity through the public asset reader, decoded portrait, invalid
+JSON rejection without a Character, linked Chat and Host restart. The developer
+launcher `scripts/dev-ui.py` installs into a fresh isolated Host home and prints a
+restart command. AI/Narrator integration remains outside this completed domain
+slice.
+
+With both domain backends installed, activation can outlast one browser read
+deadline. Shell retains a pending hint and retries transient status reads until
+authoritative lifecycle state is available; it never repeats set-active on a
+missing reply. Actual browser acceptance covers this delayed activation.
 
 No schema or permission changes beyond the accepted contracts are assumed accepted.
+
+## World and chat navigation (owner direction, 2026-11-22)
+
+The owner superseded the initial Soul-of-Waifu layout with Discord-style hierarchy:
+a narrow World rail at the far left, the selected World's conversations beside it,
+and the active conversation as the primary content. There is no participant/member
+pane in this slice: retain the existing single `characterId` and show that linked
+Character in the conversation header. Character import is a separate World view.
+The supplied Rintawa logo is the Home button at the top of the World rail. Home
+lists real Worlds and offers creation/opening; it does not fabricate activity.
+Use AMOLED black surfaces, fine separators and restrained lilac accents through
+CSS variables. Do not add backgrounds, gradients, themes infrastructure or Core UI.
+
+Root owns Home/World navigation and generic installed-view selection. Conversation
+listing, creation and sending remain inside the scoped Chat iframe with its own
+attested UI principal. Root never chooses a mutation owner by a view title. Views
+are opened by their exact stable keys; titles are display labels. Existing DockView
+splits, bounded layout storage, placeholders and World stop/reactivation remain
+available. Home does not stop active Worlds or erase a saved workspace. Selecting
+a World activates its existing saved panel when possible, otherwise shows that
+World's installed views. No new Host/WIT API, permission or persistence field. The local Root SDK
+exposes a disconnect observer so Shell can show its existing explicit Reconnect
+action on WebSocket closure. Reconnecting never repeats a domain mutation.
+
+Character read rows are `{id,card:{name,source,portrait}}`; `portrait` is nullable.
+Asset refs use the browser bridge shape `{digest,size,mediaType}`, with canonical
+decimal `size` strings. `get` takes `itemId`; `list` accepts an exclusive `after`
+item ID and returns `{items,next}` bounded to 32 rows and 64 KiB. Imports acquire
+private refs before returning pending. One FIFO preparation advances per task,
+while already-submitted commands can complete independently. No file bytes are
+retained for queued imports and no acquired reference is returned to UI.
+
+## Failure regression checks
+
+`node scripts/character-lifecycle-smoke.mjs` drives the real Host/WASM through
+public browser protocol channels. Making only the isolated test home's CAS staging
+directory unwritable must produce terminal import failure without a Character;
+restoring access allows the next import to commit. A consumed upload handle's
+`rejected` cancellation is terminal cleanup, not a reason to keep the import lane.
+
+After a transport query has a native handle, polling failure has an unknown
+application outcome even when the polling RPC itself was rejected before dispatch.
+The browser SDK preserves that distinction and never repeats the query. Release
+cleanup uses bounded retries for transient errors and accepts an already-invalid
+operation handle, without replacing a known committed/failed result. Permanent
+cleanup loss can retain a terminal slot until backend stop, as in the accepted
+lifecycle. Both domain points reject noncanonical UUID strings and duplicate JSON
+fields at their request boundary.
+
+## Story MVP slice 1: bounded recent history
+
+The owner-directed Core story plan supersedes old checkpoint statuses. Workflows,
+templates and AI are still separate subsequent slices; do not recreate completed
+Character/Chat/browser foundations. Core adds owner-scoped descending relation reads
+with unchanged bounds to support a bounded recent window.
+
+Chat read `recent {conversationId,before?}` returns `{conversation,items,older,head}`.
+Items are ascending, at most 32, and the whole encoded reply is at most 64 KiB.
+`before` and `older` are exclusive entry-ID bounds; absent before selects the newest
+window, older is null when no continuation is indicated. Head is the greatest
+returned entry ID, not a separately-read conversation.lastEntryId. An empty window
+has a null head. Existing forward page is unchanged. No new mutation authority.
+
+UI selects/refreshes a conversation with one recent query. Explicit earlier pages
+merge by exact entry ID, retain ascending order and preserve the scroll anchor.
+After a committed send the UI reads one recent window. It never loops through the
+entire history to find its newest rows. Monotonic Chat append remains the guarantee
+that successful later writes cannot appear behind an issued forward cursor.
+
+## Text Roleplay workflow checkpoint (2026-11-23)
+
+The Character story UI is the World-selected rintawa.roleplay.workflow@1 provider. Its
+backend exposes read-only `workflow` (whether the exact caller is that live provider).
+Chat exposes read-only `describe` returning its exact companion UI instance/component.
+Both owners permit allocate/import/create to their own UI or the exact selected
+workflow in the same transport World, including activation equality. Chat begin-send
+remains restricted to its own UI. Status/release stay initiating-activation-owned.
+
+Character UI preallocates Character and conversation IDs and persists inert recovery
+IDs before admission. It imports Character, waits for COMMIT, then submits a separate
+Chat begin-create linked to that Character. Only committed Chat creation leads to
+navigation. Refused/failed creation preserves Character and offers Continue; unknown
+mutations are read back by known IDs and never replayed automatically. Discovery is
+paged; existing conversations are selectable, orphan Characters offer continuation.
+The default Chat drawer is collapsed and current conversation selection is stored
+under Chat UI's own fixed preference. No extra World table or durable job is added.

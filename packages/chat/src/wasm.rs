@@ -41,6 +41,7 @@ struct Chat;
     deny_unknown_fields
 )]
 enum Call {
+    Describe,
     Allocate {
         count: u32,
     },
@@ -71,6 +72,11 @@ enum Call {
         #[serde(default)]
         after: Option<Uuid>,
     },
+    Recent {
+        conversation_id: Uuid,
+        #[serde(default)]
+        before: Option<Uuid>,
+    },
 }
 fn caller(value: &runtime_context::Principal) -> Caller {
     Caller {
@@ -85,6 +91,14 @@ fn selected(context: &runtime_context::Context) -> bool {
             && providers[0].instance_id == context.principal.instance_id
             && providers[0].component_id == context.principal.component_id
             && providers[0].activation == context.principal.activation
+    })
+}
+fn workflow(principal: &runtime_context::Principal) -> bool {
+    runtime_context::selected_providers("rintawa.roleplay.workflow", 1).is_ok_and(|providers| {
+        providers.len() == 1
+            && providers[0].instance_id == principal.instance_id
+            && providers[0].component_id == principal.component_id
+            && providers[0].activation == principal.activation
     })
 }
 fn world_error(error: world_data::Error) -> &'static str {
@@ -252,16 +266,40 @@ impl State {
         if bytes.len() > MAX_REPLY {
             return Err("message-too-large");
         }
+        let value: Value = serde_json::from_slice(bytes).map_err(|_| "invalid-request")?;
+        // Typed UUID parsing also accepts URN/braced/simple aliases; the wire does not.
+        for key in [
+            "conversationId",
+            "messageId",
+            "entryId",
+            "characterId",
+            "after",
+            "before",
+        ] {
+            if let Some(Value::String(id)) = value.get(key)
+                && !Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == *id)
+            {
+                return Err("invalid-request");
+            }
+        }
+        // Parse the original bytes so duplicate fields remain errors.
         let call: Call = serde_json::from_slice(bytes).map_err(|_| "invalid-request")?;
         let who = caller(principal);
         let own_ui = principal.instance_id == context.principal.instance_id
             && principal.component_id == "ui";
         match call {
+            Call::Describe => {
+                Ok(json!({"instanceId":context.principal.instance_id,"componentId":"ui"}))
+            }
             Call::List { after } => list_conversations(after),
             Call::Page {
                 conversation_id,
                 after,
-            } => page(conversation_id, after),
+            } => page(conversation_id, after, false),
+            Call::Recent {
+                conversation_id,
+                before,
+            } => page(conversation_id, before, true),
             Call::Status { operation } => match self
                 .operations
                 .status(&operation, &who)
@@ -277,7 +315,7 @@ impl State {
                 Ok(Value::Null)
             }
             Call::Allocate { count } => {
-                if !own_ui {
+                if !own_ui && !workflow(principal) {
                     return Err("access-denied");
                 }
                 if !(1..=3).contains(&count) {
@@ -290,7 +328,7 @@ impl State {
                 title,
                 character_id,
             } => {
-                if !own_ui {
+                if !own_ui && !workflow(principal) {
                     return Err("access-denied");
                 }
                 let input = Create {
@@ -353,14 +391,21 @@ fn list_conversations(after: Option<Uuid>) -> Result<Value, &'static str> {
     };
     Ok(json!({"items":items,"next":next}))
 }
-fn page(conversation: Uuid, after: Option<Uuid>) -> Result<Value, &'static str> {
+// Query in storage order; recent pages are returned in transcript order. A head
+// is derived from returned rows, never from separately read conversation metadata.
+fn page(conversation: Uuid, cursor: Option<Uuid>, recent: bool) -> Result<Value, &'static str> {
     let id = conversation.to_string();
     let metadata = world_data::load_property(&id, CONVERSATION)
         .map_err(world_error)?
         .ok_or("not-found")?;
     let metadata = property_data(metadata)?;
-    let cursor = after.map(|id| id.to_string());
-    let rows = world_data::find_relations(
+    let cursor = cursor.map(|id| id.to_string());
+    let query = if recent {
+        world_data::find_relations_before
+    } else {
+        world_data::find_relations
+    };
+    let rows = query(
         &[id],
         world_system_snapshot::Direction::Outgoing,
         Some(ENTRY),
@@ -378,8 +423,9 @@ fn page(conversation: Uuid, after: Option<Uuid>) -> Result<Value, &'static str> 
             .ok_or("invalid-stored-data")?;
         let entry = json!({"entryId":relation["id"],"messageId":message_id,"message":property_data(message)?});
         items.push(entry);
-        let candidate = json!({"ok":true,"value":{"conversation":metadata,"items":items,"next":relation["id"]}});
-        if serde_json::to_vec(&candidate)
+        // Reserve the full continuation cursor even if this is the last row.
+        let candidate = page_value(&metadata, &items, Some(relation["id"].clone()), recent);
+        if serde_json::to_vec(&json!({"ok":true,"value":candidate}))
             .map_err(|_| "unavailable")?
             .len()
             > MAX_REPLY
@@ -395,8 +441,21 @@ fn page(conversation: Uuid, after: Option<Uuid>) -> Result<Value, &'static str> 
             next = Some(relation["id"].clone());
         }
     }
-    Ok(json!({"conversation":metadata,"items":items,"next":next}))
+    Ok(page_value(&metadata, &items, next, recent))
 }
+fn page_value(metadata: &Value, items: &[Value], next: Option<Value>, recent: bool) -> Value {
+    if recent {
+        json!({
+            "conversation":metadata,
+            "items":items.iter().rev().collect::<Vec<_>>(),
+            "older":next,
+            "head":items.first().map(|row| &row["entryId"]),
+        })
+    } else {
+        json!({"conversation":metadata,"items":items,"next":next})
+    }
+}
+
 fn system_item(id: Uuid) -> Result<Option<Value>, String> {
     world_system_snapshot::load_item(&id.to_string())
         .map_err(|_| String::from("snapshot-unavailable"))?

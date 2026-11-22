@@ -78,6 +78,16 @@ pub enum Call {
     CloseAsset(Handle),
     ListWorlds,
     CreateWorld,
+    ListTemplates,
+    TemplateInfo(String),
+    CreateFromTemplate {
+        digest: String,
+        title: String,
+        approve_runtime_permissions: bool,
+    },
+    WorldEntry(String),
+    GetViewState,
+    SetViewState(std::collections::BTreeMap<String, String>),
     SetMetadata {
         world_id: String,
         title: String,
@@ -103,6 +113,10 @@ impl Call {
             self,
             Self::ListWorlds
                 | Self::CreateWorld
+                | Self::ListTemplates
+                | Self::TemplateInfo(_)
+                | Self::CreateFromTemplate { .. }
+                | Self::WorldEntry(_)
                 | Self::SetMetadata { .. }
                 | Self::DeleteWorld(_)
                 | Self::SetActive { .. }
@@ -339,6 +353,59 @@ impl Request {
                 empty(value)?;
                 Call::ListWorlds
             }
+            "world-sessions.list-templates" => {
+                empty(value)?;
+                Call::ListTemplates
+            }
+            "world-sessions.template-info" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args {
+                    digest: String,
+                }
+                Call::TemplateInfo(args::<Args>(value)?.digest)
+            }
+            "world-sessions.create-from-template" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct Args {
+                    digest: String,
+                    title: String,
+                    approve_runtime_permissions: bool,
+                }
+                let a: Args = args(value)?;
+                if a.title.trim().is_empty() || a.title.len() > 256 || a.digest.len() > 128 {
+                    return Err("invalid template selection");
+                }
+                Call::CreateFromTemplate {
+                    digest: a.digest,
+                    title: a.title,
+                    approve_runtime_permissions: a.approve_runtime_permissions,
+                }
+            }
+            "world-sessions.entry" => Call::WorldEntry(args::<World>(value)?.world_id),
+            "ui.state.get" => {
+                empty(value)?;
+                Call::GetViewState
+            }
+            "ui.state.set" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args {
+                    state: std::collections::BTreeMap<String, String>,
+                }
+                let a: Args = args(value)?;
+                if a.state.len() > 8
+                    || a.state.iter().any(|(k, v)| !ascii_id(k) || v.len() > 256)
+                    || serde_json::to_vec(&a.state)
+                        .map_err(|_| "invalid state")?
+                        .len()
+                        > 1024
+                {
+                    return Err("invalid view state");
+                }
+                Call::SetViewState(a.state)
+            }
             "world-sessions.create" => {
                 empty(value)?;
                 Call::CreateWorld
@@ -456,6 +523,59 @@ mod tests {
                 json!({"handle":"4","payload":null})
             ))
             .is_ok()
+        );
+    }
+    #[test]
+    fn templates_are_administrative_and_state_cannot_select_preference_owners() {
+        for (method, args) in [
+            ("world-sessions.list-templates", json!({})),
+            (
+                "world-sessions.template-info",
+                json!({"digest":"sha256:exact"}),
+            ),
+            ("world-sessions.entry", json!({"worldId":"world"})),
+            (
+                "world-sessions.create-from-template",
+                json!({"digest":"sha256:exact","title":"story","approveRuntimePermissions":false}),
+            ),
+        ] {
+            assert!(
+                Request::decode(&request(method, args))
+                    .unwrap()
+                    .call
+                    .shell_only()
+            );
+        }
+        assert!(
+            Request::decode(&request(
+                "world-sessions.create-from-template",
+                json!({"digest":"sha256:exact","title":"story"})
+            ))
+            .is_err()
+        );
+        let state = json!({"conversationId":"018f0000-0000-7000-8000-000000000001"});
+        assert!(
+            !Request::decode(&request("ui.state.set", json!({"state":state})))
+                .unwrap()
+                .call
+                .shell_only()
+        );
+        for bad in [
+            json!({"state":state,"owner":"forged"}),
+            json!({"state":state,"key":"other"}),
+            json!({"state":{"nested":{}}}),
+            json!({"state":{"big":"é".repeat(129)}}),
+            json!({"state":{"a":"x".repeat(256),"b":"x".repeat(256),"c":"x".repeat(256),"d":"x".repeat(256)}}),
+        ] {
+            assert!(Request::decode(&request("ui.state.set", bad)).is_err());
+        }
+        assert!(
+            Request::decode(&request(
+                "ui.navigate",
+                json!({"instanceId":"other","componentId":"ui","state":{}})
+            ))
+            .is_err(),
+            "navigation is local to MessagePort, not a Native dispatcher"
         );
     }
 }

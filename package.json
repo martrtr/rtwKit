@@ -6,7 +6,8 @@
     "web/*",
     "packages/web-ui",
     "packages/dice",
-    "packages/chat"
+    "packages/chat",
+    "packages/character"
   ],
   "engines": {
     "node": ">=24"
@@ -15,7 +16,7 @@
     "test:bridge": "node --test --test-isolation=none web/bridge/tests/*.test.mjs packages/web-ui/tests/*.test.mjs web/domain/tests/*.test.mjs",
     "build:bridge": "node scripts/build-browser-sdk.mjs",
     "typecheck": "tsc --noEmit",
-    "build:web": "npm run build --workspace @rintawa/web-ui && npm run build --workspace @rintawa/dice && npm run build --workspace @rintawa/chat"
+    "build:web": "npm run build --workspace @rintawa/web-ui && npm run build --workspace @rintawa/dice && npm run build --workspace @rintawa/chat && npm run build --workspace @rintawa/character"
   },
   "devDependencies": {
     "typescript": "7.0.2",

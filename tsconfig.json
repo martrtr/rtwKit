@@ -26,6 +26,8 @@
     "packages/dice/**/*.ts",
     "packages/dice/**/*.tsx",
     "packages/chat/**/*.ts",
-    "packages/chat/**/*.tsx"
+    "packages/chat/**/*.tsx",
+    "packages/character/**/*.ts",
+    "packages/character/**/*.tsx"
   ]
 }

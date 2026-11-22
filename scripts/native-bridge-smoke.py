@@ -1,5 +1,5 @@
 # Isolated real-Host protocol acceptance; launch credentials stay in memory.
-import base64,json,os,pathlib,queue,re,socket,struct,subprocess,tempfile,threading,time,signal,urllib.parse
+import base64,json,os,pathlib,queue,re,socket,struct,subprocess,sys,tempfile,threading,time,signal,urllib.parse
 core=pathlib.Path(os.environ['RINTAWA_BINARY'])
 artifacts=pathlib.Path(os.environ['RTWKIT_SMOKE_ARTIFACTS'])
 root=pathlib.Path(tempfile.mkdtemp(prefix='rtwkit-p10-smoke-'));home=root/'home'
@@ -43,10 +43,12 @@ try:
     assert piece,'Upgrade closed'
     head+=piece
    self.header,self.buffer=head.split(b'\r\n\r\n',1)
-  def send(self,value):
+  def frame(self,value):
    payload=json.dumps(value,separators=(',',':')).encode();mask=os.urandom(4);n=len(payload)
    header=bytes([0x81,0x80|n]) if n<126 else bytes([0x81,0xfe])+struct.pack('!H',n) if n<=65535 else bytes([0x81,0xff])+struct.pack('!Q',n)
-   self.sock.sendall(header+mask+bytes(byte^mask[i%4] for i,byte in enumerate(payload)))
+   return header+mask+bytes(byte^mask[i%4] for i,byte in enumerate(payload))
+  def send(self,value):
+   self.sock.sendall(self.frame(value))
   def exact(self,n):
    while len(self.buffer)<n:
     data=self.sock.recv(65536)
@@ -84,6 +86,28 @@ try:
  assert result['ok'] and [base64.b64decode(x) for x in result['value']]==[b'answer'],result
  layout={'version':1,'panels':[{'panelId':'one','restoreKey':views[0]['restoreKey']}],'dockview':{}}
  assert ws.call(shell,'ui.layout.set',{'layout':layout})['ok']
+ checks=[]
+ if '--clock-unavailable' in sys.argv:
+  ws.send({'v':1,'id':'clock-fault','channel':shell,'method':'ui.layout.reset','args':{}})
+  response=ws.receive()
+  assert (response['v'],response['id'],response['channel'],response['ok'])==(1,'clock-fault',shell,False)
+  assert response['error']['code']=='unavailable' and response['error']['outcome']=='not-started'
+  assert ws.call(shell,'ui.layout.get',{})['value']==layout
+  checks.append('clock admission error preserves layout, socket and channel')
+ # The first 64 KiB leaves an unfinished frame. The next TCP read can span both messages.
+ payload=base64.b64encode(b'A'*(64*1024)).decode()
+ request_ids=['part-a','part-b']
+ framed=b''.join(ws.frame({'v':1,'id':request_id,'channel':b,'method':'transport.begin-query',
+                          'args':{'point':'fixture/coalesced','payload':payload}}) for request_id in request_ids)
+ ws.sock.sendall(framed[:64*1024])
+ time.sleep(.1)
+ ws.sock.sendall(framed[64*1024:])
+ replies=[ws.receive() for _ in request_ids]
+ assert [reply['id'] for reply in replies]==request_ids
+ for reply in replies:
+  assert reply['ok'] and reply['channel']==b
+  assert ws.call(b,'transport.close-query',{'handle':reply['value']})['ok']
+ checks.append('bounded TCP reads preserve both coalesced WebSocket requests')
  assert ws.call(shell,'ui.layout.get',{})['value']==layout
  assert not ws.call(a,'ui.layout.get',{})['ok']
  assert ws.call(shell,'ui.unmount',{'channel':a})['ok']
@@ -117,7 +141,7 @@ try:
   assert len(error.args)==1 and isinstance(error.args[0],tuple) and error.args[0][0]&15==8, error
  other.sock.close();same.sock.close()
  ws.sock.close()
- print(json.dumps({'result':'passed','checks':['real WASM runtime target','exact Origin rejection','extension offer without negotiation','same-activation channel resource isolation','D8 query/reply without blocked pump','attested caller','shell-owned layout operations','panel admin denial','unmount cleanup','same-token reconnect uses fresh channels','logout revokes sibling connections and preserves another session'],'home':str(home),'redacted_host_log':str(log.name)}))
+ print(json.dumps({'result':'passed','checks':['real WASM runtime target','exact Origin rejection','extension offer without negotiation','same-activation channel resource isolation','D8 query/reply without blocked pump','attested caller','shell-owned layout operations','panel admin denial','unmount cleanup','same-token reconnect uses fresh channels','logout revokes sibling connections and preserves another session',*checks],'home':str(home),'redacted_host_log':str(log.name)}))
 finally:
  if process.poll() is None:
   process.send_signal(signal.SIGINT)

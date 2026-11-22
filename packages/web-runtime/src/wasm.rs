@@ -21,11 +21,19 @@ const CACHE_BYTES: usize = 16 * 1024 * 1024;
 const BUFFER_BYTES: usize = 4 * 1024 * 1024;
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
+struct ProvidedContract {
+    id: String,
+    version: u32,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct Descriptor {
     entry: String,
     title: String,
     #[serde(default)]
     host_shell: bool,
+    #[serde(default)]
+    provides: Vec<ProvidedContract>,
 }
 struct Bound {
     owner: Owner,
@@ -201,6 +209,19 @@ impl exports::rintawa::engine::target_provider::Guest for Runtime {
                 .bundles
                 .get(&handle)
                 .ok_or(TargetError::UnknownComponent)?;
+            if bundle.descriptor.provides.len() > 8 {
+                return Err(TargetError::InvalidDescriptor);
+            }
+            for contract in &bundle.descriptor.provides {
+                registration::define_contract(
+                    &contract.id,
+                    contract.version,
+                    registration::ResolutionPolicy::Single,
+                )
+                .map_err(|_| TargetError::Rejected)?;
+                registration::provide_contract(&contract.id, contract.version, &[])
+                    .map_err(|_| TargetError::Rejected)?;
+            }
             if bundle.descriptor.host_shell {
                 registration::provide_contract("rintawa.host.shell", 1, &[])
                     .map_err(|_| TargetError::Rejected)?;
@@ -527,6 +548,15 @@ impl State {
             Call::CloseAsset(h)=>{let h=require(resources,Kind::Reader,*h)?;host_result(asset_store::close_asset(h))?;resources.remove(Kind::Reader,h);Value::Null}
             Call::ListWorlds=>json!(host_result(world_sessions::list_worlds())?.into_iter().map(summary).collect::<Vec<_>>()),
             Call::CreateWorld=>summary(host_result(world_sessions::create())?),
+            Call::ListTemplates=>serde_json::from_str(&host_result(world_sessions::list_templates())?).map_err(|_|Failure::reject("invalid-stored-data"))?,
+            Call::TemplateInfo(digest)=>serde_json::from_str(&host_result(world_sessions::template_info(digest))?).map_err(|_|Failure::reject("invalid-stored-data"))?,
+            Call::CreateFromTemplate {digest,title,approve_runtime_permissions}=>summary(host_result(world_sessions::create_from_template(digest,title,*approve_runtime_permissions))?),
+            Call::WorldEntry(id)=>host_result(world_sessions::entry(id))?.map(|entry|json!({"instanceId":entry.instance_id,"componentId":entry.component_id})).unwrap_or(Value::Null),
+            Call::GetViewState=>match host_result(preferences::get("rintawa.ui.state.v1"))? {
+                Some(text) if text.len() <= 1024=>serde_json::from_str::<Value>(&text).map_err(|_|Failure::reject("invalid-stored-data"))?,
+                Some(_)=>return Err(Failure::reject("invalid-stored-data")), None=>json!({}),
+            },
+            Call::SetViewState(state)=>{let text=serde_json::to_string(state).map_err(|_|Failure::reject("invalid-request"))?;host_result(preferences::set("rintawa.ui.state.v1",&text))?;Value::Null},
             Call::SetMetadata {world_id,title,description,cover}=>summary(host_result(world_sessions::set_metadata(world_id,title,description.as_deref(),cover.clone().map(asset).as_ref()))?),
             Call::DeleteWorld(id)=>{host_result(world_sessions::delete(id))?;Value::Null}
             Call::SetActive {world_id,active}=>{host_result(world_sessions::set_active(world_id,*active))?;Value::Null}
@@ -699,15 +729,16 @@ impl State {
     }
     fn pump_socket(&mut self, id: u64, socket: &mut Socket, time: u64, port: u16) -> bool {
         if !socket.closing {
-            match network::read(id, 64 * 1024) {
+            // Leave later frames in the socket until the decoder frees input space.
+            let available = wire::MAX_REQUEST_BYTES + 32 - socket.input.len();
+            let read_limit = available.min(64 * 1024) as u32;
+            match network::read(id, read_limit) {
                 Ok(read) => {
                     if read.eof {
                         return false;
                     }
                     let buffered: usize = self.sockets.values().map(|s| s.input.len()).sum();
-                    if buffered + socket.input.len() + read.data.len() > BUFFER_BYTES
-                        || socket.input.len() + read.data.len() > wire::MAX_REQUEST_BYTES + 32
-                    {
+                    if buffered + socket.input.len() + read.data.len() > BUFFER_BYTES {
                         return false;
                     }
                     socket.input.extend(read.data);
@@ -751,10 +782,10 @@ impl State {
                         http::Message::Pong => {}
                         http::Message::Close => return false,
                         http::Message::Text(bytes) => {
-                            let Ok(current) = now() else {
-                                return false;
-                            };
                             if !socket.authenticated {
+                                let Ok(current) = now() else {
+                                    return false;
+                                };
                                 if current.saturating_sub(socket.accepted) >= 5000 {
                                     return false;
                                 }
@@ -825,12 +856,10 @@ impl State {
                                 };
                                 let correlation = request.id.clone();
                                 let response_channel = request.channel.clone();
-                                let Ok(current) = now() else {
-                                    return false;
-                                };
-                                if let Err(error) =
+                                let admission = now().and_then(|current| {
                                     self.sessions.admit(request, id, current, bytes.len())
-                                {
+                                });
+                                if let Err(error) = admission {
                                     socket.output.extend(
                                         http::frame(
                                             1,

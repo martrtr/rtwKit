@@ -40,7 +40,7 @@ async function stopHost() {
 async function setValue(selector,value,context){await cdp.evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});const proto=e instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`,context);}
 async function openChat(){
   await eventually(async()=>{await cdp.click('Refresh');return cdp.evaluate('!!document.querySelector(\'button[title="Open Chat"]\')');},'Chat catalog');
-  await cdp.evaluate('document.querySelector(\'button[title="Open Chat"]\').click()');
+  await cdp.click('Open Chat');
   return eventually(async()=>(await cdp.panelContexts('.chat'))[0],'Chat iframe');
 }
 try{
@@ -54,13 +54,21 @@ try{
   await cdp.call('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false});
   for(const method of['Runtime.enable','Page.enable','Log.enable'])await cdp.call(method);
   cdp.rootFrame=(await cdp.call('Page.navigate',{url:launch})).frameId;
-  await cdp.waitText('New World');await cdp.click('New World');await cdp.waitText('Start World');await cdp.click('Start World');await cdp.waitText('Stop World');
-  let panel=await openChat();await cdp.waitText('New conversation',panel);
+  await cdp.waitShell();await cdp.waitText('Welcome to Rintawa');await cdp.createEmptyWorld('Acceptance World A');await cdp.click('Start World');await cdp.waitText('Stop World');
+  let panel=await openChat();await cdp.openConversationDialog(panel);
   await setValue('#new-title','Acceptance conversation',panel);await cdp.click('Create',panel);
   await cdp.waitText('Message',panel);
   await setValue('#message','Saved through real WASM and SQL COMMIT.',panel);await cdp.click('Send',panel);
   await cdp.waitText('Saved through real WASM and SQL COMMIT.',panel);
   checks.push('real iframe -> domain SDK -> scoped WASM -> authoritative System -> committed message');
+  assert.equal(await cdp.evaluate('!!document.querySelector(\'.member-sidebar, .members-sidebar, [aria-label="Members"]\')',panel),false,'no member sidebar');
+  await cdp.click('Home'); await cdp.waitText('Welcome to Rintawa');
+  const homeShot=await cdp.call('Page.captureScreenshot',{format:'png'}); await writeFile(join(root,'home.png'),Buffer.from(homeShot.data,'base64'));
+  assert.equal(await cdp.evaluate('!!document.querySelector(\'button[aria-label="Open world Acceptance World A"] .active-dot\')'),true,'Home preserves active World');
+  await cdp.openWorld('Acceptance World A'); await cdp.waitText('Stop World');
+  panel=await eventually(async()=>(await cdp.panelContexts('.chat'))[0],'Chat after Home round trip');
+  await cdp.selectConversation('Acceptance conversation',panel);await cdp.waitText('Saved through real WASM and SQL COMMIT.',panel);
+  checks.push('Home preserves the active World and returning restores its Chat without a member sidebar');
   // Exercise later/earlier IDs through the same public Root bridge and UI principal.
   ordering=await cdp.evaluate(`(async()=>{
     const ws=new WebSocket('ws://'+location.host+'/bridge');let rootChannel;let n=0;const pending=new Map();
@@ -87,19 +95,20 @@ try{
   })()`);
   assert.equal(ordering.newer,'committed');assert.equal(ordering.older,'failed');assert.ok(ordering.reason.includes('stale-entry-id'));assert.equal(ordering.olderPresent,false);assert.equal(ordering.lastMatches,true);
   checks.push('real System rejects late older entry atomically and preserves pagination cursor');
-  await cdp.call('Page.reload');await cdp.waitText('New World');
+  await cdp.call('Page.reload');await cdp.waitShell();
   panel=await eventually(async()=>(await cdp.panelContexts('.chat'))[0],'Chat after reload');
-  await cdp.click('Acceptance conversation',panel);await cdp.waitText('Saved through real WASM and SQL COMMIT.',panel);await cdp.waitText('Later ID committed first.',panel);
+  await cdp.selectConversation('Acceptance conversation',panel);await cdp.waitText('Saved through real WASM and SQL COMMIT.',panel);await cdp.waitText('Later ID committed first.',panel);
   checks.push('browser reload rereads committed conversation and messages');
-  await cdp.click('New World');await cdp.waitText('Start World');await cdp.click('Start World');await cdp.waitText('Stop World');
+  await cdp.createEmptyWorld('Acceptance World B');await eventually(async()=>(await cdp.panelContexts('.chat')).length===0,'World A Chat panel unmounted');await cdp.click('Start World');await cdp.waitText('Stop World');
   const isolated=await openChat();await cdp.waitText('New conversation',isolated);
-  await eventually(()=>cdp.evaluate('!document.querySelector(\'button[disabled]\')',isolated),'World B initial read');
+  await eventually(()=>cdp.evaluate('!!document.querySelector(\'button[aria-label="New conversation"]:not(:disabled)\')',isolated),'World B initial read');
   assert.equal((await cdp.body(isolated)).includes('Acceptance conversation'),false);
   checks.push('second World sharing the UI provider Store cannot see the first World conversation');
-  await stopHost();launch=await startHost();cdp.rootFrame=(await cdp.call('Page.navigate',{url:launch})).frameId;
+  await cdp.openWorld('Acceptance World A'); await cdp.waitText('Stop World');
+  await stopHost();await cdp.waitText('Connection closed. Reconnect to continue.');checks.push('lost Root connection exposes explicit reconnect without replay');launch=await startHost();cdp.rootFrame=(await cdp.call('Page.navigate',{url:launch})).frameId;
   await cdp.waitText('Start World');await cdp.click('Start World');await cdp.waitText('Stop World');await cdp.click('Refresh');
   panel=await eventually(async()=>(await cdp.panelContexts('.chat'))[0],'Chat after Host restart');
-  await cdp.click('Acceptance conversation',panel);await cdp.waitText('Saved through real WASM and SQL COMMIT.',panel);await cdp.waitText('Later ID committed first.',panel);
+  await cdp.selectConversation('Acceptance conversation',panel);await cdp.waitText('Saved through real WASM and SQL COMMIT.',panel);await cdp.waitText('Later ID committed first.',panel);
   checks.push('Host restart preserves exact World conversation/message graph');
   assert.deepEqual(cdp.errors,[],'No browser/CSP errors');
   const shot=await cdp.call('Page.captureScreenshot',{format:'png'});await writeFile(join(root,'chat.png'),Buffer.from(shot.data,'base64'));

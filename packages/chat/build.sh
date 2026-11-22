@@ -9,4 +9,5 @@ build_target="${CARGO_TARGET_DIR:-$repository_root/target}"
 cargo run --quiet --locked -p rtwkit-componentize -- \
     "$build_target/wasm32-unknown-unknown/release/rintawa_chat.wasm" "$layout/backend.wasm"
 npm run build --workspace @rintawa/chat
-node scripts/assemble-web-package.mjs chat "$layout/backend.wasm"
+cargo run --locked --quiet -p rintawa-chat --example portability > "$layout/world-portability.json"
+node scripts/assemble-web-package.mjs chat "$layout/backend.wasm" "$layout/world-portability.json"

@@ -37,3 +37,16 @@ test('status cannot substitute another operation result and release-invalid stat
   const closed = new DomainClient({ query: async () => [new TextEncoder().encode(JSON.stringify({ ok: false, error: { code: 'invalid-operation' } }))] }, 'owner/v1');
   await assert.rejects(closed.wait(operation), error => error.code === 'invalid-operation');
 });
+
+test('terminal release recovers from local rejection and a lost cleanup acknowledgement', async () => {
+  const calls = [];
+  const domain = new DomainClient({ query: async (_point, bytes) => {
+    const request = JSON.parse(new TextDecoder().decode(bytes)); calls.push(request.method);
+    assert.equal(request.operation, operation.operation);
+    if (calls.length === 1) throw new BridgeError('limit-exceeded', 'not-started');
+    if (calls.length === 2) throw new BridgeError('unavailable');
+    return [new TextEncoder().encode(JSON.stringify({ ok: false, error: { code: 'invalid-operation' } }))];
+  } }, 'owner/v1');
+  await domain.release(operation);
+  assert.deepEqual(calls, ['release', 'release', 'release']);
+});

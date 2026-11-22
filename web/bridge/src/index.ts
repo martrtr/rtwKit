@@ -13,6 +13,10 @@ export type Caller = { instanceId: string; componentId: string; activation: stri
 export type InboundQuery = { handle: string; caller: Caller; payload: Uint8Array };
 export type AssetRef = { digest: string; size: string; mediaType: string };
 export type ResourceRef = { id: string; size: string; mediaType: string; name: string | null };
+export type ViewState = Record<string, string>;
+export function viewState(value: unknown): value is ViewState {
+  return record(value) && Object.keys(value).length <= 8 && Object.entries(value).every(([key, value]) => asciiId(key) && typeof value === 'string' && new TextEncoder().encode(value).length <= 256) && new TextEncoder().encode(JSON.stringify(value)).length <= 1024;
+}
 export type Theme = { mode: 'light' | 'dark' };
 type Call = (method: string, args: Record<string, unknown>) => Promise<unknown>;
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -78,7 +82,11 @@ export class Client {
   #closed = false;
   #urls = new Set<string>();
   #stop = new AbortController();
-  constructor(call: Call) { this.#call = call; }
+  readonly initialState: ViewState;
+  constructor(call: Call, initialState: ViewState = {}) { this.#call = call; this.initialState = initialState; }
+  async getState(): Promise<ViewState> { const state = await this.request('ui.state.get'); if (!viewState(state)) throw new BridgeError('invalid-stored-data'); return state; }
+  async setState(state: ViewState): Promise<void> { if (!viewState(state)) throw new BridgeError('invalid-request', 'not-started'); await this.request('ui.state.set', { state }); }
+  async navigate(instanceId: string, componentId: string, state: ViewState = {}): Promise<void> { if (!viewState(state)) throw new BridgeError('invalid-request', 'not-started'); await this.request('ui.navigate', { instanceId, componentId, state }); }
   request(method: string, args: Record<string, unknown> = {}): Promise<unknown> {
     return this.#closed ? Promise.reject(new BridgeError('channel-closed', 'not-started')) : this.#call(method, args);
   }
@@ -103,7 +111,11 @@ export class Client {
       }
     } catch (error) {
       // Releasing a receiver does not cancel or retry the provider's effects.
-      void this.closeQuery(query).catch(() => {}); throw error;
+      void this.closeQuery(query).catch(() => {});
+      // The query was admitted. A later poll can be rejected before dispatch,
+      // but that says nothing about the provider's already-accepted work.
+      if (error instanceof BridgeError) throw new BridgeError(error.code, 'unknown');
+      throw error;
     }
   }
   async declarePolled(point: string): Promise<string> { return handle(await this.request('transport.declare-polled', { point })); }
@@ -177,8 +189,8 @@ export class Client {
 function forgetSession(): void { try { sessionStorage.removeItem('rintawa.session'); } catch { /* Server rejects/revokes the credential independently. */ } }
 
 const tokens = {
-  light: { background: '#f5f6f8', surface: '#ffffff', text: '#20232a', muted: '#586174', accent: '#315acb', border: '#d8dde7' },
-  dark: { background: '#13161d', surface: '#1d2330', text: '#eef1f7', muted: '#a6b0c2', accent: '#8daaff', border: '#394359' },
+  light: { background: '#ffffff', surface: '#f6f6f7', text: '#171719', muted: '#6d6d76', accent: '#765383', border: '#e6e6e9', hover: '#ededf0', raised: '#ffffff', error: '#be4545', positive: '#438462' },
+  dark: { background: '#000000', surface: '#080808', text: '#eeeeef', muted: '#85858f', accent: '#c9a6db', border: '#1b1b1f', hover: '#131315', raised: '#101012', error: '#e58a8a', positive: '#8cbaa2' },
 };
 export type Palette = typeof tokens.light;
 export function applyTheme(theme: Theme, element: HTMLElement = document.documentElement): Palette {
@@ -197,7 +209,7 @@ export async function connectPanel(onTheme: (theme: Theme, palette: Palette) => 
       const data = event.data;
       if (event.source !== window.parent || event.origin !== origin || !record(data) || data.v !== 1 || data.type !== 'rtw:init' || data.nonce !== nonce || event.ports.length !== 1) return;
       clearTimeout(timer); window.removeEventListener('message', receive);
-      const port = event.ports[0]; const rpc = new Rpc(value => port.postMessage(value), 2000, () => port.close()); const client = new Client((method, args) => rpc.request(method, args));
+      const port = event.ports[0]; const rpc = new Rpc(value => port.postMessage(value), 2000, () => port.close()); const client = new Client((method, args) => rpc.request(method, args), viewState(data.state) ? data.state : {});
       const dispose = () => { client.dispose(); rpc.close(); port.close(); };
       port.onmessage = event => {
         const value = event.data;
@@ -214,20 +226,34 @@ export async function connectPanel(onTheme: (theme: Theme, palette: Palette) => 
   });
 }
 
-type FrameBinding = { frame: HTMLIFrameElement; channel: string; nonce: string; port?: MessagePort; loaded: boolean; used: boolean; closed: boolean; pending: Set<string>; onClosed: () => void };
+type FrameBinding = { view: View; state: ViewState; frame: HTMLIFrameElement; channel: string; nonce: string; port?: MessagePort; loaded: boolean; used: boolean; closed: boolean; pending: Set<string>; onClosed: () => void };
 export class RootBridge {
   #socket: WebSocket;
   #rpc: Rpc;
   #channel: string;
   #frames = new Set<FrameBinding>();
   #theme: Theme = { mode: 'dark' };
+  #closed = false;
+  #disconnectListeners = new Set<() => void>();
   #receive: (event: MessageEvent) => void;
+  #navigation: ((view: View, state: ViewState, source: View) => void) | null = null;
+  onNavigate(handler: (view: View, state: ViewState, source: View) => void): () => void { this.#navigation = handler; return () => { if (this.#navigation === handler) this.#navigation = null; }; }
   readonly client: Client;
   private constructor(socket: WebSocket, rpc: Rpc, channel: string) {
     this.#socket = socket; this.#rpc = rpc; this.#channel = channel;
     this.client = new Client((method, args) => rpc.request(method, args, channel));
     this.#receive = event => this.#hello(event); window.addEventListener('message', this.#receive);
-    socket.addEventListener('close', () => { window.removeEventListener('message', this.#receive); rpc.close(); this.client.dispose(); for (const binding of this.#frames) this.#detach(binding); this.#frames.clear(); });
+    socket.addEventListener('close', () => {
+      window.removeEventListener('message', this.#receive); rpc.close(); this.client.dispose();
+      for (const binding of this.#frames) this.#detach(binding); this.#frames.clear();
+      this.#closed = true;
+      for (const listener of this.#disconnectListeners) listener();
+    });
+  }
+  onDisconnect(listener: () => void): () => void {
+    this.#disconnectListeners.add(listener);
+    if (this.#closed) listener();
+    return () => { this.#disconnectListeners.delete(listener); };
   }
   static async connect(): Promise<RootBridge> {
     if (window.top !== window || location.protocol !== 'http:' || location.hostname !== '127.0.0.1') throw new BridgeError('channel-closed', 'not-started');
@@ -254,7 +280,10 @@ export class RootBridge {
     });
   }
   async list(): Promise<View[]> { return await this.client.request('ui.list') as View[]; }
-  async mount(id: string, container: HTMLElement, onClosed: () => void = () => {}): Promise<{ frame: HTMLIFrameElement; close: () => Promise<void> }> {
+  async mount(id: string, container: HTMLElement, onClosed: () => void = () => {}, state: ViewState = {}): Promise<{ frame: HTMLIFrameElement; close: () => Promise<void> }> {
+    const candidates = (await this.list()).filter(view => view.id === id);
+    if (candidates.length !== 1 || !viewState(state)) throw new BridgeError('unavailable', 'not-started');
+    const view = candidates[0];
     const mounted = await this.client.request('ui.mount', { id }) as { channel: string; url: string };
     try {
       const target = new URL(mounted.url, location.origin);
@@ -262,7 +291,7 @@ export class RootBridge {
       const bytes = crypto.getRandomValues(new Uint8Array(32)); const nonce = encodeBytes(bytes).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
       target.hash = new URLSearchParams({ rtwBridge: nonce }).toString();
       const frame = document.createElement('iframe'); frame.sandbox.add('allow-scripts'); frame.referrerPolicy = 'no-referrer'; frame.src = target.href;
-      const binding: FrameBinding = { frame, channel: mounted.channel, nonce, loaded: false, used: false, closed: false, pending: new Set(), onClosed };
+      const binding: FrameBinding = { view, state, frame, channel: mounted.channel, nonce, loaded: false, used: false, closed: false, pending: new Set(), onClosed };
       this.#frames.add(binding); frame.addEventListener('load', () => { if (binding.loaded) void this.#release(binding).catch(() => this.disconnect()); else binding.loaded = true; });
       container.append(frame);
       return { frame, close: () => this.#release(binding) };
@@ -284,14 +313,26 @@ export class RootBridge {
       const id = value.id;
       if (binding.pending.size >= 8) { ports.port1.postMessage({ v: 1, id, ok: false, error: { code: 'limit-exceeded', outcome: 'not-started' } }); return; }
       binding.pending.add(id);
-      this.#rpc.request(value.method, value.args, binding.channel).then(
+      const operation = value.method === 'ui.navigate' ? this.#navigate(binding, value.args) : this.#rpc.request(value.method, value.args, binding.channel);
+      operation.then(
         value => { if (!binding.closed) ports.port1.postMessage({ v: 1, id, ok: true, value }); },
         error => { if (!binding.closed) ports.port1.postMessage({ v: 1, id, ok: false, error: { code: error instanceof BridgeError ? error.code : 'unavailable', outcome: error instanceof BridgeError ? error.outcome : 'unknown' } }); },
       ).finally(() => binding.pending.delete(id));
     };
     ports.port1.onmessageerror = () => { void this.#release(binding).catch(() => this.disconnect()); }; ports.port1.start();
-    binding.frame.contentWindow.postMessage({ v: 1, type: 'rtw:init', nonce: binding.nonce }, '*', [ports.port2]);
+    binding.frame.contentWindow.postMessage({ v: 1, type: 'rtw:init', nonce: binding.nonce, state: binding.state }, '*', [ports.port2]);
     ports.port1.postMessage({ v: 1, type: 'theme', theme: this.#theme });
+  }
+  async #navigate(binding: FrameBinding, args: Record<string, unknown>): Promise<null> {
+    if (Object.keys(args).some(key => !['instanceId', 'componentId', 'state'].includes(key)) || typeof args.instanceId !== 'string' || typeof args.componentId !== 'string' || !viewState(args.state) || !binding.view.worldId || !this.#navigation) throw new BridgeError('invalid-request', 'not-started');
+    const catalog = await this.list();
+    const source = resolveView(binding.view.restoreKey, catalog);
+    const target = resolveView({ worldId: binding.view.worldId, instanceId: args.instanceId, componentId: args.componentId }, catalog);
+    if (binding.closed || !source || source.id !== binding.view.id || !target) throw new BridgeError('unavailable', 'not-started');
+    const handler = this.#navigation; const state = args.state;
+    // Reply before navigation retires the source port. Never transfer its authority.
+    setTimeout(() => { if (!binding.closed && this.#navigation === handler) handler(target, state, source); }, 0);
+    return null;
   }
   #detach(binding: FrameBinding): void { binding.closed = true; binding.port?.postMessage({ v: 1, type: 'close' }); binding.port?.close(); binding.frame.remove(); this.#frames.delete(binding); binding.onClosed(); }
   async #release(binding: FrameBinding): Promise<void> {

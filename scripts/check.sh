@@ -10,7 +10,7 @@ bash scripts/scan-secrets.sh
 
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-cargo clippy --locked --target wasm32-unknown-unknown -p rintawa-web-runtime -p rintawa-chat -- -D warnings
+cargo clippy --locked --target wasm32-unknown-unknown -p rintawa-web-runtime -p rintawa-chat -p rintawa-character -- -D warnings
 cargo test --locked --workspace --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps
 cargo run --quiet --locked -p rtwkit-registry-tool -- validate-repository .
@@ -21,3 +21,5 @@ node scripts/assemble-web-package.mjs web-ui
 node scripts/assemble-web-package.mjs dice
 
 bash packages/chat/build.sh
+
+bash packages/character/build.sh
