@@ -76,6 +76,21 @@ pub enum Call {
         maximum_bytes: u32,
     },
     CloseAsset(Handle),
+    BeginPackageUpload(u64),
+    AppendPackageUpload {
+        handle: Handle,
+        offset: u64,
+        bytes: Vec<u8>,
+    },
+    FinishPackageUpload(Handle),
+    BeginExport(String),
+    PackageStatus(Handle),
+    ReadPackage {
+        handle: Handle,
+        offset: u64,
+        maximum_bytes: u32,
+    },
+    ClosePackage(Handle),
     ListWorlds,
     CreateWorld,
     ListTemplates,
@@ -111,7 +126,14 @@ impl Call {
     pub fn shell_only(&self) -> bool {
         matches!(
             self,
-            Self::ListWorlds
+            Self::BeginPackageUpload(_)
+                | Self::AppendPackageUpload { .. }
+                | Self::FinishPackageUpload(_)
+                | Self::BeginExport(_)
+                | Self::PackageStatus(_)
+                | Self::ReadPackage { .. }
+                | Self::ClosePackage(_)
+                | Self::ListWorlds
                 | Self::CreateWorld
                 | Self::ListTemplates
                 | Self::TemplateInfo(_)
@@ -349,6 +371,57 @@ impl Request {
                 }
             }
             "asset-store.close-asset" => Call::CloseAsset(args::<ResourceHandle>(value)?.handle),
+            "packages.begin-upload" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args {
+                    size: Handle,
+                }
+                let size = args::<Args>(value)?.size.0;
+                if size == 0 || size > 1024 * 1024 * 1024 {
+                    return Err("invalid RTW size");
+                }
+                Call::BeginPackageUpload(size)
+            }
+            "packages.append-upload" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args {
+                    handle: Handle,
+                    offset: Handle,
+                    bytes: String,
+                }
+                let a: Args = args(value)?;
+                Call::AppendPackageUpload {
+                    handle: a.handle,
+                    offset: a.offset.0,
+                    bytes: decode_bytes(&a.bytes, MAX_CHUNK_BYTES)?,
+                }
+            }
+            "packages.finish-upload" => {
+                Call::FinishPackageUpload(args::<ResourceHandle>(value)?.handle)
+            }
+            "world-sessions.begin-export" => Call::BeginExport(args::<World>(value)?.world_id),
+            "packages.status" => Call::PackageStatus(args::<ResourceHandle>(value)?.handle),
+            "packages.read" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct Args {
+                    handle: Handle,
+                    offset: Handle,
+                    maximum_bytes: u32,
+                }
+                let a: Args = args(value)?;
+                if !(1..=MAX_CHUNK_BYTES as u32).contains(&a.maximum_bytes) {
+                    return Err("invalid RTW read size");
+                }
+                Call::ReadPackage {
+                    handle: a.handle,
+                    offset: a.offset.0,
+                    maximum_bytes: a.maximum_bytes,
+                }
+            }
+            "packages.close" => Call::ClosePackage(args::<ResourceHandle>(value)?.handle),
             "world-sessions.list-worlds" => {
                 empty(value)?;
                 Call::ListWorlds
@@ -576,6 +649,57 @@ mod tests {
             ))
             .is_err(),
             "navigation is local to MessagePort, not a Native dispatcher"
+        );
+    }
+    #[test]
+    fn package_transfer_is_shell_only_bounded_and_has_no_path_dispatch() {
+        for (method, args) in [
+            ("packages.begin-upload", json!({"size":"1073741824"})),
+            (
+                "packages.append-upload",
+                json!({"handle":"1","offset":"0","bytes":"AQ=="}),
+            ),
+            ("packages.finish-upload", json!({"handle":"1"})),
+            ("packages.status", json!({"handle":"1"})),
+            (
+                "packages.read",
+                json!({"handle":"1","offset":"0","maximumBytes":32768}),
+            ),
+            ("packages.close", json!({"handle":"1"})),
+            ("world-sessions.begin-export", json!({"worldId":"world"})),
+        ] {
+            assert!(
+                Request::decode(&request(method, args))
+                    .unwrap()
+                    .call
+                    .shell_only()
+            );
+        }
+        for size in [json!(1), json!("01"), json!("0"), json!("1073741825")] {
+            assert!(
+                Request::decode(&request("packages.begin-upload", json!({"size":size}))).is_err()
+            );
+        }
+        assert!(
+            Request::decode(&request(
+                "packages.read",
+                json!({"handle":"1","offset":"0","maximumBytes":32769})
+            ))
+            .is_err()
+        );
+        assert!(
+            Request::decode(&request(
+                "packages.begin-upload",
+                json!({"size":"1","path":"/tmp/forged"})
+            ))
+            .is_err()
+        );
+        assert!(
+            Request::decode(&request(
+                "packages.append-upload",
+                json!({"handle":"1","offset":"0","bytes":encode_bytes(&vec![0;MAX_CHUNK_BYTES+1])})
+            ))
+            .is_err()
         );
     }
 }

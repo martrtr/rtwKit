@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { Rpc, Client, BridgeError, handle, encodeBytes, decodeBytes, resolveView, viewState } from '../src/index.ts';
+import { Rpc, Client, BridgeError, handle, encodeBytes, decodeBytes, resolveView, viewState, RootBridge } from '../src/index.ts';
 
 test('u64 values remain strings and byte payloads survive the full bound', () => {
   assert.equal(handle('18446744073709551615'), '18446744073709551615');
@@ -78,4 +78,19 @@ test('view selection state is bounded inert strings and never selects preference
   assert.deepEqual(await client.getState(),state);await client.setState(state);
   assert.deepEqual(calls,[{method:'ui.state.get',args:{}},{method:'ui.state.set',args:{state}}]);
   await assert.rejects(client.setState({nested:{}}),error=>error.code==='invalid-request');
+});
+
+test('a cancelled pending mount never inserts an iframe or disconnects other views when its channel already closed', async () => {
+  const prior=globalThis.window;globalThis.window=new EventTarget();
+  let acknowledge,entered;const ready=new Promise(resolve=>{entered=resolve;});let created=0,closed=0;const calls=[];
+  const socket=new EventTarget();socket.readyState=1;socket.close=()=>{closed++;};
+  const view={id:'view',worldId:'018f0000-0000-7000-8000-000000000001',title:'Chat',restoreKey:{worldId:'018f0000-0000-7000-8000-000000000001',instanceId:'instance',componentId:'ui'}};
+  const rpc={request:async(method)=>{calls.push(method);if(method==='ui.list')return [view];if(method==='ui.mount'){entered();return new Promise(resolve=>{acknowledge=resolve;});}if(method==='ui.unmount')throw new BridgeError('channel-closed','not-started');},close:()=>{}};
+  const bridge=new RootBridge(socket,rpc,'root');const abort=new AbortController();
+  try {
+    const result=bridge.mount('view',{append:()=>{created++;}},()=>{}, {},abort.signal);
+    await ready;abort.abort();acknowledge({channel:'retired',url:'/bundle/view/index.html'});
+    await assert.rejects(result,error=>error.name==='AbortError');
+    assert.equal(created,0);assert.equal(closed,0);assert.deepEqual(calls,['ui.list','ui.mount','ui.unmount']);
+  } finally {bridge.disconnect();globalThis.window=prior;}
 });

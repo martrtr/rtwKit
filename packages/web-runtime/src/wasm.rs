@@ -405,8 +405,14 @@ fn require(resources: &Resources, kind: Kind, handle: Handle) -> Result<u64, Fai
             Kind::Subscription => "unknown-subscription",
             Kind::Upload => "invalid-resource",
             Kind::Reader => "invalid-asset",
+            Kind::Package => "not-found",
         }))
     }
+}
+fn package_handle(resources: &mut Resources, handle: Handle, time: u64) -> Result<u64, Failure> {
+    let id = require(resources, Kind::Package, handle)?;
+    resources.package(id, time);
+    Ok(id)
 }
 fn wire_asset(asset: asset_store::AssetRef) -> Value {
     json!({"digest":asset.digest,"size":Handle(asset.size),"mediaType":asset.media_type})
@@ -479,6 +485,7 @@ impl State {
                 Kind::Subscription => host_result(transport::unsubscribe(handle)),
                 Kind::Upload => host_result(user_resources::cancel_upload(handle)),
                 Kind::Reader => host_result(asset_store::close_asset(handle)),
+                Kind::Package => host_result(world_sessions::close_package_transfer(handle)),
             };
             if result.err().is_some_and(|error| {
                 matches!(error.code.as_str(), "unavailable" | "limit-exceeded")
@@ -546,6 +553,19 @@ impl State {
             Call::OpenAsset(reference)=> {let h=host_result(asset_store::open_asset(&asset(reference.clone())))?;resources.insert(Kind::Reader,h,None);json!(Handle(h))}
             Call::ReadAsset {handle,maximum_bytes}=>{let h=require(resources,Kind::Reader,*handle)?;json!(wire::encode_bytes(&host_result(asset_store::read_asset(h,*maximum_bytes))?))}
             Call::CloseAsset(h)=>{let h=require(resources,Kind::Reader,*h)?;host_result(asset_store::close_asset(h))?;resources.remove(Kind::Reader,h);Value::Null}
+            Call::BeginPackageUpload(size)=>{let h=host_result(world_sessions::begin_package_upload(*size))?;resources.package(h,time);json!(Handle(h))}
+            Call::AppendPackageUpload {handle,offset,bytes}=>{let h=package_handle(resources,*handle,time)?;json!(Handle(host_result(world_sessions::append_package_upload(h,*offset,bytes))?))}
+            Call::FinishPackageUpload(handle)=>{let h=package_handle(resources,*handle,time)?;host_result(world_sessions::finish_package_upload(h))?;Value::Null}
+            Call::BeginExport(world)=>{let h=host_result(world_sessions::begin_world_export(world))?;resources.package(h,time);json!(Handle(h))}
+            Call::PackageStatus(handle)=>{let h=package_handle(resources,*handle,time)?;match host_result(world_sessions::poll_package_transfer(h))? {
+                world_sessions::TransferStatus::Uploading(written)=>json!({"status":"uploading","written":Handle(written)}),
+                world_sessions::TransferStatus::Pending=>json!({"status":"pending"}),
+                world_sessions::TransferStatus::Installed(digest)=>json!({"status":"installed","digest":digest}),
+                world_sessions::TransferStatus::Download(size)=>json!({"status":"download","size":Handle(size)}),
+                world_sessions::TransferStatus::Failed(reason)=>json!({"status":"failed","reason":reason}),
+            }}
+            Call::ReadPackage {handle,offset,maximum_bytes}=>{let h=package_handle(resources,*handle,time)?;json!(wire::encode_bytes(&host_result(world_sessions::read_package_transfer(h,*offset,*maximum_bytes))?))}
+            Call::ClosePackage(handle)=>{let h=package_handle(resources,*handle,time)?;let result=host_result(world_sessions::close_package_transfer(h));if result.is_ok()||result.as_ref().err().is_some_and(|e|e.code=="not-found"){resources.remove(Kind::Package,h);}result?;Value::Null}
             Call::ListWorlds=>json!(host_result(world_sessions::list_worlds())?.into_iter().map(summary).collect::<Vec<_>>()),
             Call::CreateWorld=>summary(host_result(world_sessions::create())?),
             Call::ListTemplates=>serde_json::from_str(&host_result(world_sessions::list_templates())?).map_err(|_|Failure::reject("invalid-stored-data"))?,

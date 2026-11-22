@@ -34,9 +34,9 @@ npm ci --ignore-scripts --no-audit --no-fund
 bash scripts/check.sh
 ```
 
-`Cargo.toml` pins Core artifact tooling. The current browser template checkpoint
-requires the companion Core changes for world-sessions template methods, currently
-pending owner commit. Before publishing, pin that committed Core revision together
+`Cargo.toml` pins Core artifact tooling. The World-file checkpoint requires the companion Core changes for
+world-sessions package transfers, currently pending owner commit. Template creation
+itself is available from Core `60a1597`. Before publishing, pin that committed Core revision together
 with its matching `wit/engine.wit`; the older artifact-tooling pin alone is insufficient
 to run these packages. Do not introduce package-only Host imports or commit local path
 dependencies. Editor/agent notes, local `.cargo/config.toml`, build output and
@@ -80,7 +80,10 @@ starts and opens **Import a character**. Import Tavern V2/V3 PNG or JSON; the
 workflow commits the Character, creates its linked Chat and opens it automatically.
 Conversations stay in a collapsed drawer. A failed Chat creation preserves the
 Character and offers **Continue to chat**; unknown mutations are reconciled by IDs
-without automatic replay. AI replies and browser RTW file transfer remain pending.
+without automatic replay. World controls open a popup with confirmed deletion and stopped export. The create
+selector accepts an installed template or **From file (.rtw)…**. Exported RTWs create
+independent saved stories. AI replies remain pending. Browser fallback downloads are
+bounded to 64 MiB; larger files require a streaming file picker or CLI.
 
 Build `dice` in the same way when needed. To run the isolated Host/Chromium smoke, set
 `RINTAWA_BINARY` to the CLI built from the pinned Core revision and
@@ -97,7 +100,8 @@ append, the reply byte limit and actual browser transcript scroll preservation.
 runtime to check transient clock failure without a production debug switch.
 `node scripts/story-onboarding-smoke.mjs` exercises the actual installed-template
 chooser, automatic start/welcome, import-to-Chat, explicit continuation, two-World
-isolation, forbidden cross-World navigation and restart.
+isolation, forbidden cross-World navigation, restart, popup dismissal, file picker
+cancellation, export/import independence and confirmed deletion.
 All tests install only into temporary homes and preserve redacted logs there. Chromium must be installed; the test requires
 local loopback sockets and uses headless Chromium with its OS sandbox disabled
 for test-environment compatibility. Application iframe sandbox/CSP remain enabled.

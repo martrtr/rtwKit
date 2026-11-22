@@ -280,12 +280,14 @@ export class RootBridge {
     });
   }
   async list(): Promise<View[]> { return await this.client.request('ui.list') as View[]; }
-  async mount(id: string, container: HTMLElement, onClosed: () => void = () => {}, state: ViewState = {}): Promise<{ frame: HTMLIFrameElement; close: () => Promise<void> }> {
+  async mount(id: string, container: HTMLElement, onClosed: () => void = () => {}, state: ViewState = {}, signal?: AbortSignal): Promise<{ frame: HTMLIFrameElement; close: () => Promise<void> }> {
     const candidates = (await this.list()).filter(view => view.id === id);
     if (candidates.length !== 1 || !viewState(state)) throw new BridgeError('unavailable', 'not-started');
     const view = candidates[0];
+    if (signal?.aborted) throw new DOMException('View mount cancelled', 'AbortError');
     const mounted = await this.client.request('ui.mount', { id }) as { channel: string; url: string };
     try {
+      if (signal?.aborted) throw new DOMException('View mount cancelled', 'AbortError');
       const target = new URL(mounted.url, location.origin);
       if (target.origin !== location.origin || !target.pathname.startsWith('/bundle/') || !asciiId(mounted.channel)) throw new BridgeError('protocol-error');
       const bytes = crypto.getRandomValues(new Uint8Array(32)); const nonce = encodeBytes(bytes).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
@@ -296,7 +298,7 @@ export class RootBridge {
       container.append(frame);
       return { frame, close: () => this.#release(binding) };
     } catch (error) {
-      try { await this.client.request('ui.unmount', { channel: mounted.channel }); } catch { this.disconnect(); }
+      try { await this.#unmountChannel(mounted.channel); } catch { this.disconnect(); }
       throw error;
     }
   }
@@ -337,9 +339,12 @@ export class RootBridge {
   #detach(binding: FrameBinding): void { binding.closed = true; binding.port?.postMessage({ v: 1, type: 'close' }); binding.port?.close(); binding.frame.remove(); this.#frames.delete(binding); binding.onClosed(); }
   async #release(binding: FrameBinding): Promise<void> {
     if (binding.closed) return; this.#detach(binding);
+    await this.#unmountChannel(binding.channel);
+  }
+  async #unmountChannel(channel: string): Promise<void> {
     // Cleanup is idempotent; retrying it never retries a domain mutation.
     for (let attempt = 0; ; attempt++) {
-      try { await this.client.request('ui.unmount', { channel: binding.channel }); return; }
+      try { await this.client.request('ui.unmount', { channel }); return; }
       catch (error) {
         if (error instanceof BridgeError && ['channel-closed', 'invalid-request'].includes(error.code)) return;
         if (error instanceof BridgeError && ['limit-exceeded', 'unavailable'].includes(error.code) && attempt < 40 && this.#socket.readyState === WebSocket.OPEN) { await delay(25); continue; }

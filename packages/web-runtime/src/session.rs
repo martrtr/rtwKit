@@ -23,6 +23,7 @@ pub enum ResourceKind {
     Subscription,
     Upload,
     Reader,
+    Package,
 }
 #[derive(Default)]
 pub struct Resources(pub HashMap<(ResourceKind, u64), Tracked>);
@@ -42,6 +43,15 @@ impl Resources {
             Tracked {
                 parent,
                 expires: None,
+            },
+        );
+    }
+    pub fn package(&mut self, handle: u64, now: u64) {
+        self.0.insert(
+            (ResourceKind::Package, handle),
+            Tracked {
+                parent: None,
+                expires: Some(now.saturating_add(120_000)),
             },
         );
     }

@@ -8,18 +8,23 @@ export async function eventually(action, label, timeout = 15000) {
 }
 export class CDP {
   constructor(socket) {
-    this.socket = socket; this.sequence = 0; this.pending = new Map(); this.contexts = new Map(); this.errors = []; this.worldCalls = []; this.methods = new Map();
+    this.socket = socket; this.sequence = 0; this.pending = new Map(); this.contexts = new Map(); this.errors = []; this.worldCalls = []; this.resourceFailures = []; this.methods = new Map();
     socket.addEventListener('message', event => {
       const message = JSON.parse(event.data);
       if (message.id) { const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id); clearTimeout(pending.timer); message.error ? pending.reject(new Error(message.error.message)) : pending.resolve(message.result); }
       if (message.method === 'Network.webSocketFrameSent') { try { const v = JSON.parse(message.params.response.payloadData); if (v.method?.startsWith('world-sessions.')) this.methods.set(v.id, v.method); } catch {} }
       if (message.method === 'Network.webSocketFrameReceived') { try { const v = JSON.parse(message.params.response.payloadData); const method = this.methods.get(v.id); if (method) this.worldCalls.push({ method, ok: v.ok, value: v.value, error: v.error }); } catch {} }
+      if (message.method === 'Network.responseReceived' && message.params.response.status >= 400) this.resourceFailures.push({ url: redact(message.params.response.url), status: message.params.response.status, type: message.params.type });
       if (message.method === 'Runtime.executionContextCreated') this.contexts.set(`${message.sessionId ?? ''}:${message.params.context.id}`, { ...message.params.context, sessionId: message.sessionId });
       if (message.method === 'Runtime.executionContextDestroyed') this.contexts.delete(`${message.sessionId ?? ''}:${message.params.executionContextId}`);
       if (message.method === 'Runtime.executionContextsCleared' || message.method === 'Target.detachedFromTarget') for (const [key, context] of this.contexts) { if (context.sessionId === (message.params?.sessionId ?? message.sessionId)) this.contexts.delete(key); }
-      if (message.method === 'Target.attachedToTarget') { const session = message.params.sessionId; void this.call('Runtime.enable', {}, session).catch(() => {}); void this.call('Log.enable', {}, session).catch(() => {}); }
+      if (message.method === 'Target.attachedToTarget') { const session = message.params.sessionId; void this.call('Runtime.enable', {}, session).catch(() => {}); void this.call('Log.enable', {}, session).catch(() => {}); void this.call('Network.enable', {}, session).catch(() => {}); }
       if (message.method === 'Runtime.exceptionThrown') this.errors.push(redact(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text));
-      if (message.method === 'Log.entryAdded' && message.params.entry.level === 'error') this.errors.push(redact(message.params.entry.text));
+      if (message.method === 'Log.entryAdded' && message.params.entry.level === 'error') {
+        this.errors.push(redact(message.params.entry.text));
+        const entry=message.params.entry;const status=/status of (\d{3})/.exec(entry.text)?.[1];
+        if(status&&entry.url&&!this.resourceFailures.some(failure=>failure.url===redact(entry.url)&&failure.status===Number(status)))this.resourceFailures.push({url:redact(entry.url),status:Number(status),type:'Log'});
+      }
     });
   }
   static async connect(url) { const socket = new WebSocket(url); await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', () => reject(new Error('CDP connection failed')), { once: true }); }); return new CDP(socket); }

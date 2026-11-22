@@ -126,3 +126,45 @@ contracts under the delegated component principal. The recipe explicitly selects
 Character/story for rintawa.roleplay.workflow@1. Independent Character UI remains a
 library when it is not the selected workflow. No Character method is built into
 Core, the browser runtime or the shell.
+
+## Administrative World files and menu (2026-11-23)
+
+The owner-requested World menu now uses a native auto popover in the top layer.
+It works over empty-World placeholders and opaque frames, focuses its first item,
+closes on Escape/outside click/World switch and keeps existing workspace actions.
+Delete captures one World ID and requires confirmation; export previews its data.
+Both drain/stop that World before the Native operation; another World keeps running.
+An unknown acknowledgement is reconciled by reads, never by replaying a mutation.
+
+The exact Native transfer contract is in Core docs/specs/mvp-story-delivery.md.
+Root-only browser methods are packages.begin-upload({size}), append-upload({handle,
+offset,bytes}), finish-upload({handle}), status({handle}), read({handle,offset,
+maximumBytes}), close({handle}), world-sessions.begin-export({worldId}). u64 values
+are canonical decimal strings, chunks base64 and at most 32 KiB. Status is
+{status:'uploading',written}, {status:'pending'}, {status:'installed',digest},
+{status:'download',size}, or {status:'failed',reason}. No caller path/owner/scope.
+Runtime keeps handles per channel; Native binds the exact activation and Host scope
+plus world-session-write. Exact-owner close is allowed for cleanup after revocation.
+
+At most two transfers/workers exist per process, including retained results and
+abandoned workers until completion. RTW size is at most 1 GiB; Character limits are
+unchanged. Staging uses private Host directories and existing live ownership locks
+and crash recovery. Heavy fsync/validation/export runs outside guest callbacks.
+Idle expiry is 120 seconds of Host time, checked on every use/callback cleanup;
+OS sleep may suspend TTL. Close abandons accepted installation (which may finish),
+never implicitly creates/activates a World and never approves requested grants.
+
+From file (.rtw)… in the create selector opens a browser file picker. Cancelling
+keeps the prior selection; corrupt/non-template input leaves no new World. A valid
+installed digest goes through ordinary explicit approval and independent creation.
+Export is prepared before the save picker/download is shown. File System Access
+writes chunks directly; fallback Blob download is bounded to 64 MiB. Larger exports
+need a streaming-capable browser or CLI. Known operations close on cancel/disconnect.
+
+View catalog publication can follow activation. Shell briefly reconciles catalog
+reads after observing a newly active World, preserving missing-view placeholders
+and exact restore keys. Stopping Worlds close their frames before teardown. A
+pending mount can be cancelled without inserting a late iframe; cleanup of an
+already retired channel must not disconnect unrelated views. HTTP 403 for a racing
+request to a retired bundle remains correct isolation, not a fallback to another
+World's assets.

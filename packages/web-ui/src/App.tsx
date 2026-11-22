@@ -3,12 +3,14 @@ import { DockviewReact, themeDark, themeLight, type DockviewApi, type DockviewRe
 import { BridgeError, RootBridge, resolveView, type View, type Theme, type ViewState } from '@rintawa/bridge';
 import { Button, Dialog, Icon, Input, Status } from '@rintawa/ui';
 import logo from './assets/logo.png';
+import { WorldActions } from './WorldActions';
+import { uploadPackage } from './packages';
 import { readLayout, type SavedPanel, type SavedLayout } from './layout';
 
 type Template = { digest: string; name: string; description: string; invalidReason: string | null };
 type TemplateInfo = { components: { slot: string; packageId: string | null; version: string | null }[]; composition: { requestedGrants: { slot: string; componentId: string; permission: string }[] }; hostRequirements: { artifact: string; componentId: string; target: string }[] };
 type World = { worldId: string; title: string; description?: string | null; cover?: unknown; active: boolean; pendingActive: boolean | null; lastError: string | null };
-type Workspace = { bridge: RootBridge; entries: Map<string, SavedPanel>; views: View[]; selectedWorld: string | null; initialStates: Map<string, ViewState> };
+type Workspace = { bridge: RootBridge; entries: Map<string, SavedPanel>; views: View[]; selectedWorld: string | null; initialStates: Map<string, ViewState>; liveWorlds: Set<string> };
 const Context = createContext<Workspace | null>(null);
 const errorText = (error: unknown) => error instanceof Error ? error.message : 'Operation unavailable';
 async function readHost(bridge: RootBridge, method: string, args: Record<string, unknown> = {}): Promise<unknown> {
@@ -24,18 +26,19 @@ function ExtensionPanel({ api }: IDockviewPanelProps) {
   const workspace = useContext(Context)!; const container = useRef<HTMLDivElement>(null); const [failure, setFailure] = useState(''); const [attempt, setAttempt] = useState(0);
   const entry = workspace.entries.get(api.id); const view = entry ? resolveView(entry.restoreKey, workspace.views) : null;
   const matches = !!entry && entry.restoreKey.worldId === workspace.selectedWorld;
+  const live = !!entry?.restoreKey.worldId && workspace.liveWorlds.has(entry.restoreKey.worldId);
   useEffect(() => {
-    if (!view || !matches || !container.current) return;
-    let disposed = false; let mounted: { close: () => Promise<void> } | undefined; setFailure('');
-    workspace.bridge.mount(view.id, container.current, () => { if (!disposed) setFailure('This view closed its channel.'); }, workspace.initialStates.get(api.id)).then(binding => {
+    if (!view || !matches || !live || !container.current) return;
+    const abort = new AbortController(); let disposed = false; let mounted: { close: () => Promise<void> } | undefined; setFailure('');
+    workspace.bridge.mount(view.id, container.current, () => { if (!disposed) setFailure('This view closed its channel.'); }, workspace.initialStates.get(api.id), abort.signal).then(binding => {
       if (disposed) void binding.close().catch(() => {}); else mounted = binding;
     }).catch(error => { if (!disposed) setFailure(errorText(error)); });
-    return () => { disposed = true; void mounted?.close().catch(() => {}); };
-  }, [workspace.bridge, view?.id, matches, attempt, workspace.initialStates.get(api.id)]);
-  return <div className="extension-panel"><div ref={container} className="frame-container" />{(!view || !matches || failure) && <div className="panel-placeholder">
-    <h2>{!matches ? 'Another World' : !view ? 'View unavailable' : 'View disconnected'}</h2>
-    <p>{!matches ? 'Select the saved World to open this view.' : !view ? 'The saved component is missing, inactive or ambiguous.' : failure}</p>
-    {!!view && matches && <Button onClick={() => setAttempt(value => value + 1)}>Reopen view</Button>}
+    return () => { disposed = true; abort.abort(); void mounted?.close().catch(() => {}); };
+  }, [workspace.bridge, view?.id, matches, live, attempt, workspace.initialStates.get(api.id)]);
+  return <div className="extension-panel"><div ref={container} className="frame-container" />{(!view || !matches || !live || failure) && <div className="panel-placeholder">
+    <h2>{!matches ? 'Another World' : !live ? 'World stopped' : !view ? 'View unavailable' : 'View disconnected'}</h2>
+    <p>{!matches ? 'Select the saved World to open this view.' : !live ? 'Start this World to reopen its views.' : !view ? 'The saved component is missing, inactive or ambiguous.' : failure}</p>
+    {!!view && matches && live && <Button onClick={() => setAttempt(value => value + 1)}>Reopen view</Button>}
   </div>}</div>;
 }
 const components = { extension: ExtensionPanel };
@@ -48,14 +51,20 @@ export function App({ bridge }: { bridge: RootBridge }) {
   const openRef = useRef<(view: View, split: boolean, state?: ViewState) => void>(() => {});
   const selectedRef = useRef(selectedWorld); selectedRef.current = selectedWorld;
   const [dockReady, setDockReady] = useState(false);
-  const [createOpen, setCreateOpen] = useState(false); const [worldName, setWorldName] = useState(''); const [search, setSearch] = useState(''); const [toolsOpen, setToolsOpen] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null); const uploadAbort = useRef<AbortController | null>(null);
+  const [uploadBusy, setUploadBusy] = useState(false); const [uploadProgress, setUploadProgress] = useState('');
+  useEffect(() => () => uploadAbort.current?.abort(), []);
+  const [createOpen, setCreateOpen] = useState(false); const [worldName, setWorldName] = useState(''); const [search, setSearch] = useState('');
   const [readError, setReadError] = useState('');
   const [notice, setNotice] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const dock = useRef<DockviewApi | null>(null);
   const activeByWorld = useRef(new Map<string, string>());
   const ready = useRef(false); const canSave = useRef(false); const timer = useRef<ReturnType<typeof setTimeout> | null>(null); const [loaded, setLoaded] = useState(false); const saved = useRef<SavedLayout | null>(null);
+  const lastActiveWorlds = useRef(new Set<string>()); const catalogRefreshUntil = useRef(0);
   const updateEntries = useCallback((value: Map<string, SavedPanel>) => { entriesRef.current = value; setEntries(value); }, []);
   const refresh = useCallback(async () => {
     const catalog = await readHost(bridge, 'ui.list') as View[]; const worlds = await readHost(bridge, 'world-sessions.list-worlds') as World[];
+    if (worlds.some(world => world.active && !lastActiveWorlds.current.has(world.worldId))) catalogRefreshUntil.current = Date.now() + 3000;
+    lastActiveWorlds.current = new Set(worlds.filter(world => world.active).map(world => world.worldId));
     setViews(catalog); setWorlds(worlds); setReadError(''); return { catalog, worlds };
   }, [bridge]);
   useEffect(() => {
@@ -73,19 +82,20 @@ export function App({ bridge }: { bridge: RootBridge }) {
   useEffect(() => { bridge.theme(theme); }, [bridge, theme]);
   useEffect(() => bridge.onDisconnect(() => setError('Connection closed. Reconnect to continue.')), [bridge]);
   useEffect(() => {
-    if (!worlds.some(world => world.pendingActive !== null)) return;
+    if (!worlds.some(world => world.pendingActive !== null) && Date.now() >= catalogRefreshUntil.current) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try { await refresh(); }
       catch (failure) {
-        // Lifecycle work can delay the pump. Retry transient reads, never set-active.
+        // Lifecycle work can delay the pump; view publication can follow activation.
+        // Reconcile status/catalog through reads, never repeat set-active.
         if (!(failure instanceof BridgeError) || !['unavailable', 'limit-exceeded'].includes(failure.code)) {
           if (!cancelled) setError(errorText(failure));
           cancelled = true;
         }
       }
-      finally { if (!cancelled) timer = setTimeout(() => void poll(), 500); }
+      finally { if (!cancelled && (worlds.some(world => world.pendingActive !== null) || Date.now() < catalogRefreshUntil.current)) timer = setTimeout(() => void poll(), 500); }
     };
     timer = setTimeout(() => void poll(), 500);
     return () => { cancelled = true; clearTimeout(timer); };
@@ -159,9 +169,29 @@ export function App({ bridge }: { bridge: RootBridge }) {
   }, [dockReady, selectedWorld, worlds, views, entryByWorld, refresh]);
   const action = async (work: () => Promise<unknown>) => { setBusy(true); setError(''); try { await work(); await refresh().catch(error => setReadError(errorText(error))); } catch (error) { setError(errorText(error)); } finally { setBusy(false); } };
   const selectWorld = (id: string) => {
-    setSelectedWorld(id); setToolsOpen(false);
+    setSelectedWorld(id);
     const existing = dock.current?.panels.find(panel => panel.id === activeByWorld.current.get(id)) ?? dock.current?.panels.find(panel => entriesRef.current.get(panel.id)?.restoreKey.worldId === id);
     existing?.api.setActive();
+  };
+  const importTemplate = async (file: File) => {
+    const abort = new AbortController(); uploadAbort.current = abort; setUploadBusy(true); setError(''); setUploadProgress('Uploading template…');
+    try {
+      const digest = await uploadPackage(bridge.client, file, abort.signal, percent => setUploadProgress(percent === 100 ? 'Checking package…' : `Uploading template… ${percent}%`));
+      const catalog = await readHost(bridge, 'world-sessions.list-templates') as Template[];
+      const selected = catalog.find(row => row.digest === digest);
+      if (!selected || selected.invalidReason) throw new Error(selected?.invalidReason ?? 'This RTW is not a World template.');
+      if (!abort.signal.aborted) { setTemplates(catalog); setTemplate(digest); setApproved(false); }
+    } catch (failure) { if (!abort.signal.aborted) setError(errorText(failure)); }
+    finally { if (uploadAbort.current === abort) uploadAbort.current = null; setUploadBusy(false); setUploadProgress(''); }
+  };
+  const closeCreate = () => { if (busy) return; uploadAbort.current?.abort(); setCreateOpen(false); };
+  const removeWorldPanels = async (id: string) => {
+    const panels = dock.current?.panels.filter(panel => entriesRef.current.get(panel.id)?.restoreKey.worldId === id) ?? [];
+    for (const panel of panels) dock.current?.removePanel(panel);
+    const next = new Map(entriesRef.current); for (const [key, panel] of next) if (panel.restoreKey.worldId === id) next.delete(key); updateEntries(next);
+    setInitialStates(previous => { const next = new Map(previous); for (const panel of panels) next.delete(panel.id); return next; });
+    activeByWorld.current.delete(id); if (selectedRef.current === id) setSelectedWorld(null);
+    await refresh();
   };
   const createWorld = () => action(async () => {
     if (!worldName.trim() || new TextEncoder().encode(worldName.trim()).length > 256) throw new Error('Enter a World name of up to 256 UTF-8 bytes.');
@@ -187,16 +217,17 @@ export function App({ bridge }: { bridge: RootBridge }) {
   const home = selectedWorld === null;
   const initials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(word => Array.from(word)[0]).join('').toUpperCase();
   const worldPanels = [...entries.values()].filter(panel => panel.restoreKey.worldId === selectedWorld);
-  // The main bar follows opened views. The template entry is an onboarding route,
-  // available through workspace controls rather than a duplicate app shortcut.
+  // The template entry coordinates onboarding and redirects to the actual app.
+  // It is not a separate app to reopen or split in the workspace.
   const entry = selectedWorld ? entryByWorld.get(selectedWorld) : null;
-  const navigationViews = available.filter(view =>
-    !(entry && view.restoreKey.instanceId === entry.instanceId && view.restoreKey.componentId === entry.componentId)
-    && worldPanels.some(panel => panel.restoreKey.instanceId === view.restoreKey.instanceId && panel.restoreKey.componentId === view.restoreKey.componentId));
+  const workspaceViews = available.filter(view =>
+    !(entry && view.restoreKey.instanceId === entry.instanceId && view.restoreKey.componentId === entry.componentId));
+  const navigationViews = workspaceViews.filter(view =>
+    worldPanels.some(panel => panel.restoreKey.instanceId === view.restoreKey.instanceId && panel.restoreKey.componentId === view.restoreKey.componentId));
   const filtered = worlds.filter(world => world.title.toLowerCase().includes(search.toLowerCase()));
-  return <Context.Provider value={{ bridge, entries, views, selectedWorld, initialStates }}><main className="shell">
+  return <Context.Provider value={{ bridge, entries, views, selectedWorld, initialStates, liveWorlds: new Set(worlds.filter(world => world.active && world.pendingActive !== false).map(world => world.worldId)) }}><main className="shell">
     <nav className="world-rail" aria-label="Worlds">
-      <button className={`home-button rail-button${home ? ' selected' : ''}`} aria-label="Home" title="Home" onClick={() => { setSelectedWorld(null); setToolsOpen(false); }}><img src={logo} alt="Rintawa" /></button>
+      <button className={`home-button rail-button${home ? ' selected' : ''}`} aria-label="Home" title="Home" onClick={() => { setSelectedWorld(null); }}><img src={logo} alt="Rintawa" /></button>
       <div className="rail-divider" />
       <div className="rail-worlds">{worlds.map(world => <button key={world.worldId} title={world.title} aria-label={`Open world ${world.title}`} aria-current={selectedWorld === world.worldId ? 'page' : undefined} disabled={!loaded} className={`world-button rail-button${selectedWorld === world.worldId ? ' selected' : ''}`} onClick={() => selectWorld(world.worldId)}><span>{initials(world.title) || <Icon name="world" />}</span>{world.active && <i className="active-dot" aria-label="Active" />}</button>)}</div>
       <button className="rail-button add-world" title="New World" aria-label="New World" disabled={!loaded || busy} onClick={() => setCreateOpen(true)}><Icon name="plus" size={24} /></button>
@@ -212,17 +243,19 @@ export function App({ bridge }: { bridge: RootBridge }) {
         </div>
       </section>}
       <section className={`world-workspace${home ? ' hidden-workspace' : ''}`} aria-hidden={home}>
-        <header className="world-topbar"><div className="world-title"><Icon name="world" size={18} /><strong>{selected?.title ?? 'World unavailable'}</strong></div><nav className="world-apps" aria-label="World apps">{navigationViews.map(view => <button key={view.id} title={`Open ${view.title}`} onClick={() => open(view, false)}>{view.title}</button>)}</nav><div className="world-actions"><button className="icon-button" title="Refresh" aria-label="Refresh" disabled={busy || !loaded} onClick={() => void action(refresh)}><Icon name="refresh" size={17} /></button>{selected && <button className={`world-power${selected.active ? ' running' : ''}`} disabled={busy || selected.pendingActive !== null} onClick={() => void setWorldActive(selected)}><Icon name="power" size={15} />{selected.pendingActive !== null ? 'Working…' : selected.active ? 'Stop World' : 'Start World'}</button>}<button className="icon-button" title="Workspace controls" aria-label="Workspace controls" aria-expanded={toolsOpen} onClick={() => setToolsOpen(value => !value)}><Icon name="more" /></button></div></header>
+        <header className="world-topbar"><div className="world-title"><Icon name="world" size={18} /><strong>{selected?.title ?? 'World unavailable'}</strong></div><nav className="world-apps" aria-label="World apps">{navigationViews.map(view => <button key={view.id} title={`Open ${view.title}`} onClick={() => open(view, false)}>{view.title}</button>)}</nav><div className="world-actions"><button className="icon-button" title="Refresh" aria-label="Refresh" disabled={busy || !loaded} onClick={() => void action(refresh)}><Icon name="refresh" size={17} /></button>{selected && <button className={`world-power${selected.active ? ' running' : ''}`} disabled={busy || selected.pendingActive !== null} onClick={() => void setWorldActive(selected)}><Icon name="power" size={15} />{selected.pendingActive !== null ? 'Working…' : selected.active ? 'Stop World' : 'Start World'}</button>}<WorldActions bridge={bridge} world={selected ?? null} views={workspaceViews} theme={theme} setTheme={setTheme} open={view => open(view, true)} refresh={refresh} deleted={removeWorldPanels} stopping={id => setWorlds(rows => rows.map(row => row.worldId === id ? { ...row, pendingActive: false } : row))} fail={failure => setError(errorText(failure))} reset={async () => {
+          if (timer.current) { clearTimeout(timer.current); timer.current = null; }
+          canSave.current = false; await bridge.resetLayout(); saved.current = null; dock.current?.clear(); updateEntries(new Map()); setNotice('Layout reset');
+        }} /></div></header>
         {selected?.lastError && <Status error>{selected.lastError}</Status>}
-        {toolsOpen && <div className="workspace-tools"><span>Workspace</span>{available.map(view => <Button key={view.id} title={`Split ${view.title}`} onClick={() => open(view, true)}><Icon name="split" size={15} /> Split {view.title}</Button>)}<Button onClick={() => setTheme({ mode: theme.mode === 'dark' ? 'light' : 'dark' })}>{theme.mode === 'dark' ? 'Light theme' : 'Dark theme'}</Button><Button onClick={() => void action(async () => { await bridge.resetLayout(); saved.current = null; canSave.current = false; dock.current?.clear(); updateEntries(new Map()); setNotice('Layout reset'); })}>Reset layout</Button>{notice && <Status>{notice}</Status>}</div>}
-        <div className={`dock-area${worldPanels.length <= 1 && !toolsOpen ? ' single-panel' : ''}`}>{loaded && <DockviewReact components={components} onReady={onReady} theme={theme.mode === 'dark' ? themeDark : themeLight} defaultRenderer="always" disableFloatingGroups getTabContextMenuItems={() => ['close', 'closeOthers']} getTabGroupChipContextMenuItems={() => ['close']} />}</div>
+        <div className={`dock-area${worldPanels.length <= 1 ? ' single-panel' : ''}`}>{loaded && <DockviewReact components={components} onReady={onReady} theme={theme.mode === 'dark' ? themeDark : themeLight} defaultRenderer="always" disableFloatingGroups getTabContextMenuItems={() => ['close', 'closeOthers']} getTabGroupChipContextMenuItems={() => ['close']} />}</div>
         {!worldPanels.length && !home && <div className="world-welcome"><div className="empty-symbol"><Icon name="world" size={34} /></div><h1>{selected?.title ?? 'World unavailable'}</h1><p>{selected?.active ? 'Choose an app to step into this world.' : 'Start this world to open its chats and characters.'}</p>{selected?.active ? <div className="world-launchers">{available.map(view => <Button key={view.id} title={`Open ${view.title}`} onClick={() => open(view, false)}><Icon name="grid" size={18} /> {view.title}<Icon name="arrow" size={16} /></Button>)}{!available.length && <Status>Waiting for World apps…</Status>}</div> : selected && <Button className="primary" disabled={busy || selected.pendingActive !== null} onClick={() => void setWorldActive(selected)}><Icon name="power" size={16} />{selected.pendingActive !== null ? 'Working…' : 'Start World'}</Button>}</div>}
       </section>
       {(error || readError) && <div className="shell-error" role="alert"><span>{error || readError}</span><button onClick={() => { setError(''); setReadError(''); }} aria-label="Dismiss error"><Icon name="close" size={16} /></button><button onClick={() => location.reload()}>Reconnect</button></div>}
     </section>
-    <Dialog open={createOpen} title="Create a world" onClose={() => { if (!busy) setCreateOpen(false); }}><form onSubmit={event => { event.preventDefault(); void createWorld(); }}><label htmlFor="world-template">TEMPLATE</label><select id="world-template" value={template} disabled={busy} onChange={event => setTemplate(event.target.value)}>{!templates.length && <option value="">No installed templates</option>}{templates.map(row => <option key={row.digest} value={row.digest} disabled={!!row.invalidReason}>{row.name}{row.invalidReason ? ' · unavailable' : ''}</option>)}</select>
+    <Dialog open={createOpen} title="Create a world" onClose={closeCreate}><form onSubmit={event => { event.preventDefault(); void createWorld(); }}><label htmlFor="world-template">TEMPLATE</label><input ref={fileInput} className="template-file" type="file" accept=".rtw" hidden disabled={uploadBusy || busy} onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) void importTemplate(file); }} /><select id="world-template" value={template} disabled={busy || uploadBusy} onChange={event => { if (event.target.value === '__file__') fileInput.current?.click(); else setTemplate(event.target.value); }}>{!templates.length && <option value="">No installed templates</option>}{templates.map(row => <option key={row.digest} value={row.digest} disabled={!!row.invalidReason}>{row.name}{row.invalidReason ? ' · unavailable' : ''}</option>)}<option value="__file__">From file (.rtw)…</option></select>{uploadProgress && <Status>{uploadProgress}</Status>}
       {templateInfo && <details className="template-requirements"><summary>Included extensions and permissions</summary>{templateInfo.components.map(slot => <p key={slot.slot}>{slot.packageId ?? slot.slot} {slot.version}</p>)}<ul>{templateInfo.composition.requestedGrants.map(grant => <li key={`${grant.slot}/${grant.componentId}/${grant.permission}`}>{grant.slot}/{grant.componentId}: {grant.permission}</li>)}</ul></details>}
       {!!templateInfo?.composition.requestedGrants.length && <label className="template-approval"><input type="checkbox" checked={approved} disabled={busy} onChange={event => setApproved(event.target.checked)} /> Allow the listed permissions in this World</label>}
-      <label htmlFor="world-name">WORLD NAME</label><Input id="world-name" value={worldName} onChange={event => setWorldName(event.target.value)} placeholder="Give your world a name" autoFocus disabled={busy} />{error && <Status error>{error}</Status>}<footer><Button disabled={busy} onClick={() => setCreateOpen(false)}>Cancel</Button><Button type="submit" className="primary" disabled={busy || !worldName.trim() || !templateInfo || (!!templateInfo.composition.requestedGrants.length && !approved)}>Create world</Button></footer></form></Dialog>
+      <label htmlFor="world-name">WORLD NAME</label><Input id="world-name" value={worldName} onChange={event => setWorldName(event.target.value)} placeholder="Give your world a name" autoFocus disabled={busy} />{error && <Status error>{error}</Status>}<footer><Button disabled={busy} onClick={closeCreate}>Cancel</Button><Button type="submit" className="primary" disabled={busy || uploadBusy || !worldName.trim() || !templateInfo || (!!templateInfo.composition.requestedGrants.length && !approved)}>Create world</Button></footer></form></Dialog>
   </main></Context.Provider>;
 }
