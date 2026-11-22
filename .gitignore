@@ -13,3 +13,17 @@ __pycache__/
 *.pem
 
 .DS_Store
+
+# Local editor/agent notes and machine-specific Cargo overrides
+/.vscode/
+/.idea/
+/AGENTS.md
+/.cargo/config.toml
+
+# Generated publishing and smoke output
+/_site/
+/_release-metadata/
+/_release-assets.tsv
+/_smoke-*/
+*.tsbuildinfo
+Thumbs.db

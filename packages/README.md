@@ -1,23 +1,22 @@
-# rtwKit packages
+# RTW packages
 
-Each direct child of this directory is one independently versioned RTW package.
-The directory name is its release slug; it is not the Rintawa package identity.
+There are currently no publishable packages. The experimental runtime, Portable
+UI, projection and durable-job adapters have been removed. Reusable native/WASM
+libraries live under `crates/` and do not emit placeholder RTWs.
 
-A package may exist in source form before its first release while a runtime adapter is still being implemented. Such a package must remain clearly marked as unreleased and must not emit a placeholder RTW artifact merely to satisfy tooling.
-
-Every package contains `rtwkit.toml`:
+A new independently versioned extension belongs in `packages/<slug>/`. Its real
+build must produce a valid RTW root before a release can be created. For example:
 
 ```toml
-schema = 1
+schema = 2
 
 [package]
-id = "rintawa.example"
+id = "rintawa.rtwkit.example"
 name = "Example"
 version = "0.1.0"
 description = "Example rtwKit package"
 license = "GPL-3.0-only"
 authors = ["Example Author"]
-logo = "assets/logo.png"
 readme = "README.md"
 
 [build]
@@ -25,24 +24,15 @@ artifact-root = "build/rtw"
 command = ["bash", "build.sh"]
 ```
 
-`logo` and `readme` are optional bounded presentation assets. The release tooling
-publishes them independently from the RTW and records HTTPS URL, SHA-256, size,
-and media type in the registry so Extension Manager can show package cards
-without downloading or executing the package.
+Every direct child directory must be a complete package with `rtwkit.toml`.
+Schema 1 and old package-ID replacement aliases are no longer supported.
+Optional bounded `logo` and `readme` assets are published with HTTPS URL,
+SHA-256, size and media type so a manager can display them without executing RTW.
 
-`artifact-root` is the directory that becomes the root of the final `.rtw` ZIP.
-It must contain a valid `rtw.toml`. The registry tooling reads the RTW content type
-from that file instead of duplicating it in `rtwkit.toml`.
+The build command is an argv array executed in the package directory. Shell
+syntax is not interpreted; invoke `bash` explicitly when needed. Production
+installation must never execute source build scripts.
 
-`command` is optional. If present, it is executed directly as an argv array with
-the package directory as its working directory. Shell syntax is not interpreted;
-use `bash build.sh` explicitly if a package needs a shell.
-
-Release tags use:
-
-```text
-pkg-<slug>-v<version>
-```
-
-For example `packages/web-ui` version `0.1.0` is released by tag
-`pkg-web-ui-v0.1.0`.
+Tag `pkg-<slug>-v<version>` publishes stable asset names `<slug>.rtw` and
+`<slug>.registry.json`. The tag, version and digest identify immutable bytes;
+do not reuse the removed experimental releases' version coordinates.

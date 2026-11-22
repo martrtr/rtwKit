@@ -1,4 +1,4 @@
-package rintawa:engine@0.0.1;
+package rintawa:engine@0.0.2;
 
 /// Host operations available throughout a WASM component lifecycle.
 interface host {
@@ -13,20 +13,8 @@ interface host {
 
     /// Logs a message to the host's tracing system.
     log: func(level: log-level, message: string);
-
-    /// An explicit extension-originated event-publication failure.
-    variant publish-error {
-        /// Guest publication is unavailable under the current host policy.
-        unavailable,
-    }
-
-    /// Requests extension-originated runtime event publication.
-    ///
-    /// Host-to-subscriber Event Runtime delivery exists, but arbitrary guest
-    /// publication remains fail-closed until publisher/topic authorization and
-    /// guest-to-host quotas are part of the contract. The host therefore returns
-    /// `unavailable` instead of accepting an event it cannot authorize safely.
-    publish-event: func(topic: string, payload: list<u8>) -> result<_, publish-error>;
+    variant random-error { access-not-active, invalid-request, unavailable }
+    random-bytes: func(count: u32) -> result<list<u8>, random-error>;
 
 }
 
@@ -36,12 +24,6 @@ interface registration {
     enum resolution-policy {
         single,
         multiple,
-    }
-
-    /// Host interaction protocol exposed by a contract.
-    enum contract-protocol {
-        binding,
-        service,
     }
 
     /// An explicit failure while declaring static metadata.
@@ -56,7 +38,6 @@ interface registration {
         name: string,
         version: u32,
         resolution: resolution-policy,
-        protocol: contract-protocol,
     ) -> result<_, error>;
 
     /// Declares this component as a provider of one versioned contract.
@@ -112,28 +93,69 @@ interface world-registration {
     ) -> result<_, error>;
 }
 
-/// Reversible effects available from guest `start` and `on-event`.
-interface runtime-effects {
-    /// A guest-local handle for one host-owned runtime effect.
-    type handle = string;
-
-    /// An explicit failure while managing a runtime effect.
+/// Read-only calls available only while the Host is evaluating one World System.
+/// Every call is served from that command's already-pinned, owner-scoped snapshot.
+interface world-system-snapshot {
+    enum direction { outgoing, incoming, either }
     variant error {
-        runtime-not-active,
-        invalid-topic,
-        unknown-effect,
+        access-not-active,
+        invalid-request,
+        access-denied,
+        unavailable,
+        message-too-large,
     }
 
-    /// Adds an owner-scoped subscription while the guest is running.
-    ///
-    /// The handle is later supplied to `unsubscribe-event`. It is valid only
-    /// for the current activation: the host revokes all remaining subscriptions
-    /// on stop or crash, and a later start requires a new subscription.
-    subscribe-event: func(topic: string) -> result<handle, error>;
+    load-item: func(id: string) -> result<option<string>, error>;
+    load-property: func(item: string, key: string) -> result<option<string>, error>;
+    properties-of: func(item: string) -> result<list<string>, error>;
+    read: func(items: list<string>, properties: list<string>) -> result<string, error>;
+    find-relations: func(targets: list<string>, direction: direction, property: option<string>, after: option<string>, limit: u32) -> result<list<string>, error>;
+    find-properties: func(key: string, after: option<string>, limit: u32) -> result<list<string>, error>;
+}
 
-    /// Removes a subscription previously returned by `subscribe-event`.
-    unsubscribe-event: func(handle: handle) -> result<_, error>;
+/// One authoritative World System implementation supplied by a WASM component.
+interface world-system {
+    variant error {
+        rejected(string),
+        failed(string),
+    }
 
+    /// Evaluates the Host-validated command JSON and returns JSON for one bounded
+    /// WorldTransaction. World identity, principal and property owner are never
+    /// supplied by the guest.
+    evaluate: func(command-json: string) -> result<string, error>;
+}
+
+/// Ordinary World reads and asynchronous command submission for a world-scoped guest.
+interface world-data {
+    use world-system-snapshot.{direction};
+    type ticket = u64;
+
+    variant error {
+        access-not-active,
+        invalid-request,
+        access-denied,
+        queue-full,
+        unavailable,
+        message-too-large,
+    }
+
+    variant ticket-status {
+        pending,
+        committed,
+        failed(string),
+    }
+
+    load-item: func(id: string) -> result<option<string>, error>;
+    load-property: func(item: string, key: string) -> result<option<string>, error>;
+    find-properties: func(key: string, after: option<string>, limit: u32) -> result<list<string>, error>;
+    read: func(items: list<string>, properties: list<string>) -> result<string, error>;
+    find-relations: func(targets: list<string>, direction: direction, property: option<string>, after: option<string>, limit: u32) -> result<list<string>, error>;
+    new-item-ids: func(count: u32) -> result<list<string>, error>;
+    submit: func(schema: string, payload-json: string) -> result<ticket, error>;
+    poll: func(ticket: ticket) -> result<ticket-status, error>;
+    /// Release the receiver without cancelling an admitted command.
+    close: func(ticket: ticket) -> result<_, error>;
 }
 
 /// Read-only identity of the component callback currently executing in the Host.
@@ -144,12 +166,20 @@ interface runtime-context {
         rejected,
     }
 
+    record principal {
+        instance-id: string,
+        component-id: string,
+        activation: u64,
+    }
+
     record context {
         scope-id: string,
         world-id: option<string>,
+        principal: principal,
     }
 
     current: func() -> result<context, error>;
+    selected-providers: func(contract-id: string, version: u32) -> result<list<principal>, error>;
 }
 
 /// Owner-scoped cooperative background tasks.
@@ -224,72 +254,6 @@ interface network {
 
     /// Closes one listener or stream owned by the current component.
     close: func(handle: handle) -> result<_, error>;
-}
-
-/// Ephemeral component-owned progress and byte events for long-lived operations.
-///
-/// This is transport, not a WorldEvent or durable effect. One execution principal
-/// owns every handle; cross-component service handoff requires separate policy.
-interface async-operations {
-    record progress-update {
-        sequence: u64,
-        percent: u8,
-    }
-
-    record data-chunk {
-        sequence: u64,
-        bytes: list<u8>,
-    }
-
-    /// Progress and data are provisional until an explicit terminal state.
-    variant event {
-        pending,
-        progress(progress-update),
-        data(data-chunk),
-        completed(list<u8>),
-        failed(string),
-        cancelled,
-    }
-
-    variant error {
-        access-not-active,
-        unknown-handle,
-        invalid-state,
-        invalid-progress,
-        message-too-large,
-        queue-full,
-        limit-exceeded,
-        unavailable,
-    }
-
-    /// Creates one ephemeral operation with an unguessable activation-local ID.
-    create: func() -> result<string, error>;
-    /// Pushes a monotonic progress percentage in 0..=100.
-    push-progress: func(handle: string, percent: u8) -> result<_, error>;
-    /// Pushes one bounded ordered byte chunk; never silently drops a full queue.
-    push-data: func(handle: string, data: list<u8>) -> result<_, error>;
-    /// Declares successful completion after queued progress/data are drained.
-    complete: func(handle: string, output: list<u8>) -> result<_, error>;
-    /// Declares terminal failure with a bounded diagnostic.
-    fail: func(handle: string, reason: string) -> result<_, error>;
-    /// Atomically cancels this owner's operation, discarding provisional events.
-    cancel: func(handle: string) -> result<_, error>;
-    /// Reads at most one ordered event without blocking.
-    poll: func(handle: string) -> result<event, error>;
-    /// Transfers read-only consumption of this stream to the authenticated
-    /// immediate caller of a routed service callback, in the same scope.
-    /// Only one reader can be delegated. No guest-selected principal is accepted.
-    share-with-caller: func(handle: string) -> result<string, error>;
-
-    /// Consumes one ordered event through a caller-bound read-only lease.
-    /// The original owner retains cancellation and finalization authority.
-    poll-observer: func(token: string) -> result<event, error>;
-
-    /// Relinquishes the caller-bound lease without cancelling the operation.
-    close-observer: func(token: string) -> result<_, error>;
-
-    /// Releases the exact handle before its automatic short terminal expiry.
-    close: func(handle: string) -> result<_, error>;
 }
 
 /// Owner-scoped bounded asynchronous HTTP requests without implicit redirects.
@@ -422,6 +386,10 @@ interface asset-store {
     /// Imports exact bytes under a canonical media type and returns an AssetRef.
     /// Intended for small payloads that fit comfortably inside one callback budget.
     import-asset: func(bytes: list<u8>, media-type: string) -> result<asset-ref, error>;
+
+    open-asset: func(reference: asset-ref) -> result<u64, error>;
+    read-asset: func(handle: u64, maximum-bytes: u32) -> result<list<u8>, error>;
+    close-asset: func(handle: u64) -> result<_, error>;
 
     /// Starts one bounded host-owned streaming asset upload.
     /// The declared size reserves quota but does not allocate the complete buffer eagerly.
@@ -807,42 +775,48 @@ interface secrets {
 }
 
 
-/// Generic service transport available while guest code is executing.
-interface services {
-    /// Transport-level routing failure.
+/// Host-scoped ephemeral Zenoh queries. Names and payloads belong to features.
+interface transport {
+    use runtime-context.{principal};
+    record inbound-query { handle: u64, caller: principal, payload: list<u8> }
     variant error {
+        access-not-active,
+        invalid-name,
+        duplicate,
+        limit-exceeded,
         unavailable,
-        not-consumer,
-        not-service-contract,
-        unsupported-resolution,
-        cyclic-call,
-        provider-busy,
-        provider-failed,
-        request-too-large,
-        response-too-large,
+        unknown-subscription,
+        invalid-handle,
+        not-selected,
     }
+    /// Stages a queryable during guest.start, activated only after success.
+    declare: func(point: string) -> result<_, error>;
+    /// Collects bounded replies from queryables in the same World scope.
+    query: func(point: string, payload: list<u8>) -> result<list<list<u8>>, error>;
+    /// Sends a transient notification; not permitted during guest.start.
+    publish: func(point: string, payload: list<u8>) -> result<_, error>;
+    /// Creates a host-owned bounded Zenoh subscription.
+    subscribe: func(point: string) -> result<u64, error>;
+    /// Nonblocking receive; lagging consumers may lose oldest messages.
+    poll: func(handle: u64) -> result<list<list<u8>>, error>;
+    /// Removes a subscription early; stop automatically revokes remaining ones.
+    unsubscribe: func(handle: u64) -> result<_, error>;
+    /// Admits a query without waiting for dispatch or replies.
+    begin-query: func(point: string, payload: list<u8>) -> result<u64, error>;
+    poll-query: func(handle: u64) -> result<option<list<list<u8>>>, error>;
+    close-query: func(handle: u64) -> result<_, error>;
+    /// Admits publication; next-query is empty while publication is pending.
+    declare-polled: func(point: string) -> result<u64, error>;
+    next-query: func(queryable: u64) -> result<option<inbound-query>, error>;
+    reply-query: func(handle: u64, payload: option<list<u8>>) -> result<_, error>;
+    close-queryable: func(handle: u64) -> result<_, error>;
 
-    /// Opaque caller-bound selection of one provider for a `multiple` service contract.
-    type provider-handle = u64;
+}
 
-    /// Calls the provider selected for a versioned `single` service contract.
-    call: func(
-        contract: string,
-        version: u32,
-        payload: list<u8>,
-    ) -> result<list<u8>, error>;
-
-    /// Lists eligible providers for a versioned `multiple` service contract.
-    list-providers: func(
-        contract: string,
-        version: u32,
-    ) -> result<list<provider-handle>, error>;
-
-    /// Calls one provider previously returned by `list-providers`.
-    call-provider: func(
-        provider: provider-handle,
-        payload: list<u8>,
-    ) -> result<list<u8>, error>;
+/// Optional WASM provider callback, invoked with host-attested identity.
+interface transport-handler {
+    use runtime-context.{principal};
+    on-query: func(point: string, payload: list<u8>, caller: principal) -> list<u8>;
 }
 
 /// Optional callback surface for components that schedule background tasks.
@@ -892,23 +866,9 @@ interface target-provider {
     /// Permanently releases provider-local state after the proxy is unloaded.
     drop-component: func(handle: component-handle) -> result<_, error>;
 
-    /// Handles one subscribed runtime event for the dependent component.
-    handle-event: func(
-        handle: component-handle,
-        topic: string,
-        payload: list<u8>,
-    ) -> result<_, error>;
-
-    /// Handles one service request for a contract provided by the dependent component.
-    handle-service: func(
-        handle: component-handle,
-        contract: string,
-        version: u32,
-        payload: list<u8>,
-    ) -> result<list<u8>, error>;
 }
 
-/// Guest lifecycle and event handlers implemented by the WASM plugin.
+/// Guest lifecycle callbacks implemented by the WASM plugin.
 interface guest {
     /// Initial plugin registration callback.
     register: func();
@@ -917,23 +877,9 @@ interface guest {
     start: func();
 
     /// Deactivates the plugin while preserving its guest instance for a later restart.
-    ///
-    /// The host revokes runtime effects after this callback. Full guest-state
-    /// disposal happens when the component is unloaded, not on `stop` alone.
+    /// Full guest-state disposal happens when the component is unloaded, not on `stop` alone.
     stop: func();
 
-    /// Dispatches a subscribed event payload to the plugin.
-    on-event: func(topic: string, payload: list<u8>);
-
-    /// Handles one unary request for a contract provided by this component.
-    ///
-    /// Domain-level errors are encoded by the versioned contract itself. A
-    /// trap or host execution failure is reported to the caller as provider-failed.
-    handle-service: func(
-        contract: string,
-        version: u32,
-        payload: list<u8>,
-    ) -> list<u8>;
 }
 
 /// The plugin world contract combining host imports and guest exports.
@@ -942,12 +888,12 @@ world plugin {
     import runtime-context;
     import registration;
     import world-registration;
-    import runtime-effects;
+    import world-system-snapshot;
+    import world-data;
     import runtime-tasks;
     import network;
     import http-fetch;
     import http-request;
-    import async-operations;
     import artifact-store;
     import asset-store;
     import user-resources;
@@ -959,8 +905,25 @@ world plugin {
     import scoped-runtime-policy;
     import execution-targets;
     import secrets;
-    import services;
+    import transport;
     export guest;
+}
+
+/// Optional typed view for authoritative World System callbacks on a plugin.
+world world-system-plugin {
+    include plugin;
+    export world-system;
+}
+
+/// Authoring world for components providing transport responses.
+world plugin-transport {
+    include plugin;
+    export transport-handler;
+}
+
+/// Optional typed view for queryable callbacks on an ordinary plugin.
+world transport-handler-plugin {
+    export transport-handler;
 }
 
 /// Optional typed view of the same instance for runtime-provider callbacks.
@@ -980,12 +943,10 @@ world task-runtime-plugin {
     import runtime-context;
     import registration;
     import world-registration;
-    import runtime-effects;
     import runtime-tasks;
     import network;
     import http-fetch;
     import http-request;
-    import async-operations;
     import artifact-store;
     import asset-store;
     import user-resources;
@@ -997,7 +958,7 @@ world task-runtime-plugin {
     import scoped-runtime-policy;
     import execution-targets;
     import secrets;
-    import services;
+    import transport;
     export guest;
     export task-handler;
 }
@@ -1008,12 +969,10 @@ world runtime-provider-plugin {
     import runtime-context;
     import registration;
     import world-registration;
-    import runtime-effects;
     import runtime-tasks;
     import network;
     import http-fetch;
     import http-request;
-    import async-operations;
     import artifact-store;
     import asset-store;
     import user-resources;
@@ -1025,7 +984,7 @@ world runtime-provider-plugin {
     import scoped-runtime-policy;
     import execution-targets;
     import secrets;
-    import services;
+    import transport;
     export guest;
     export target-provider;
 }
@@ -1036,12 +995,10 @@ world runtime-provider-task-plugin {
     import runtime-context;
     import registration;
     import world-registration;
-    import runtime-effects;
     import runtime-tasks;
     import network;
     import http-fetch;
     import http-request;
-    import async-operations;
     import artifact-store;
     import asset-store;
     import user-resources;
@@ -1053,7 +1010,7 @@ world runtime-provider-task-plugin {
     import scoped-runtime-policy;
     import execution-targets;
     import secrets;
-    import services;
+    import transport;
     export guest;
     export target-provider;
     export task-handler;

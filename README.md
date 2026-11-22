@@ -1,71 +1,53 @@
 # rtwKit
 
-rtwKit is the recommended package set and package source for Rintawa. It is not
-part of Rintawa Core: every package is built and distributed through the same RTW
-artifact model available to third-party repositories.
+rtwKit contains the extension packages and publishing tools for Rintawa. Product
+policy belongs here; Core supplies sandboxed execution, exact activation identity,
+scoped transport, permissions and atomic World storage.
 
-## Distribution model
+## Current status
 
-Source code lives together in this monorepo, but users never need to clone it.
-Each package version is published independently as one immutable `.rtw` GitHub
-Release asset. A small GitHub Pages `index.json` lists the available versions, package
-presentation assets and their SHA-256 digests. The root `registry.toml`
-describes repository identity; the registry builder publishes its bounded icon
-next to the index and emits a verified asset descriptor.
+The experimental Portable UI/runtime stack has been retired. This checkout does
+not yet provide a runnable Web UI, World Manager, Character importer, Chat or AI
+runtime. Those packages must be implemented against the accepted D1–D8 contracts,
+starting with the browser bridge and shell in P10. There are no publishable RTW
+packages in `packages/` until their real implementations return.
 
-```text
-packages/<slug>/ source
-        ↓
-pkg-<slug>-v<version> tag
-        ↓
-GitHub Release: <slug>.rtw
-        ↓
-GitHub Pages: index.json
+Useful domain libraries are retained under `crates/`: Tavern JSON/PNG import and
+portrait binding, CharacterTemplate RTW encoding, package catalog/dependency
+solving, and inference codecs/SSE/model parsing. They perform no Host activation
+or UI composition. See [cleanup scope and acceptance](docs/specs/p10-legacy-cleanup.md).
+The machine-local `.vscode/` notes are historical and are not public requirements.
+
+## Development
+
+Use the toolchain in `rust-toolchain.toml` and run:
+
+```sh
+bash scripts/check.sh
 ```
 
-Asset names are stable across versions. The release tag and SHA-256 digest carry
-the versioned/immutable identity, so `pkg-web-ui-v0.0.1` and
-`pkg-web-ui-v0.2.0` both contain an asset named `web-ui.rtw`.
+`Cargo.toml` pins the exact Core revision; `wit/engine.wit` mirrors that revision's
+public guest ABI. Do not introduce package-only Host imports or commit local path
+dependencies. Editor/agent notes, local `.cargo/config.toml`, build output and
+credentials are ignored. Dependencies can be checked offline when cached.
 
-The intended Extension Manager source URL is:
+## Distribution
 
-```text
-https://martrtr.github.io/rtwKit/index.json
-```
+Preserve independently versioned immutable RTW assets and a generated Pages
+registry. Package source lives under `packages/<slug>/`; a tag such as
+`pkg-web-ui-v0.1.0` builds `<slug>.rtw` and `<slug>.registry.json` as GitHub Release
+assets. The registry tool combines release metadata into `index.json`, including
+artifact digests, sizes and dependencies. Installed bytes come from the verified
+RTW rather than a live UI CDN.
 
-GitHub Actions workflow artifacts are used only for CI diagnostics and are not
-part of the public package source.
+The registry URL is `https://martrtr.github.io/rtwKit/index.json`. Release deletion
+requires rebuilding its deployed index; changing source alone does not remove
+stale entries from GitHub Pages. The registry workflow supports manual rebuilds
+and release-deletion events.
 
-## Current packages
+The owner requested removal of the old GitHub Releases during this reset. Source
+tags remain historical provenance; new incompatible packages must use new version
+coordinates. Future release and Pages workflows remain available. GitHub Actions
+artifacts are diagnostics, not a package source.
 
-- `package-manager` — repository-backed extension discovery, dependency solving,
-  permission review, and exact-artifact activation.
-- `web-runtime` — external `rintawa.runtime.web-bundle@1` execution-target provider.
-- `web-ui` — React Host Shell / Portable UI Layer executed through `web-runtime`.
-- `world-manager` — standard replaceable World catalog/lifecycle Portable UI package.
-- `character-library` — CharacterTemplate content handler plus read-only Library
-  Portable UI over the generic user-content capability.
-- chat — persistent World-local conversation, branching, and message UI.
-- ai-provider — initial OpenAI-compatible text inference service and bounded
-  ephemeral streams; settings UI and Narrator integration are not yet available.
-
-Published `(package id, version)` coordinates are immutable: a released version is
-never rebuilt or replaced in-place. The registry digest identifies and verifies the
-exact artifact for those coordinates. Local or development builds may temporarily
-reuse a semantic version while iterating; Package Manager treats a same-version but
-different-digest activation as unpublished and can replace it with the exact
-repository artifact.
-
-## Publishing a package
-
-1. Update `packages/<slug>/rtwkit.toml` and package sources.
-2. Ensure the build produces a valid RTW-layout directory at `artifact-root`.
-3. Push a tag matching the package version, for example:
-
-```text
-pkg-web-ui-v0.0.1
-```
-
-The release workflow builds the package with the canonical Rintawa RTW packer,
-publishes the `.rtw` plus machine-readable release metadata, then rebuilds the
-Pages registry index.
+See [package authoring](packages/README.md) and [registry output](registry/README.md).

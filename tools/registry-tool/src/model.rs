@@ -3,11 +3,7 @@
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-pub const LEGACY_RTWKIT_MANIFEST_SCHEMA: u32 = 1;
 pub const RTWKIT_MANIFEST_SCHEMA: u32 = 2;
-pub const LEGACY_REGISTRY_SCHEMA: u32 = 1;
-pub const DEPENDENCY_REGISTRY_SCHEMA: u32 = 2;
-pub const PRESENTATION_REGISTRY_SCHEMA: u32 = 3;
 pub const REGISTRY_SCHEMA: u32 = 4;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -38,8 +34,6 @@ pub struct PackageMetadata {
     pub readme: Option<String>,
     #[serde(default)]
     pub dependencies: Vec<PackageDependency>,
-    #[serde(default)]
-    pub replaces: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -86,8 +80,6 @@ pub struct PublishedPackage {
     pub logo: Option<PublishedAsset>,
     #[serde(default)]
     pub readme: Option<PublishedAsset>,
-    #[serde(default)]
-    pub replaces: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -168,8 +160,6 @@ pub struct RegistryPackage {
     pub logo: Option<PublishedAsset>,
     #[serde(default)]
     pub readme: Option<PublishedAsset>,
-    #[serde(default)]
-    pub replaces: Vec<String>,
     pub latest: Version,
     pub versions: Vec<RegistryVersion>,
 }
