@@ -1,8 +1,15 @@
 # RTW packages
 
-There are currently no publishable packages. The experimental runtime, Portable
-UI, projection and durable-job adapters have been removed. Reusable native/WASM
-libraries live under `crates/` and do not emit placeholder RTWs.
+The experimental runtime, Portable UI, projection and durable-job adapters have
+been removed. Their P10 replacements are real packages, with local browser/protocol acceptance:
+
+- `web-runtime`: ordinary WASM provider for `rintawa.runtime.web-bundle@2`.
+- `web-ui`: React/Dockview shell, explicit World lifecycle and saved layouts.
+- `dice`: independent Canvas/queryable panel demonstrating the browser SDK.
+
+The web packages use the runtime provider; each has its own immutable RTW.
+Reusable native/WASM libraries live under `crates/`. Browser authoring code lives
+under `web/`; it is build-time code, rather than an extra installed service.
 
 A new independently versioned extension belongs in `packages/<slug>/`. Its real
 build must produce a valid RTW root before a release can be created. For example:

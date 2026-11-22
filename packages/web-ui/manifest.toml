@@ -1,0 +1,11 @@
+id = "rintawa.rtwkit.web-ui"
+name = "Rintawa"
+version = "0.1.0"
+sdk = "^0.0"
+[[components]]
+id = "shell"
+kind = "ui"
+target = "rintawa.runtime.web-bundle@2"
+entry = "web-bundle.toml"
+[components.permissions]
+runtime = ["background-task", "world-session-read", "world-session-write"]

@@ -1,0 +1,17 @@
+{
+  "name": "@rintawa/web-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@rintawa/bridge": "0.1.0",
+    "@rintawa/ui": "0.1.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "dockview-react": "8.9.1"
+  }
+}

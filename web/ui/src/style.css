@@ -1,0 +1,12 @@
+* { box-sizing: border-box; }
+html, body, #root { width: 100%; height: 100%; margin: 0; }
+body { background: var(--rtw-background, #13161d); color: var(--rtw-text, #eef1f7); font: 14px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
+button, input, select { font: inherit; }
+.rtw-button { color: var(--rtw-text); background: var(--rtw-surface); border: 1px solid var(--rtw-border); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+.rtw-button:hover { border-color: var(--rtw-accent); }
+.rtw-button:disabled { opacity: .45; cursor: default; }
+.rtw-button:focus-visible, .rtw-input:focus-visible, select:focus-visible { outline: 2px solid var(--rtw-accent); outline-offset: 2px; }
+.rtw-input { min-width: 0; color: var(--rtw-text); background: var(--rtw-background); border: 1px solid var(--rtw-border); border-radius: 5px; padding: 7px 10px; }
+.rtw-status { color: var(--rtw-muted); margin: 5px 0; font-size: 12px; overflow-wrap: anywhere; }
+.rtw-status.error { color: #d87870; }
+iframe { display: block; width: 100%; height: 100%; border: 0; background: var(--rtw-background); }

@@ -6,11 +6,12 @@ scoped transport, permissions and atomic World storage.
 
 ## Current status
 
-The experimental Portable UI/runtime stack has been retired. This checkout does
-not yet provide a runnable Web UI, World Manager, Character importer, Chat or AI
-runtime. Those packages must be implemented against the accepted D1–D8 contracts,
-starting with the browser bridge and shell in P10. There are no publishable RTW
-packages in `packages/` until their real implementations return.
+The experimental Portable UI/runtime stack has been retired. Its replacement is
+the P10 browser foundation: a sandboxed WASM web runtime, a browser SDK, a
+React/Dockview shell and an independent Dice panel. The browser foundation has
+local acceptance coverage; it does not yet provide Character import, Chat or an
+AI runtime.
+See [implementation and acceptance](docs/specs/p10-browser-bridge.md).
 
 Useful domain libraries are retained under `crates/`: Tavern JSON/PNG import and
 portrait binding, CharacterTemplate RTW encoding, package catalog/dependency
@@ -20,9 +21,11 @@ The machine-local `.vscode/` notes are historical and are not public requirement
 
 ## Development
 
-Use the toolchain in `rust-toolchain.toml` and run:
+Use the toolchain in `rust-toolchain.toml`, including `wasm32-unknown-unknown`,
+and Node.js 26. Install the pinned browser dependencies, then run:
 
 ```sh
+npm ci --ignore-scripts --no-audit --no-fund
 bash scripts/check.sh
 ```
 
@@ -30,6 +33,23 @@ bash scripts/check.sh
 public guest ABI. Do not introduce package-only Host imports or commit local path
 dependencies. Editor/agent notes, local `.cargo/config.toml`, build output and
 credentials are ignored. Dependencies can be checked offline when cached.
+
+Build a package locally through the registry tool, for example:
+
+```sh
+cargo run --locked -p rtwkit-registry-tool -- build-package \
+  . web-runtime /tmp/rtwkit-artifacts local/source pkg-web-runtime-v0.1.0 local-test
+```
+
+Repeat for `web-ui` and `dice`. To run the isolated Host/Chromium smoke, set
+`RINTAWA_BINARY` to the CLI built from the pinned Core revision and
+`RTWKIT_SMOKE_ARTIFACTS` to that directory, then run
+`node scripts/browser-smoke.mjs`. `python3 scripts/native-bridge-smoke.py`
+checks protocol isolation and multi-session logout with the same environment.
+Both install only into temporary homes and
+preserves redacted logs there. Chromium must be installed; the test requires
+local loopback sockets and uses headless Chromium with its OS sandbox disabled
+for test-environment compatibility. Application iframe sandbox/CSP remain enabled.
 
 ## Distribution
 

@@ -1,0 +1,27 @@
+{
+  "name": "rtwkit",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "web/*",
+    "packages/web-ui",
+    "packages/dice"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test:bridge": "node --test --test-isolation=none web/bridge/tests/*.test.mjs packages/web-ui/tests/*.test.mjs",
+    "build:bridge": "node scripts/build-browser-sdk.mjs",
+    "typecheck": "tsc --noEmit",
+    "build:web": "npm run build --workspace @rintawa/web-ui && npm run build --workspace @rintawa/dice"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vite": "8.3.8",
+    "@vitejs/plugin-react": "6.3.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/node": "26.6.6"
+  }
+}
