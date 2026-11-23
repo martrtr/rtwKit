@@ -7,16 +7,18 @@
     "packages/web-ui",
     "packages/dice",
     "packages/chat",
-    "packages/character"
+    "packages/character",
+    "packages/ai-provider",
+    "packages/settings-ui"
   ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "test:bridge": "node --test --test-isolation=none web/bridge/tests/*.test.mjs packages/web-ui/tests/*.test.mjs web/domain/tests/*.test.mjs",
+    "test:bridge": "node --test --test-isolation=none web/bridge/tests/*.test.mjs packages/web-ui/tests/*.test.mjs web/domain/tests/*.test.mjs web/ui/tests/*.test.mjs",
     "build:bridge": "node scripts/build-browser-sdk.mjs",
     "typecheck": "tsc --noEmit",
-    "build:web": "npm run build --workspace @rintawa/web-ui && npm run build --workspace @rintawa/dice && npm run build --workspace @rintawa/chat && npm run build --workspace @rintawa/character"
+    "build:web": "npm run build --workspace @rintawa/web-ui && npm run build --workspace @rintawa/dice && npm run build --workspace @rintawa/chat && npm run build --workspace @rintawa/character && npm run build --workspace @rintawa/ai-provider && npm run build --workspace @rintawa/settings-ui"
   },
   "devDependencies": {
     "typescript": "7.0.2",

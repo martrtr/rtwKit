@@ -309,3 +309,10 @@ mutations are read back by known IDs and never replayed automatically. Discovery
 paged; existing conversations are selectable, orphan Characters offer continuation.
 The default Chat drawer is collapsed and current conversation selection is stored
 under Chat UI's own fixed preference. No extra World table or durable job is added.
+
+
+## Narrator / AI runtime slice
+
+The owner-directed AI continuation is specified in [p10-narrator-ai.md](p10-narrator-ai.md).
+It adds a separate selected-Narrator assistant append command and AI settings; existing
+conversation/message property schemas and user append semantics remain unchanged.

@@ -70,3 +70,24 @@
 
 .workspace-menu {position:fixed;inset:44px 14px auto auto;margin:0;width:min(285px,calc(100vw - 28px));max-height:calc(100dvh - 60px);overflow:auto;padding:6px;border:1px solid var(--rtw-border);border-radius:9px;background:var(--rtw-raised);color:var(--rtw-text);box-shadow:0 12px 40px #0009;}
 .workspace-menu:popover-open {display:flex;flex-direction:column;gap:2px;}.workspace-menu > button{display:flex;align-items:center;gap:10px;flex-shrink:0;width:100%;border:0;border-radius:5px;background:transparent;color:inherit;padding:10px 11px;text-align:left;font:inherit;font-size:12px;cursor:pointer}.workspace-menu > button:hover,.workspace-menu > button:focus-visible{background:var(--rtw-hover);outline:0}.workspace-menu > button:disabled{opacity:.45;cursor:default}.workspace-menu .danger,.rtw-button.danger{color:var(--rtw-error)}.menu-divider{height:1px;background:var(--rtw-border);margin:5px 3px;flex-shrink:0}
+
+.settings-overlay .rtw-dialog { width: min(1100px, calc(100vw - 32px)); max-width: none; height: min(800px, calc(100dvh - 32px)); padding: 0; overflow: hidden; }
+.settings-overlay .rtw-dialog[open] { display: flex; flex-direction: column; }
+.settings-overlay .rtw-dialog > header { flex-shrink: 0; padding: 18px 24px; border-bottom: 1px solid var(--rtw-border); margin: 0; }
+.settings-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); flex: 1; min-height: 0; }
+.settings-navigation { display: flex; flex-direction: column; gap: 4px; padding: 24px 12px; background: var(--rtw-surface); border-right: 1px solid var(--rtw-border); overflow: auto; }
+.settings-navigation button { background: none; color: var(--rtw-muted); border: 0; border-radius: 5px; padding: 10px 12px; text-align: left; cursor: pointer; }
+.settings-navigation button[aria-current=page], .settings-navigation button:hover { background: var(--rtw-hover); color: var(--rtw-text); }
+.settings-content, .settings-extension { min-width: 0; min-height: 0; height: 100%; position: relative; }
+.settings-frame { height: 100%; }.settings-frame iframe { border: 0; width: 100%; height: 100%; }
+.settings-general { display: grid; gap: 16px; padding: 32px; max-width: 500px; }.settings-general h3 { margin: 0 0 16px; }.settings-general select { padding: 10px; }
+.settings-unavailable { position: absolute; inset: 0; padding: 32px; background: var(--rtw-background, #000); }
+@media (max-width: 650px) { .settings-layout { grid-template-columns: 130px minmax(0, 1fr); }.settings-navigation { padding: 16px 4px; }.settings-general { padding: 20px; }.settings-overlay .rtw-dialog { width: calc(100vw - 12px); height: calc(100dvh - 12px); } }
+
+.settings-notice { flex-shrink: 0; padding: 4px 24px; border-bottom: 1px solid var(--rtw-border); }
+
+.permission-choice { display: flex; align-items: center; gap: 10px; margin: 12px 0; font-size: 12px; }.permission-summary { padding-left: 20px; line-height: 1.8; overflow-wrap: anywhere; }
+
+.permission-artifact { font-size: 11px; overflow-wrap: anywhere; color: var(--rtw-muted); }
+
+.selected-surface{position:relative;min-width:0;min-height:0;height:100%;flex:1}.surface-frame,.surface-frame iframe{height:100%;width:100%;border:0;display:block}.surface-placeholder{position:absolute;inset:24px}.home-page{display:flex;flex-direction:column}.home-topbar{flex-shrink:0}.settings-overlay .selected-surface{min-height:0}

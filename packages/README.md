@@ -8,6 +8,8 @@ been removed. Their P10 replacements are real packages, with local browser/proto
 - `dice`: independent Canvas/queryable panel demonstrating the browser SDK.
 - `character`: World-local Tavern V2/V3 import, source CAS and portrait preview.
 - `chat`: persistent conversations/messages with an ordinary WASM/System owner.
+- `narrator`: bounded Character/history prompts and stale-context guarded assistant replies.
+- `ai-provider`: non-secret World settings and bounded HTTP/SSE generation.
 
 The web packages use the runtime provider; each has its own immutable RTW.
 Reusable native/WASM libraries live under `crates/`. Browser authoring code lives
@@ -45,3 +47,11 @@ installation must never execute source build scripts.
 Tag `pkg-<slug>-v<version>` publishes stable asset names `<slug>.rtw` and
 `<slug>.registry.json`. The tag, version and digest identify immutable bytes;
 do not reuse the removed experimental releases' version coordinates.
+
+
+Embedded surfaces use `launchable = false` and ordinary opaque declarative
+`[[contributions]]` point/payload entries, not a settings flag. UI protocols and
+bounded nested mounting are specified in docs/specs/p10-browser-bridge.md. A
+JS-only contribution is published before its iframe opens; dynamic contributions
+may still use the existing polled transport. Renderer selection uses the same
+provided-contract mechanism as other extensions, without priority-based authority.

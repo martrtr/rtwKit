@@ -2,7 +2,7 @@
 """Build the offline Text Roleplay template from exact local RTWs.
 
 This recipe starts Character's welcome UI, imports a card and opens its linked
-Chat. AI replies remain a subsequent checkpoint.
+Chat, Narrator and a configurable AI Provider.
 """
 
 import argparse
@@ -20,8 +20,13 @@ SOURCES = (
     ("chat", "rintawa.rtwkit.chat"),
     ("character", "rintawa.rtwkit.character"),
     ("web-runtime", "rintawa.rtwkit.web-runtime"),
+    ("narrator", "rintawa.rtwkit.narrator"),
+    ("ai-provider", "rintawa.rtwkit.ai-provider"),
+    ("settings-ui", "rintawa.rtwkit.settings-ui"),
 )
-DOMAIN = ("chat", "character")
+DOMAIN = ("chat", "character", "narrator", "ai-provider")
+CONTRACTS = {"chat":"rintawa.chat", "character":"rintawa.character", "narrator":"rintawa.narrator", "ai-provider":"rintawa.inference.text"}
+POINTS = {"chat":"rintawa/chat/v1", "character":"rintawa/character/v1", "narrator":"rintawa/narrator/v1", "ai-provider":"rintawa/inference/v1"}
 
 
 def archive_entry(name: str, data: bytes) -> tuple[zipfile.ZipInfo, bytes]:
@@ -69,11 +74,14 @@ def descriptor(artifacts: Path) -> tuple[dict, dict[str, bytes]]:
     grants = []
     embedded = []
     files = {}
-    for slug in DOMAIN:
+    for slug in (*DOMAIN, "settings-ui"):
         data, manifest = packages[slug]
         digest = "sha256:" + hashlib.sha256(data).hexdigest()
-        parts = [("backend", "rintawa.runtime.wasm-component@1"),
-                 ("ui", "rintawa.runtime.web-bundle@2")]
+        parts = [("settings", "rintawa.runtime.web-bundle@2"), ("appearance", "rintawa.runtime.web-bundle@2")] if slug == "settings-ui" else [("backend", "rintawa.runtime.wasm-component@1")]
+        if slug in ("chat", "character"):
+            parts.append(("ui", "rintawa.runtime.web-bundle@2"))
+        if slug == "ai-provider":
+            parts.append(("settings", "rintawa.runtime.web-bundle@2"))
         if slug == "character":
             parts.append(("story", "rintawa.runtime.web-bundle@2"))
         for component_id, target in parts:
@@ -97,13 +105,15 @@ def descriptor(artifacts: Path) -> tuple[dict, dict[str, bytes]]:
     files[runtime_path] = web_runtime
     composition = {
         "preferredProviders": [
-            {"contractId": f"rintawa.{slug}", "contractVersion": 1,
+            {"contractId": CONTRACTS[slug], "contractVersion": 1,
              "provider": {"slot": slug, "componentId": "backend"}}
             for slug in DOMAIN
         ] + [{"contractId":"rintawa.roleplay.workflow","contractVersion":1,
-              "provider":{"slot":"character","componentId":"story"}}],
+              "provider":{"slot":"character","componentId":"story"}},
+             {"contractId":"rintawa.ui.settings.renderer","contractVersion":1,"provider":{"slot":"settings-ui","componentId":"settings"}},
+             {"contractId":"rintawa.ui.appearance","contractVersion":1,"provider":{"slot":"settings-ui","componentId":"appearance"}}],
         "authoritativeProviders": [
-            {"point": f"rintawa/{slug}/v1",
+            {"point": POINTS[slug],
              "provider": {"slot": slug, "componentId": "backend"}}
             for slug in DOMAIN
         ],
@@ -112,7 +122,7 @@ def descriptor(artifacts: Path) -> tuple[dict, dict[str, bytes]]:
     result = {
         "format": 1,
         "name": "Text Roleplay",
-        "description": "A character-first story with independent Characters and Chat.",
+        "description": "A character-first story with independent Characters, Chat, Narrator and configurable AI.",
         "components": slots,
         "composition": composition,
         "entry": {"slot": "character", "componentId": "story"},
@@ -154,7 +164,7 @@ def build(artifacts: Path, output: Path) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-    print(f"{output} (Text Roleplay, no AI replies)")
+    print(f"{output} (Text Roleplay, configurable AI replies)")
     for slot in document["components"]:
         print(f"  {slot['packageId']} sourceVersion={slot['version']} artifact={slot['artifact']}")
 

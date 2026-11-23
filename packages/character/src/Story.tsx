@@ -3,7 +3,7 @@ import { BridgeError, type Client, type ResourceRef, type ViewState } from '@rin
 import { DomainClient, DomainError, type Operation } from '@rintawa/domain';
 import { Button, Icon, Status } from '@rintawa/ui';
 
-type Card = { id: string; card: { name: string } };
+type Card = { id: string; card: { name: string }; greeting: { text: string | null; error: string | null } };
 type Conversation = { id: string; conversation: { title: string; characterId: string | null } };
 type Page<T> = { items: T[]; next: string | null };
 const uuid = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
@@ -79,13 +79,21 @@ export function Story({ client }: { client: Client }) {
     const result = await domain.wait(operation, abort.current.signal); active.current = null;
     return result;
   };
-  const createChat = async (card: Card, knownId?: string) => {
+  const createChat = async (card: Card, knownId?: string, skipGreeting = false) => {
     const [conversationId] = knownId ? [knownId] : await chat.current.allocate(1);
+    const current = await character.current.request<Card>('get', { itemId: card.id });
+    if (current.greeting.error && !skipGreeting) throw new Error('Character imported, but its greeting exceeds the message limit. No Chat was created.');
+    let greeting: { messageId: string; entryId: string; text: string } | undefined;
+    if (current.greeting.text && !skipGreeting) {
+      const text = current.greeting.text.replace(/\{\{(char|user)\}\}/g, (_, key) => key === 'char' ? current.card.name : 'You');
+      const [messageId, entryId] = await chat.current.allocate(2);
+      greeting = { messageId, entryId, text };
+    }
     await save({ characterId: card.id, conversationId, phase: 'creating' });
     let sent = false; let terminal = false;
     try {
       sent = true;
-      const operation = await chat.current.begin('begin-create', { conversationId, characterId: card.id, title: card.card.name });
+      const operation = await chat.current.begin('begin-create', { conversationId, characterId: card.id, title: card.card.name, ...(greeting ? { greeting } : {}) });
       const result = await wait(chat.current, operation);
       terminal = result.status !== 'unknown';
       if (result.status === 'failed') {
@@ -133,7 +141,7 @@ export function Story({ client }: { client: Client }) {
     <h1>{recovery ? recovery.card.name : conversations.length ? 'Continue your story' : 'Import a character'}</h1>
     {!recovery && !conversations.length && <p>Tavern V2 / V3 · PNG or JSON</p>}
     {!ready && <Status>Connecting…</Status>}{busy && <Status>Working…</Status>}{error && <Status error>{error}</Status>}{notice && <Status>{notice}</Status>}
-    {recovery && <Button className="primary" disabled={busy || !ready || uncertain} onClick={() => void perform(() => createChat(recovery))}>Continue to chat</Button>}
+    {recovery && <Button className="primary" disabled={busy || !ready || uncertain} onClick={() => void perform(() => createChat(recovery, undefined, !!recovery.greeting.error))}>{recovery.greeting.error ? 'Start without greeting' : 'Continue to chat'}</Button>}
     {uncertain && <Button disabled={busy} onClick={() => void perform(discover)}>Read World</Button>}
     {!!conversations.length && <div className="story-choices">{conversations.map(row => <Button key={row.id} disabled={busy} onClick={() => void perform(() => open(row.id))}><Icon name="chat" size={16} />{row.conversation.title}</Button>)}</div>}
     {!recovery && cards.filter(card => !conversations.some(row => row.conversation.characterId === card.id)).map(card => <Button key={card.id} disabled={busy || uncertain} onClick={() => void perform(() => createChat(card))}>Continue with {card.card.name}</Button>)}

@@ -1,0 +1,11 @@
+schema = 2
+[package]
+id = "rintawa.rtwkit.narrator"
+name = "Narrator"
+version = "0.1.0"
+description = "World-scoped Narrator for bounded story generation"
+license = "GPL-3.0-only"
+authors = ["martrtr"]
+[build]
+artifact-root = "build/rtw"
+command = ["bash", "build.sh"]

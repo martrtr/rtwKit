@@ -94,3 +94,13 @@ test('a cancelled pending mount never inserts an iframe or disconnects other vie
     assert.equal(created,0);assert.equal(closed,0);assert.deepEqual(calls,['ui.list','ui.mount','ui.unmount']);
   } finally {bridge.disconnect();globalThis.window=prior;}
 });
+
+test('sourced polling preserves native principal and never obtains identity from payload', async () => {
+  const calls=[];const provider={instanceId:'a',componentId:'view',activation:'7'};
+  const payload=new TextEncoder().encode('{"instanceId":"forged","title":"Example"}');
+  const client=new Client(async(method,args)=>{calls.push([method,args]);if(method==='transport.begin-query')return '8';return [{provider,payload:encodeBytes(payload)}];});
+  const replies=await client.querySourced('extension/sections',new Uint8Array());
+  assert.deepEqual(replies,[{provider,payload}]);
+  assert.deepEqual(calls.map(([method])=>method),['transport.begin-query','transport.poll-query-sourced']);
+  client.dispose();
+});

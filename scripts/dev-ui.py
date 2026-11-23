@@ -12,7 +12,7 @@ import tempfile
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--core', default=os.environ.get('RINTAWA_BINARY'), help='Core CLI binary (or set RINTAWA_BINARY)')
-parser.add_argument('--artifacts', type=Path, required=True, help='directory containing web-runtime.rtw, web-ui.rtw and TextRoleplay.rtw')
+parser.add_argument('--artifacts', type=Path, required=True, help='directory containing web-runtime.rtw, web-ui.rtw, settings-ui.rtw, ai-provider.rtw and TextRoleplay.rtw')
 parser.add_argument('--home', type=Path, help='nonexistent or empty directory (default: new temporary directory)')
 args = parser.parse_args()
 if not args.core:
@@ -24,7 +24,9 @@ core = str(Path(core).resolve())
 artifacts = args.artifacts.resolve()
 packages = {
     'web-runtime': {'runtime': ['background-task', 'loopback-listen']},
-    'web-ui': {'shell': ['background-task', 'world-session-read', 'world-session-write']},
+    'web-ui': {'shell': ['background-task', 'world-session-read', 'world-session-write', 'runtime-policy-write'], 'home': ['background-task', 'world-session-read']},
+    'settings-ui': {'settings': ['background-task'], 'appearance': ['background-task']},
+    'ai-provider': {'backend': ['background-task'], 'settings': ['background-task']},
 }
 for name in (*packages, 'TextRoleplay'):
     if not (artifacts / f'{name}.rtw').is_file():

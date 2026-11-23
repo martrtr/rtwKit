@@ -28,6 +28,10 @@
     "packages/chat/**/*.ts",
     "packages/chat/**/*.tsx",
     "packages/character/**/*.ts",
-    "packages/character/**/*.tsx"
+    "packages/character/**/*.tsx",
+    "packages/ai-provider/**/*.ts",
+    "packages/ai-provider/**/*.tsx",
+    "packages/settings-ui/**/*.ts",
+    "packages/settings-ui/**/*.tsx"
   ]
 }

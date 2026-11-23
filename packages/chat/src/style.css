@@ -27,3 +27,7 @@
 .chat.navigation-closed { grid-template-columns: minmax(0, 1fr); }.chat.navigation-closed > .conversation-sidebar { display: none; }.navigation-closed .navigation-toggle { display: flex; }
 @media (max-width: 800px) { .chat { grid-template-columns: 210px minmax(0, 1fr); }.thread-header { padding: 0 18px; }.message-column { padding: 16px 20px; }.composer-area { padding: 0 18px 12px; } }
 @media (max-width: 560px) { .chat { grid-template-columns: 170px minmax(0, 1fr); }.conversation-topbar { padding: 0 12px; }.conversation-search { margin: 13px 9px; }.conversation-search input { font-size: 10px; }.message-column { padding: 12px; }.thread-header { padding: 0 12px; }.composer-area { padding: 0 12px 10px; }.new-conversation-button { margin: 9px; font-size: 11px; }.navigation-toggle { display: flex; }.chat-empty { padding: 20px; }.chat-empty h2 { font-size: 20px; }.conversation-start h2 { font-size: 22px; } }
+
+.ai-setup { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+
+.composer-contributions{display:flex;gap:5px;align-items:center}.composer-contributions>button{font-size:11px;padding:6px 9px}.composer-contributions>[role=alert]{font-size:10px;max-width:130px}

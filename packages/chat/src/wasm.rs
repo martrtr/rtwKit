@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::model::{self, Append, Conversation, Create};
+use crate::model::{self, Append, AssistantAppend, Conversation, Create};
 wit_bindgen::generate!({ path: "../../wit", world: "domain-plugin" });
 use rintawa::engine::{
     host, registration, runtime_context, runtime_tasks, transport, world_data, world_registration,
@@ -50,11 +50,21 @@ enum Call {
         title: String,
         #[serde(default)]
         character_id: Option<Uuid>,
+        #[serde(default)]
+        greeting: Option<model::Greeting>,
     },
     BeginSend {
         conversation_id: Uuid,
         message_id: Uuid,
         entry_id: Uuid,
+        text: String,
+    },
+    BeginAssistantAppend {
+        conversation_id: Uuid,
+        message_id: Uuid,
+        entry_id: Uuid,
+        user_message_id: Uuid,
+        expected_last_entry_id: Uuid,
         text: String,
     },
     Status {
@@ -95,6 +105,14 @@ fn selected(context: &runtime_context::Context) -> bool {
 }
 fn workflow(principal: &runtime_context::Principal) -> bool {
     runtime_context::selected_providers("rintawa.roleplay.workflow", 1).is_ok_and(|providers| {
+        providers.len() == 1
+            && providers[0].instance_id == principal.instance_id
+            && providers[0].component_id == principal.component_id
+            && providers[0].activation == principal.activation
+    })
+}
+fn narrator(principal: &runtime_context::Principal) -> bool {
+    runtime_context::selected_providers("rintawa.narrator", 1).is_ok_and(|providers| {
         providers.len() == 1
             && providers[0].instance_id == principal.instance_id
             && providers[0].component_id == principal.component_id
@@ -273,6 +291,8 @@ impl State {
             "messageId",
             "entryId",
             "characterId",
+            "userMessageId",
+            "expectedLastEntryId",
             "after",
             "before",
         ] {
@@ -280,6 +300,15 @@ impl State {
                 && !Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == *id)
             {
                 return Err("invalid-request");
+            }
+        }
+        if let Some(greeting) = value.get("greeting") {
+            for key in ["messageId", "entryId"] {
+                if let Some(Value::String(id)) = greeting.get(key)
+                    && !Uuid::parse_str(id).is_ok_and(|u| u.to_string() == *id)
+                {
+                    return Err("invalid-request");
+                }
             }
         }
         // Parse the original bytes so duplicate fields remain errors.
@@ -315,7 +344,7 @@ impl State {
                 Ok(Value::Null)
             }
             Call::Allocate { count } => {
-                if !own_ui && !workflow(principal) {
+                if !own_ui && !workflow(principal) && !narrator(principal) {
                     return Err("access-denied");
                 }
                 if !(1..=3).contains(&count) {
@@ -327,6 +356,7 @@ impl State {
                 conversation_id,
                 title,
                 character_id,
+                greeting,
             } => {
                 if !own_ui && !workflow(principal) {
                     return Err("access-denied");
@@ -335,13 +365,40 @@ impl State {
                     conversation_id,
                     title,
                     character_id,
+                    greeting,
                 };
-                model::create_changes(&input, false, true)?;
+                model::create_changes(&input, false, true, false)?;
                 self.begin(
                     who,
                     "rintawa.chat.create@1",
                     serde_json::to_value(input).map_err(|_| "invalid-request")?,
                     vec![conversation_id.to_string()],
+                )
+            }
+            Call::BeginAssistantAppend {
+                conversation_id,
+                message_id,
+                entry_id,
+                user_message_id,
+                expected_last_entry_id,
+                text,
+            } => {
+                if !narrator(principal) {
+                    return Err("access-denied");
+                }
+                let input = AssistantAppend {
+                    conversation_id,
+                    message_id,
+                    entry_id,
+                    user_message_id,
+                    expected_last_entry_id,
+                    text,
+                };
+                self.begin(
+                    who,
+                    "rintawa.chat.assistant-append@1",
+                    serde_json::to_value(input).map_err(|_| "invalid-request")?,
+                    vec![message_id.to_string(), entry_id.to_string()],
                 )
             }
             Call::BeginSend {
@@ -476,7 +533,70 @@ impl exports::rintawa::engine::world_system::Guest for Chat {
                         None => true,
                         Some(id) => system_item(id)?.is_some_and(|item| item["kind"] == "object"),
                     };
-                    model::create_changes(&input, exists, character_object).map_err(str::to_owned)
+                    let greeting_exists = match &input.greeting {
+                        None => false,
+                        Some(g) => {
+                            system_item(g.message_id)?.is_some()
+                                || system_item(g.entry_id)?.is_some()
+                        }
+                    };
+                    model::create_changes(&input, exists, character_object, greeting_exists)
+                        .map_err(str::to_owned)
+                }
+                Some("rintawa.chat.assistant-append@1") => {
+                    let input: AssistantAppend =
+                        serde_json::from_value(envelope["payload"].clone())
+                            .map_err(|_| "invalid-command")?;
+                    if !system_item(input.conversation_id)?.is_some_and(|v| v["kind"] == "object")
+                        || !system_item(input.user_message_id)?
+                            .is_some_and(|v| v["kind"] == "object")
+                    {
+                        return Err("stale-context".into());
+                    }
+                    let value = world_system_snapshot::load_property(
+                        &input.conversation_id.to_string(),
+                        CONVERSATION,
+                    )
+                    .map_err(|_| "snapshot-unavailable")?
+                    .ok_or("not-found")?;
+                    let conversation: Conversation =
+                        serde_json::from_value(property_data(value).map_err(str::to_owned)?)
+                            .map_err(|_| "invalid-stored-data")?;
+                    let boundary = system_item(input.expected_last_entry_id)?.and_then(|row| {
+                        if row["kind"] != "relation" {
+                            return None;
+                        }
+                        Some((
+                            Uuid::parse_str(row["subject"].as_str()?).ok()?,
+                            Uuid::parse_str(row["object"].as_str()?).ok()?,
+                            true,
+                        ))
+                    });
+                    let entry_tag = world_system_snapshot::load_property(
+                        &input.expected_last_entry_id.to_string(),
+                        ENTRY,
+                    )
+                    .map_err(|_| "snapshot-unavailable")?
+                    .is_some();
+                    let boundary =
+                        boundary.map(|(subject, object, _)| (subject, object, entry_tag));
+                    let user = world_system_snapshot::load_property(
+                        &input.user_message_id.to_string(),
+                        MESSAGE,
+                    )
+                    .map_err(|_| "snapshot-unavailable")?
+                    .map(property_data)
+                    .transpose()
+                    .map_err(str::to_owned)?;
+                    model::assistant_changes(
+                        &input,
+                        &conversation,
+                        boundary,
+                        user.as_ref().and_then(|v| v["role"].as_str()),
+                        system_item(input.message_id)?.is_some(),
+                        system_item(input.entry_id)?.is_some(),
+                    )
+                    .map_err(str::to_owned)
                 }
                 Some("rintawa.chat.append@1") => {
                     let input: Append = serde_json::from_value(envelope["payload"].clone())

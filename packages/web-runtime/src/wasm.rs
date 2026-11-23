@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 use std::{cell::RefCell, collections::HashMap};
 
 use crate::{
+    descriptor::{Contribution, Descriptor},
     http,
     layout::{LAYOUT_KEY, Layout, RestoreKey},
     session::{Owner, ResourceKind as Kind, Resources, Sessions},
@@ -14,31 +15,95 @@ wit_bindgen::generate!({ path:"../../wit",world:"runtime-provider-task-plugin" }
 use exports::rintawa::engine::target_provider::{ComponentDescriptor, Error as TargetError};
 use rintawa::engine::{
     asset_store, execution_targets, host, network, preferences, registration, runtime_context,
-    runtime_tasks, transport, user_resources, world_sessions,
+    runtime_policy, runtime_tasks, transport, user_resources, world_sessions,
 };
 const TARGET: &str = "rintawa.runtime.web-bundle@2";
 const CACHE_BYTES: usize = 16 * 1024 * 1024;
 const BUFFER_BYTES: usize = 4 * 1024 * 1024;
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct ProvidedContract {
-    id: String,
-    version: u32,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct Descriptor {
-    entry: String,
-    title: String,
-    #[serde(default)]
-    host_shell: bool,
-    #[serde(default)]
-    provides: Vec<ProvidedContract>,
-}
+const HOST_SHELL_CONTRACT: &str = "rintawa.host.shell";
+const CONTRIBUTION_RETRY_MS: u64 = 1_000;
 struct Bound {
     owner: Owner,
     id: String,
     shell: bool,
+    selected: Vec<bool>,
+    publications: Vec<Publication>,
+}
+#[derive(Default)]
+struct Publication {
+    queryable: Option<u64>,
+    reply: Option<u64>,
+    retry_at: u64,
+    failure: Option<String>,
+}
+
+impl Publication {
+    fn failed(&mut self, contribution: &Contribution, time: u64, error: transport::Error) {
+        let error: Failure = error.into();
+        if self.failure.as_deref() != Some(&error.code) {
+            host::log(
+                host::LogLevel::Warn,
+                &format!(
+                    "Cannot publish web contribution {}: {}",
+                    contribution.point, error.code,
+                ),
+            );
+            self.failure = Some(error.code);
+        }
+        self.retry_at = time.saturating_add(CONTRIBUTION_RETRY_MS);
+    }
+
+    // Admit or handle one request per declaration per tick, within the owner's task.
+    fn tick(&mut self, contribution: &Contribution, time: u64) {
+        if time < self.retry_at {
+            return;
+        }
+        let Some(queryable) = self.queryable else {
+            match transport::declare_polled(&contribution.point) {
+                Ok(handle) => self.queryable = Some(handle),
+                Err(error) => self.failed(contribution, time, error),
+            }
+            return;
+        };
+
+        if self.reply.is_none() {
+            match transport::next_query(queryable) {
+                Ok(query) => {
+                    self.failure = None;
+                    self.reply = query.map(|query| query.handle);
+                }
+                Err(error) => {
+                    match error {
+                        transport::Error::InvalidHandle => self.queryable = None,
+                        // Unavailable also reports lock contention. Confirm it
+                        // persists before closing and retrying registration.
+                        transport::Error::Unavailable
+                            if self.failure.as_deref() == Some("unavailable") =>
+                        {
+                            if matches!(
+                                transport::close_queryable(queryable),
+                                Ok(()) | Err(transport::Error::InvalidHandle)
+                            ) {
+                                self.queryable = None;
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.failed(contribution, time, error);
+                    return;
+                }
+            }
+        }
+
+        if let Some(handle) = self.reply {
+            match transport::reply_query(handle, Some(contribution.payload.as_bytes())) {
+                // Retry admission if the native transport is busy. Core expires
+                // checked-out requests and owns all cleanup on activation stop.
+                Err(transport::Error::Unavailable | transport::Error::LimitExceeded) => {}
+                _ => self.reply = None,
+            }
+        }
+    }
 }
 struct Bundle {
     descriptor: Descriptor,
@@ -81,7 +146,7 @@ fn fresh() -> Result<String, &'static str> {
 fn now() -> Result<u64, &'static str> {
     host::monotonic_millis().map_err(|_| "unavailable")
 }
-fn context() -> Result<Owner, &'static str> {
+fn owner_context() -> Result<Owner, &'static str> {
     let current = runtime_context::current().map_err(|_| "access-not-active")?;
     Ok(Owner {
         key: RestoreKey {
@@ -92,14 +157,29 @@ fn context() -> Result<Owner, &'static str> {
         activation: current.principal.activation,
     })
 }
+fn matches_owner(owner: &Owner, provider: &runtime_context::Principal) -> bool {
+    provider.instance_id == owner.key.instance_id
+        && provider.component_id == owner.key.component_id
+        && provider.activation == owner.activation
+}
+fn selected_provider(owner: &Owner, id: &str, version: u32) -> bool {
+    runtime_context::selected_providers(id, version).is_ok_and(|providers| {
+        providers
+            .iter()
+            .any(|provider| matches_owner(owner, provider))
+    })
+}
 fn selected_shell(owner: &Owner) -> bool {
     owner.key.world_id.is_none()
-        && runtime_context::selected_providers("rintawa.host.shell", 1).is_ok_and(|providers| {
-            providers.len() == 1
-                && providers[0].instance_id == owner.key.instance_id
-                && providers[0].component_id == owner.key.component_id
-                && providers[0].activation == owner.activation
-        })
+        && runtime_context::selected_providers(HOST_SHELL_CONTRACT, 1)
+            .is_ok_and(|providers| matches!(providers.as_slice(), [provider] if matches_owner(owner, provider)))
+}
+fn principal_json(principal: &runtime_context::Principal) -> Value {
+    json!({
+        "instanceId": principal.instance_id,
+        "componentId": principal.component_id,
+        "activation": Handle(principal.activation),
+    })
 }
 impl exports::rintawa::engine::guest::Guest for Runtime {
     fn register() {}
@@ -145,13 +225,7 @@ impl exports::rintawa::engine::target_provider::Guest for Runtime {
             )
             .map_err(|_| TargetError::InvalidDescriptor)?;
         let bytes = source.read(&path).map_err(|_| TargetError::Unavailable)?;
-        let descriptor: Descriptor = toml::from_str(
-            std::str::from_utf8(&bytes).map_err(|_| TargetError::InvalidDescriptor)?,
-        )
-        .map_err(|_| TargetError::InvalidDescriptor)?;
-        if descriptor.title.trim().is_empty() || descriptor.title.chars().count() > 128 {
-            return Err(TargetError::InvalidDescriptor);
-        }
+        let descriptor = Descriptor::parse(&bytes).map_err(|_| TargetError::InvalidDescriptor)?;
         let entry = source
             .resolve_relative(&path, &descriptor.entry)
             .map_err(|_| TargetError::InvalidDescriptor)?;
@@ -209,9 +283,6 @@ impl exports::rintawa::engine::target_provider::Guest for Runtime {
                 .bundles
                 .get(&handle)
                 .ok_or(TargetError::UnknownComponent)?;
-            if bundle.descriptor.provides.len() > 8 {
-                return Err(TargetError::InvalidDescriptor);
-            }
             for contract in &bundle.descriptor.provides {
                 registration::define_contract(
                     &contract.id,
@@ -223,7 +294,7 @@ impl exports::rintawa::engine::target_provider::Guest for Runtime {
                     .map_err(|_| TargetError::Rejected)?;
             }
             if bundle.descriptor.host_shell {
-                registration::provide_contract("rintawa.host.shell", 1, &[])
+                registration::provide_contract(HOST_SHELL_CONTRACT, 1, &[])
                     .map_err(|_| TargetError::Rejected)?;
             }
             Ok(())
@@ -274,11 +345,11 @@ impl exports::rintawa::engine::task_handler::Guest for Runtime {
             else {
                 return;
             };
-            let Ok(owner) = context() else {
+            let Ok(owner) = owner_context() else {
                 return;
             };
-            let is_shell = state.bundles[&handle].descriptor.host_shell && selected_shell(&owner);
             let bundle = state.bundles.get_mut(&handle).unwrap();
+            let is_shell = bundle.descriptor.host_shell && selected_shell(&owner);
             if bundle
                 .bound
                 .as_ref()
@@ -291,9 +362,31 @@ impl exports::rintawa::engine::task_handler::Guest for Runtime {
                     owner: owner.clone(),
                     id,
                     shell: is_shell,
+                    selected: Vec::with_capacity(bundle.descriptor.provides.len()),
+                    publications: bundle
+                        .descriptor
+                        .contributions
+                        .iter()
+                        .map(|_| Publication::default())
+                        .collect(),
                 });
-            } else {
-                bundle.bound.as_mut().unwrap().shell = is_shell;
+            }
+            let bound = bundle.bound.as_mut().unwrap();
+            bound.shell = is_shell;
+            bound.selected.clear();
+            bound.selected.extend(
+                bundle
+                    .descriptor
+                    .provides
+                    .iter()
+                    .map(|contract| selected_provider(&owner, &contract.id, contract.version)),
+            );
+            for (publication, contribution) in bound
+                .publications
+                .iter_mut()
+                .zip(&bundle.descriptor.contributions)
+            {
+                publication.tick(contribution, time);
             }
             state.cleanup(&owner);
             let mut channels: Vec<_> = state
@@ -388,6 +481,14 @@ host_errors!(world_sessions::Error, {
     LimitExceeded => "limit-exceeded", MessageTooLarge => "message-too-large",
     Rejected => "rejected", Unavailable => "unavailable",
 });
+host_errors!(runtime_context::Error, {
+    AccessNotActive => "access-not-active", Unavailable => "unavailable", Rejected => "rejected",
+});
+host_errors!(runtime_policy::Error, {
+    AccessNotActive => "access-not-active", PermissionDenied => "permission-denied",
+    InvalidPermission => "invalid-permission", NotFound => "not-found",
+    MessageTooLarge => "message-too-large", Rejected => "rejected", Unavailable => "unavailable",
+});
 host_errors!(preferences::Error, {
     AccessNotActive => "access-not-active", InvalidPreference => "invalid-preference",
     MessageTooLarge => "message-too-large", QuotaExceeded => "quota-exceeded",
@@ -433,6 +534,9 @@ impl State {
             .bundles
             .get_mut(&handle)
             .ok_or(TargetError::UnknownComponent)?;
+        // Core's target stop revokes the dependent activation and closes its
+        // polled declarations and queued requests. The stop callback itself
+        // has no admitted transport context for the dependent.
         let owner = bundle.bound.take().map(|b| b.owner);
         bundle.task = None;
         if let Some(owner) = owner {
@@ -519,6 +623,23 @@ impl State {
                 if !matches!(result,Ok(None)) {resources.remove(Kind::Query,h);}
                 match result? {None=>Value::Null,Some(values)=>json!(values.iter().map(|b|wire::encode_bytes(b)).collect::<Vec<_>>())}
             }
+            Call::PollQuerySourced(h)=> {
+                let h=require(resources,Kind::Query,*h)?;
+                let result=host_result(transport::poll_query_sourced(h));
+                if !matches!(result,Ok(None)) {resources.remove(Kind::Query,h);}
+                match result? {
+                    None=>Value::Null,
+                    Some(replies)=>json!(replies.iter().map(|reply| json!({
+                        "provider": principal_json(&reply.provider),
+                        "payload": wire::encode_bytes(&reply.payload),
+                    })).collect::<Vec<_>>()),
+                }
+            }
+            Call::CurrentContext=> {
+                let current=host_result(runtime_context::current())?;
+                json!({"scopeId":current.scope_id,"worldId":current.world_id,"principal":principal_json(&current.principal)})
+            }
+            Call::SelectedProviders{id,version}=>json!(host_result(runtime_context::selected_providers(id,*version))?.iter().map(principal_json).collect::<Vec<_>>()),
             Call::CloseQuery(h)=>{let h=require(resources,Kind::Query,*h)?;host_result(transport::close_query(h))?;resources.remove(Kind::Query,h);Value::Null}
             Call::DeclarePolled(point)=>{let h=host_result(transport::declare_polled(point))?;resources.insert(Kind::Queryable,h,None);json!(Handle(h))}
             Call::NextQuery(queryable)=> {
@@ -571,6 +692,7 @@ impl State {
             Call::ListTemplates=>serde_json::from_str(&host_result(world_sessions::list_templates())?).map_err(|_|Failure::reject("invalid-stored-data"))?,
             Call::TemplateInfo(digest)=>serde_json::from_str(&host_result(world_sessions::template_info(digest))?).map_err(|_|Failure::reject("invalid-stored-data"))?,
             Call::CreateFromTemplate {digest,title,approve_runtime_permissions}=>summary(host_result(world_sessions::create_from_template(digest,title,*approve_runtime_permissions))?),
+            Call::CreateFromTemplateWithPermissions(request)=>summary(host_result(world_sessions::create_from_template_with_permissions(request))?),
             Call::WorldEntry(id)=>host_result(world_sessions::entry(id))?.map(|entry|json!({"instanceId":entry.instance_id,"componentId":entry.component_id})).unwrap_or(Value::Null),
             Call::GetViewState=>match host_result(preferences::get("rintawa.ui.state.v1"))? {
                 Some(text) if text.len() <= 1024=>serde_json::from_str::<Value>(&text).map_err(|_|Failure::reject("invalid-stored-data"))?,
@@ -580,9 +702,29 @@ impl State {
             Call::SetMetadata {world_id,title,description,cover}=>summary(host_result(world_sessions::set_metadata(world_id,title,description.as_deref(),cover.clone().map(asset).as_ref()))?),
             Call::DeleteWorld(id)=>{host_result(world_sessions::delete(id))?;Value::Null}
             Call::SetActive {world_id,active}=>{host_result(world_sessions::set_active(world_id,*active))?;Value::Null}
-            Call::ListUi=>json!(self.bundles.values().filter_map(|b|b.bound.as_ref().map(|bound|json!({"id":bound.id,"title":b.descriptor.title,"worldId":bound.owner.key.world_id,"restoreKey":bound.owner.key}))).collect::<Vec<_>>()),
+            Call::LivePolicy{scope_id,instance_id,component_id}=>serde_json::from_str(&host_result(runtime_policy::live_component_policy(scope_id,instance_id,component_id))?).map_err(|_|Failure::reject("invalid-stored-data"))?,
+            Call::ApplyLivePolicy(change)=>{host_result(runtime_policy::apply_live_change(change))?;Value::Null}
+            Call::GrantHttpOrigin {scope_id,instance_id,component_id,origin}=>{host_result(runtime_policy::grant_http_origin(scope_id,instance_id,component_id,origin))?;Value::Null}
+            Call::ListUi=>json!(self.bundles.values().filter_map(|bundle| {
+                let bound=bundle.bound.as_ref()?;
+                let mut provides: Vec<_> = bundle.descriptor.provides.iter().zip(&bound.selected)
+                    .map(|(contract, selected)| json!({"id":contract.id,"version":contract.version,"selected":selected}))
+                    .collect();
+                if bundle.descriptor.host_shell {
+                    provides.push(json!({"id": HOST_SHELL_CONTRACT, "version":1, "selected":bound.shell}));
+                }
+                Some(json!({
+                    "id": bound.id,
+                    "title": bundle.descriptor.title,
+                    "activation": Handle(bound.owner.activation),
+                    "launchable": bundle.descriptor.launchable && !bundle.descriptor.host_shell,
+                    "provides": provides,
+                    "worldId": bound.owner.key.world_id,
+                    "restoreKey": bound.owner.key,
+                }))
+            }).collect::<Vec<_>>()),
             Call::Mount(id)=> {
-                let bundle=self.bundles.values().find(|b|b.bound.as_ref().is_some_and(|bound|bound.id==*id)).ok_or_else(||Failure::reject("unavailable"))?;
+                let bundle=self.bundles.values().find(|b|!b.descriptor.host_shell && b.bound.as_ref().is_some_and(|bound|bound.id==*id)).ok_or_else(||Failure::reject("unavailable"))?;
                 let bound=bundle.bound.as_ref().unwrap();let bound_owner=bound.owner.clone();
                 let url=format!("/bundle/{}/{entry}",bound.id,entry=url_path(&bundle.entry));
                 let channel=fresh().map_err(Failure::reject)?;

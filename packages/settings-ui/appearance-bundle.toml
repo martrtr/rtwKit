@@ -1,0 +1,9 @@
+entry = "web/appearance.html"
+title = "Appearance"
+launchable = false
+[[provides]]
+id = "rintawa.ui.appearance"
+version = 1
+[[contributions]]
+point = "rintawa/ui/settings/sections/v1"
+payload = '{"id":"appearance","title":"Appearance","order":0}'

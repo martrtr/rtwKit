@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { BridgeError, handle, type RootBridge, type Theme, type View } from '@rintawa/bridge';
+import { BridgeError, handle, type RootBridge, type View } from '@rintawa/bridge';
 import { Button, Dialog, Icon, Status } from '@rintawa/ui';
 import { checkCancelled, closePackage, packageRead, pause, savePackage, waitPackage, type SavePicker } from './packages';
 type World = { worldId: string; title: string; active: boolean; pendingActive: boolean | null; lastError: string | null };
 type Export = { world: World; phase: 'review' | 'working' | 'ready' | 'saving'; handle?: string; size?: number };
 const message = (error: unknown) => error instanceof Error ? error.message : 'Operation unavailable';
 const cancelled = (error: unknown) => error instanceof DOMException && error.name === 'AbortError';
-export function WorldActions({ bridge, world, views, theme, setTheme, open, reset, refresh, deleted, stopping, fail }: {
-  bridge: RootBridge; world: World | null; views: View[]; theme: Theme; setTheme: (theme: Theme) => void;
+export function WorldActions({ bridge, world, views, open, reset, refresh, deleted, stopping, fail, settings }: {
+  bridge: RootBridge; world: World | null; views: View[];
   open: (view: View) => void; reset: () => Promise<void>; refresh: () => Promise<unknown>;
-  deleted: (id: string) => Promise<void>; stopping: (id: string) => void; fail: (error: unknown) => void;
+  settings: () => void; deleted: (id: string) => Promise<void>; stopping: (id: string) => void; fail: (error: unknown) => void;
 }) {
   const menu = useRef<HTMLDivElement>(null); const trigger = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false); const [remove, setRemove] = useState<World | null>(null);
@@ -94,19 +94,21 @@ export function WorldActions({ bridge, world, views, theme, setTheme, open, rese
   };
   const menuAction = (work: () => void | Promise<void>) => { hideMenu(); try { void Promise.resolve(work()).catch(fail); } catch (failure) { fail(failure); } };
   return <>
-    <button ref={trigger} className="icon-button" title="Workspace controls" aria-label="Workspace controls" aria-haspopup="menu" aria-controls="workspace-menu" aria-expanded={menuOpen} popoverTarget="workspace-menu" disabled={!world}><Icon name="more" /></button>
+    <button ref={trigger} className="icon-button" title="Workspace controls" aria-label="Workspace controls" aria-haspopup="menu" aria-controls="workspace-menu" aria-expanded={menuOpen} popoverTarget="workspace-menu"><Icon name="more" /></button>
     <div ref={menu} id="workspace-menu" className="workspace-menu" popover="auto" role="menu" onToggle={event => { const opened = (event.nativeEvent as ToggleEvent).newState === 'open'; setMenuOpen(opened); if (opened) menu.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus(); }} onKeyDown={event => {
       const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
       const index = items.indexOf(document.activeElement as HTMLButtonElement);
       if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { event.preventDefault(); items[event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length]?.focus(); }
       if (event.key === 'Escape') { hideMenu(); trigger.current?.focus(); }
     }}>
+      <button role="menuitem" onClick={() => menuAction(settings)}><Icon name="settings" size={15} />Settings</button>
+      {world && <>
       <button role="menuitem" disabled={!world} onClick={() => menuAction(() => { setError(''); setJob({ world: world!, phase: 'review' }); })}>Export World…</button>
       <button role="menuitem" className="danger" disabled={!world} onClick={() => menuAction(() => { setError(''); setRemove(world); })}>Delete World…</button>
       <div className="menu-divider" role="separator" />
       {views.map(view => <button key={view.id} role="menuitem" onClick={() => menuAction(() => open(view))}><Icon name="split" size={15} />Split {view.title}</button>)}
-      <button role="menuitem" onClick={() => menuAction(() => setTheme({ mode: theme.mode === 'dark' ? 'light' : 'dark' }))}>{theme.mode === 'dark' ? 'Light theme' : 'Dark theme'}</button>
       <button role="menuitem" onClick={() => menuAction(reset)}>Reset layout</button>
+      </>}
     </div>
     <Dialog open={!!remove} title="Delete World" onClose={() => { if (!busy) { setRemove(null); setError(''); } }}>
       <p>Delete <strong>{remove?.title}</strong> and all of its saved data? This cannot be undone.</p>
@@ -116,7 +118,7 @@ export function WorldActions({ bridge, world, views, theme, setTheme, open, rese
     </Dialog>
     <Dialog open={!!job} title="Export World" onClose={dismiss}>
       <p><strong>{job?.world.title}</strong></p>
-      {job?.phase === 'review' && <p>The export includes saved chats, Characters and their assets. Local credentials are excluded. The World will be stopped.</p>}
+      {job?.phase === 'review' && <p>The export includes saved chats, Characters and their assets. Local credentials are excluded. The World will be stopped; unfinished work may be discarded.</p>}
       {job?.phase === 'ready' && <Status>Export ready · {Math.ceil((job.size ?? 0) / 1024)} KiB</Status>}
       {progress && <Status>{progress}</Status>}{error && <Status error>{error}</Status>}
       <footer><Button onClick={dismiss}>Cancel</Button>{job?.phase === 'review' && <Button className="primary" disabled={busy} onClick={() => void prepareExport()}>Create export</Button>}{job?.phase === 'ready' && <Button className="primary" disabled={busy} onClick={() => void downloadExport()}>Download .rtw</Button>}</footer>

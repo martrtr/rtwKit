@@ -168,3 +168,53 @@ pending mount can be cancelled without inserting a late iframe; cleanup of an
 already retired channel must not disconnect unrelated views. HTTP 403 for a racing
 request to a retired bundle remains correct isolation, not a fallback to another
 World's assets.
+
+
+## Ordinary UI protocols (2026-11-23)
+
+Core's generic sourced poll returns an attested active responder principal with
+payload bytes; native/wire limits and one-shot query handles remain. `Client.querySourced`
+uses that path. UI consumers validate their own versioned point and match the
+response to the exact same-scope View instance/component/activation; payload owner
+fields are not proof. Missing, duplicate and malformed routes are rejected with
+an error state. No Root transport query in an arbitrarily supplied World.
+
+A web-bundle may declare at most 16 opaque `{point,payload}` contributions totaling
+64 KiB. The execution target publishes and polls them under that component's own
+admitted task, so unopened JS-only views are discoverable. Native activation
+teardown removes their routes. The target parses no Settings or Chat schema.
+View metadata is `{id,title,worldId,restoreKey,activation,launchable,provides}`;
+provided contracts report Native selection, and activation is a decimal string.
+The old settings flag is rejected. All selected renderers are ordinary actors.
+
+`rintawa.ui.settings.renderer@1` selects Settings; sections use
+`rintawa/ui/settings/sections/v1` with describe -> `{id,title,order}`.
+`rintawa.ui.home.renderer@1` separately selects full baseline Home content.
+settings-ui supplies default Settings and Appearance; web-ui separates Root and
+Home components. Explicit preferences resolve ambiguity; installation gives no
+ambient administrative authority. Missing/stopped World renderers yield a
+placeholder instead of borrowing baseline sections.
+
+`Client.views` sees only its admitted scope. `Client.mountView` sends a same-scope
+exact live reference and bounded viewport rectangle. Root creates the isolated
+child as its own sibling iframe; consumers get no child channel, URL, nonce, port,
+DOM or RPC authority. Rectangles are clipped to trusted visible overflow ancestors.
+Closing a parent closes children; a Root-owned discovery timer handles external
+retirement. Bound child calls revalidate ancestors. Idempotent close/clear works
+without catalog admission. Unknown native mount acknowledgement disconnects that
+socket to reclaim even unacknowledged channels. Missing bootstrap is released after
+5 seconds. Pending close/reuse cannot delete a replacement's slot record.
+
+Root retains its rail/workspace, privileged consent and narrow validated intents.
+Selected Appearance may request a strict light/dark global theme change. Selected
+baseline Home may ask Root to create/open a World; it inherits no Root capabilities.
+World lifecycle reads through ordinary frames require their own Native capabilities.
+
+Chat owns `rintawa/chat/composer-actions/v1`, describe -> `{id,label,order}`.
+Dice declares the first self-view action; it is visible before Dice mounts, opens
+Dice as its own actor and keeps Chat. Only a template entry is closed on workflow
+navigation. No arbitrary URL, foreign DOM or delegated Chat writer.
+
+Reproduce with build-ui-protocol-fixtures.py + ui-replacement-smoke.mjs; fixtures
+only demonstrate alternate renderers and are not new Better products. Actual local
+Ollama acceptance uses ui-protocols-smoke.mjs with an explicit installed model.

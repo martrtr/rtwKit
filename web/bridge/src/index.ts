@@ -8,8 +8,9 @@ export class BridgeError extends Error {
   }
 }
 export type RestoreKey = { worldId: string | null; instanceId: string; componentId: string };
-export type View = { id: string; title: string; worldId: string | null; restoreKey: RestoreKey };
+export type View = { id: string; title: string; activation: string; launchable: boolean; provides: { id: string; version: number; selected: boolean }[]; worldId: string | null; restoreKey: RestoreKey };
 export type Caller = { instanceId: string; componentId: string; activation: string };
+export type SourcedReply = { provider: Caller; payload: Uint8Array };
 export type InboundQuery = { handle: string; caller: Caller; payload: Uint8Array };
 export type AssetRef = { digest: string; size: string; mediaType: string };
 export type ResourceRef = { id: string; size: string; mediaType: string; name: string | null };
@@ -17,6 +18,7 @@ export type ViewState = Record<string, string>;
 export function viewState(value: unknown): value is ViewState {
   return record(value) && Object.keys(value).length <= 8 && Object.entries(value).every(([key, value]) => asciiId(key) && typeof value === 'string' && new TextEncoder().encode(value).length <= 256) && new TextEncoder().encode(JSON.stringify(value)).length <= 1024;
 }
+export type PermissionRequest = { componentId: string; runtime: string[]; httpOrigins: string[]; secretRead: string[] };
 export type Theme = { mode: 'light' | 'dark' };
 type Call = (method: string, args: Record<string, unknown>) => Promise<unknown>;
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -82,11 +84,16 @@ export class Client {
   #closed = false;
   #urls = new Set<string>();
   #stop = new AbortController();
+  #policyListeners = new Set<() => void>();
+  #slots = new Map<string, () => void>();
+  onPermissionsChanged(handler: () => void): () => void { this.#policyListeners.add(handler); return () => { this.#policyListeners.delete(handler); }; }
+  permissionsChanged(): void { if (!this.#closed) for (const handler of this.#policyListeners) handler(); }
   readonly initialState: ViewState;
   constructor(call: Call, initialState: ViewState = {}) { this.#call = call; this.initialState = initialState; }
   async getState(): Promise<ViewState> { const state = await this.request('ui.state.get'); if (!viewState(state)) throw new BridgeError('invalid-stored-data'); return state; }
   async setState(state: ViewState): Promise<void> { if (!viewState(state)) throw new BridgeError('invalid-request', 'not-started'); await this.request('ui.state.set', { state }); }
   async navigate(instanceId: string, componentId: string, state: ViewState = {}): Promise<void> { if (!viewState(state)) throw new BridgeError('invalid-request', 'not-started'); await this.request('ui.navigate', { instanceId, componentId, state }); }
+  navigateView(view: View, state: ViewState = {}): Promise<unknown> { if (!viewState(state)) return Promise.reject(new BridgeError('invalid-request','not-started')); return this.request('ui.navigate', { instanceId:view.restoreKey.instanceId, componentId:view.restoreKey.componentId, activation:view.activation, state }); }
   request(method: string, args: Record<string, unknown> = {}): Promise<unknown> {
     return this.#closed ? Promise.reject(new BridgeError('channel-closed', 'not-started')) : this.#call(method, args);
   }
@@ -117,6 +124,42 @@ export class Client {
       if (error instanceof BridgeError) throw new BridgeError(error.code, 'unknown');
       throw error;
     }
+  }
+  async querySourced(point: string, payload: Uint8Array): Promise<SourcedReply[]> {
+    const query = await this.beginQuery(point, payload);
+    try {
+      for (;;) {
+        const replies = await this.request('transport.poll-query-sourced', { handle: query });
+        if (replies === null) { await delay(20); continue; }
+        if (!Array.isArray(replies)) throw new BridgeError('protocol-error');
+        return replies.map(reply => {
+          if (!record(reply) || !record(reply.provider) || typeof reply.provider.instanceId !== 'string' || typeof reply.provider.componentId !== 'string') throw new BridgeError('protocol-error');
+          return { provider: { instanceId: reply.provider.instanceId, componentId: reply.provider.componentId, activation: handle(reply.provider.activation) }, payload: decodeBytes(reply.payload) };
+        });
+      }
+    } catch (error) {
+      void this.closeQuery(query).catch(() => {});
+      if (error instanceof BridgeError) throw new BridgeError(error.code, 'unknown');
+      throw error;
+    }
+  }
+  async views(): Promise<View[]> { return await this.request('ui.views') as View[]; }
+  slotClosed(slot: string): void { this.#slots.get(slot)?.(); this.#slots.delete(slot); }
+  async mountView(view: View, element: HTMLElement, state: ViewState = {}, onClosed: () => void = () => {}): Promise<{ close: () => Promise<void> }> {
+    if (!viewState(state)) throw new BridgeError('invalid-request', 'not-started');
+    const slot = [...crypto.getRandomValues(new Uint8Array(12))].map(v => v.toString(16).padStart(2, '0')).join('');
+    const rectangle = () => { const r = element.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; };
+    let closed = false, scheduled = false;
+    const update = () => { if (closed || scheduled) return; scheduled = true; requestAnimationFrame(() => { scheduled = false; if (!closed) void this.request('ui.slot.update', { slot, rect: rectangle() }).catch(() => { cleanup(); void this.request('ui.slot.close', { slot }).catch(() => {}); }); }); };
+    const observer = new ResizeObserver(update);
+    const cleanup = () => { if (closed) return; closed = true; observer.disconnect(); window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update); this.#slots.delete(slot); onClosed(); };
+    this.#slots.set(slot, cleanup);
+    try {
+      await this.request('ui.slot.mount', { slot, reference: { instanceId: view.restoreKey.instanceId, componentId: view.restoreKey.componentId, activation: view.activation }, rect: rectangle(), state });
+      if (closed || this.#closed) { void this.request('ui.slot.close', { slot }).catch(() => {}); throw new BridgeError('channel-closed'); }
+      observer.observe(element); window.addEventListener('scroll', update, true); window.addEventListener('resize', update);
+      return { close: async () => { cleanup(); await this.request('ui.slot.close', { slot }); } };
+    } catch (error) { cleanup(); void this.request('ui.slot.close', { slot }).catch(() => {}); throw error; }
   }
   async declarePolled(point: string): Promise<string> { return handle(await this.request('transport.declare-polled', { point })); }
   async nextQuery(queryable: string): Promise<InboundQuery | null> {
@@ -183,7 +226,7 @@ export class Client {
     const url = URL.createObjectURL(new Blob(parts, { type: reference.mediaType })); this.#urls.add(url);
     return { url, revoke: () => { URL.revokeObjectURL(url); this.#urls.delete(url); } };
   }
-  dispose(): void { this.#closed = true; this.#stop.abort(); for (const url of this.#urls) URL.revokeObjectURL(url); this.#urls.clear(); }
+  dispose(): void { if (this.#slots.size) void this.#call('ui.slot.clear', {}).catch(() => {}); for (const cleanup of this.#slots.values()) cleanup(); this.#slots.clear(); this.#policyListeners.clear(); this.#closed = true; this.#stop.abort(); for (const url of this.#urls) URL.revokeObjectURL(url); this.#urls.clear(); }
 }
 
 function forgetSession(): void { try { sessionStorage.removeItem('rintawa.session'); } catch { /* Server rejects/revokes the credential independently. */ } }
@@ -215,7 +258,9 @@ export async function connectPanel(onTheme: (theme: Theme, palette: Palette) => 
         const value = event.data;
         if (record(value) && value.v === 1 && value.type === 'theme' && record(value.theme) && (value.theme.mode === 'light' || value.theme.mode === 'dark')) {
           const theme = value.theme as Theme; onTheme(theme, applyTheme(theme));
-        } else if (record(value) && value.v === 1 && value.type === 'close') dispose();
+        } else if (record(value) && value.v === 1 && value.type === 'permissions-changed') client.permissionsChanged();
+        else if (record(value) && value.v === 1 && value.type === 'slot-closed' && typeof value.slot === 'string') client.slotClosed(value.slot);
+        else if (record(value) && value.v === 1 && value.type === 'close') dispose();
         else rpc.accept(value);
       };
       port.onmessageerror = dispose; window.addEventListener('pagehide', dispose, { once: true }); port.start(); resolve(client);
@@ -226,7 +271,9 @@ export async function connectPanel(onTheme: (theme: Theme, palette: Palette) => 
   });
 }
 
-type FrameBinding = { view: View; state: ViewState; frame: HTMLIFrameElement; channel: string; nonce: string; port?: MessagePort; loaded: boolean; used: boolean; closed: boolean; pending: Set<string>; onClosed: () => void };
+type Rectangle = { x: number; y: number; width: number; height: number };
+type Slot = { rect: Rectangle; box: HTMLDivElement; abort: AbortController; close?: () => Promise<void>; frame?: HTMLIFrameElement };
+type FrameBinding = { view: View; state: ViewState; frame: HTMLIFrameElement; channel: string; nonce: string; parent?: FrameBinding; slots: Map<string, Slot>; bootstrap?: ReturnType<typeof setTimeout>; port?: MessagePort; loaded: boolean; used: boolean; closed: boolean; pending: Set<string>; onClosed: () => void };
 export class RootBridge {
   #socket: WebSocket;
   #rpc: Rpc;
@@ -234,10 +281,16 @@ export class RootBridge {
   #frames = new Set<FrameBinding>();
   #theme: Theme = { mode: 'dark' };
   #closed = false;
+  #reconcileTimer?: ReturnType<typeof setTimeout>;
   #disconnectListeners = new Set<() => void>();
   #receive: (event: MessageEvent) => void;
   #navigation: ((view: View, state: ViewState, source: View) => void) | null = null;
   onNavigate(handler: (view: View, state: ViewState, source: View) => void): () => void { this.#navigation = handler; return () => { if (this.#navigation === handler) this.#navigation = null; }; }
+  #permissionRequest: ((view: View, request: PermissionRequest) => boolean) | null = null;
+  onPermissionRequest(handler: (view: View, request: PermissionRequest) => boolean): () => void { this.#permissionRequest = handler; return () => { if (this.#permissionRequest === handler) this.#permissionRequest = null; }; }
+  notifyPermissionsChanged(viewId: string): void { for (const b of this.#frames) if (!b.closed && b.view.id === viewId) b.port?.postMessage({ v: 1, type: 'permissions-changed' }); }
+  #intent: ((method: string, args: Record<string, unknown>, source: View) => Promise<unknown>) | null = null;
+  onIntent(handler: (method: string, args: Record<string, unknown>, source: View) => Promise<unknown>): () => void { this.#intent = handler; return () => { if (this.#intent === handler) this.#intent = null; }; }
   readonly client: Client;
   private constructor(socket: WebSocket, rpc: Rpc, channel: string) {
     this.#socket = socket; this.#rpc = rpc; this.#channel = channel;
@@ -279,13 +332,19 @@ export class RootBridge {
       socket.addEventListener('message', ready);
     });
   }
-  async list(): Promise<View[]> { return await this.client.request('ui.list') as View[]; }
+  async list(): Promise<View[]> {
+    const views = await this.client.request('ui.list') as View[];
+    for (const binding of this.#frames) if (!views.some(v => v.id === binding.view.id && v.activation === binding.view.activation)) void this.#release(binding).catch(() => this.disconnect());
+    return views;
+  }
   async mount(id: string, container: HTMLElement, onClosed: () => void = () => {}, state: ViewState = {}, signal?: AbortSignal): Promise<{ frame: HTMLIFrameElement; close: () => Promise<void> }> {
     const candidates = (await this.list()).filter(view => view.id === id);
     if (candidates.length !== 1 || !viewState(state)) throw new BridgeError('unavailable', 'not-started');
     const view = candidates[0];
     if (signal?.aborted) throw new DOMException('View mount cancelled', 'AbortError');
-    const mounted = await this.client.request('ui.mount', { id }) as { channel: string; url: string };
+    let mounted: { channel: string; url: string };
+    try { mounted = await this.client.request('ui.mount', { id }) as { channel: string; url: string }; }
+    catch (error) { if (!(error instanceof BridgeError) || error.outcome === 'unknown') this.disconnect(); throw error; }
     try {
       if (signal?.aborted) throw new DOMException('View mount cancelled', 'AbortError');
       const target = new URL(mounted.url, location.origin);
@@ -293,7 +352,8 @@ export class RootBridge {
       const bytes = crypto.getRandomValues(new Uint8Array(32)); const nonce = encodeBytes(bytes).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
       target.hash = new URLSearchParams({ rtwBridge: nonce }).toString();
       const frame = document.createElement('iframe'); frame.sandbox.add('allow-scripts'); frame.referrerPolicy = 'no-referrer'; frame.src = target.href;
-      const binding: FrameBinding = { view, state, frame, channel: mounted.channel, nonce, loaded: false, used: false, closed: false, pending: new Set(), onClosed };
+      const binding: FrameBinding = { view, state, frame, channel: mounted.channel, nonce, slots: new Map(), loaded: false, used: false, closed: false, pending: new Set(), onClosed };
+      binding.bootstrap = setTimeout(() => { if (!binding.used) void this.#release(binding).catch(() => this.disconnect()); }, 5000);
       this.#frames.add(binding); frame.addEventListener('load', () => { if (binding.loaded) void this.#release(binding).catch(() => this.disconnect()); else binding.loaded = true; });
       container.append(frame);
       return { frame, close: () => this.#release(binding) };
@@ -307,7 +367,7 @@ export class RootBridge {
     if (event.origin !== 'null' || !record(data) || data.v !== 1 || data.type !== 'rtw:hello' || typeof data.nonce !== 'string') return;
     const binding = [...this.#frames].find(binding => binding.loaded && !binding.used && !binding.closed && binding.frame.contentWindow === event.source && binding.nonce === data.nonce);
     if (!binding || !binding.frame.contentWindow) return;
-    binding.used = true; const ports = new MessageChannel(); binding.port = ports.port1;
+    binding.used = true; clearTimeout(binding.bootstrap); const ports = new MessageChannel(); binding.port = ports.port1;
     ports.port1.onmessage = event => {
       const value = event.data;
       if (binding.closed) return;
@@ -315,7 +375,7 @@ export class RootBridge {
       const id = value.id;
       if (binding.pending.size >= 8) { ports.port1.postMessage({ v: 1, id, ok: false, error: { code: 'limit-exceeded', outcome: 'not-started' } }); return; }
       binding.pending.add(id);
-      const operation = value.method === 'ui.navigate' ? this.#navigate(binding, value.args) : this.#rpc.request(value.method, value.args, binding.channel);
+      const operation = this.#callFrame(binding, value.method, value.args);
       operation.then(
         value => { if (!binding.closed) ports.port1.postMessage({ v: 1, id, ok: true, value }); },
         error => { if (!binding.closed) ports.port1.postMessage({ v: 1, id, ok: false, error: { code: error instanceof BridgeError ? error.code : 'unavailable', outcome: error instanceof BridgeError ? error.outcome : 'unknown' } }); },
@@ -325,18 +385,120 @@ export class RootBridge {
     binding.frame.contentWindow.postMessage({ v: 1, type: 'rtw:init', nonce: binding.nonce, state: binding.state }, '*', [ports.port2]);
     ports.port1.postMessage({ v: 1, type: 'theme', theme: this.#theme });
   }
+  async #callFrame(binding: FrameBinding, method: string, args: Record<string, unknown>): Promise<unknown> {
+    // Releasing a bound child is idempotent and needs no fresh catalog authority.
+    if (method === 'ui.slot.close' || method === 'ui.slot.clear') return this.#slot(binding, method, args, []);
+    if (binding.parent) { await this.list(); if (binding.closed) throw new BridgeError('channel-closed', 'not-started'); }
+    if (method === 'ui.navigate') return this.#navigate(binding, args);
+    if (method === 'ui.request-permissions') return this.#requestPermissions(binding, args);
+    if (method === 'ui.views' || method.startsWith('ui.slot.') || ['ui.open-world', 'ui.create-world', 'ui.theme.set'].includes(method)) {
+      const catalog = await this.list();
+      const source = catalog.find(v => v.id === binding.view.id && v.activation === binding.view.activation);
+      if (binding.closed || !source) throw new BridgeError('unavailable', 'not-started');
+      if (method === 'ui.views') {
+        if (Object.keys(args).length) throw new BridgeError('invalid-request', 'not-started');
+        return catalog.filter(v => v.worldId === source.worldId);
+      }
+      if (method.startsWith('ui.slot.')) return this.#slot(binding, method, args, catalog);
+      if (!this.#intent) throw new BridgeError('unavailable', 'not-started');
+      return this.#intent(method, args, source);
+    }
+    return this.#rpc.request(method, args, binding.channel);
+  }
+  async #slot(binding: FrameBinding, method: string, args: Record<string, unknown>, catalog: View[]): Promise<null> {
+    if (method === 'ui.slot.clear' && !Object.keys(args).length) { await Promise.all([...binding.slots.keys()].map(id => this.#closeSlot(binding, id))); return null; }
+    const allowed = method === 'ui.slot.mount' ? ['slot', 'reference', 'rect', 'state'] : method === 'ui.slot.update' ? ['slot', 'rect'] : method === 'ui.slot.close' ? ['slot'] : [];
+    if (!allowed.length || Object.keys(args).some(key => !allowed.includes(key)) || !asciiId(args.slot)) throw new BridgeError('invalid-request', 'not-started');
+    const id = args.slot;
+    if (method === 'ui.slot.close') { await this.#closeSlot(binding, id); return null; }
+    const rect = args.rect;
+    if (!record(rect) || Object.keys(rect).sort().join(',') !== 'height,width,x,y' || !Object.values(rect).every(v => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 65536) || (rect.width as number) < 0 || (rect.height as number) < 0) throw new BridgeError('invalid-request', 'not-started');
+    const geometry = rect as Rectangle;
+    if (method === 'ui.slot.update') {
+      const slot = binding.slots.get(id); if (!slot) throw new BridgeError('invalid-request', 'not-started');
+      slot.rect = geometry; this.#positionSlot(binding, slot); return null;
+    }
+    if (binding.slots.has(id) || !record(args.reference) || Object.keys(args.reference).sort().join(',') !== 'activation,componentId,instanceId' || !viewState(args.state)) throw new BridgeError('invalid-request', 'not-started');
+    const target = catalog.filter(v => v.worldId === binding.view.worldId && v.restoreKey.instanceId === (args.reference as Record<string, unknown>).instanceId && v.restoreKey.componentId === (args.reference as Record<string, unknown>).componentId && v.activation === (args.reference as Record<string, unknown>).activation);
+    if (target.length !== 1) throw new BridgeError('unavailable', 'not-started');
+    const box = document.createElement('div'); box.className = 'rtw-view-slot'; box.style.cssText = 'position:fixed;overflow:hidden;display:none;isolation:isolate;';
+    // A Root-owned sibling keeps the consuming extension away from the child's
+    // bootstrap nonce, native channel and MessagePort. Consent stays in its own
+    // later top-layer dialog; the slot is clipped to its parent's viewport.
+    (binding.frame.closest('dialog') ?? document.body).append(box);
+    const slot: Slot = { rect: geometry, box, abort: new AbortController() }; binding.slots.set(id, slot);
+    this.#scheduleReconcile();
+    try {
+      const mounted = await this.mount(target[0].id, box, () => { if (binding.slots.get(id) === slot) { binding.slots.delete(id); box.remove(); binding.port?.postMessage({ v: 1, type: 'slot-closed', slot: id }); } }, args.state, slot.abort.signal);
+      if (binding.closed || binding.slots.get(id) !== slot) { await mounted.close(); throw new BridgeError('channel-closed'); }
+      slot.close = mounted.close; slot.frame = mounted.frame;
+      const child = [...this.#frames].find(b => b.frame === mounted.frame)!; child.parent = binding;
+      const update = () => { if (binding.closed || binding.slots.get(id) !== slot) return; this.#positionSlot(binding, slot); requestAnimationFrame(update); }; update();
+      return null;
+    } catch (error) { if (binding.slots.get(id) === slot) binding.slots.delete(id); box.remove(); throw error; }
+  }
+  #positionSlot(binding: FrameBinding, slot: Slot): void {
+    const parent = binding.frame.getBoundingClientRect(), rect = slot.rect;
+    const intended = { left: parent.left + rect.x, top: parent.top + rect.y };
+    const clip = binding.parent ? binding.frame.parentElement!.getBoundingClientRect() : parent;
+    let left = Math.max(0, parent.left, clip.left, intended.left), top = Math.max(0, parent.top, clip.top, intended.top);
+    let right = Math.min(innerWidth, parent.right, clip.right, intended.left + rect.width), bottom = Math.min(innerHeight, parent.bottom, clip.bottom, intended.top + rect.height), visible = !!binding.frame.getClientRects().length;
+    for (let element: HTMLElement | null = binding.frame; element; element = element.parentElement) {
+      const style = getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') visible = false;
+      const bounds = element.getBoundingClientRect();
+      if (/^(hidden|clip|auto|scroll)$/.test(style.overflowX)) { left = Math.max(left, bounds.left + element.clientLeft); right = Math.min(right, bounds.left + element.clientLeft + element.clientWidth); }
+      if (/^(hidden|clip|auto|scroll)$/.test(style.overflowY)) { top = Math.max(top, bounds.top + element.clientTop); bottom = Math.min(bottom, bounds.top + element.clientTop + element.clientHeight); }
+    }
+    const width = Math.max(0, right - left), height = Math.max(0, bottom - top);
+    Object.assign(slot.box.style, { display: width && height && visible ? 'block' : 'none', left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px` });
+    if (slot.frame) Object.assign(slot.frame.style, { position: 'absolute', border: '0', left: `${intended.left - left}px`, top: `${intended.top - top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+  }
+  async #closeSlot(binding: FrameBinding, id: string): Promise<void> {
+    const slot = binding.slots.get(id); if (!slot) return;
+    binding.slots.delete(id); slot.abort.abort(); slot.box.remove(); await slot.close?.();
+  }
+  #scheduleReconcile(): void {
+    if (this.#closed || this.#reconcileTimer || ![...this.#frames].some(binding => binding.slots.size)) return;
+    this.#reconcileTimer = setTimeout(async () => {
+      this.#reconcileTimer = undefined;
+      try { await this.list(); } catch { /* Retry discovery; never replay a mutation. */ }
+      this.#scheduleReconcile();
+    }, 500);
+  }
+  async #requestPermissions(binding: FrameBinding, args: Record<string, unknown>): Promise<null> {
+    if (!this.#permissionRequest || Object.keys(args).some(key => !['componentId', 'runtime', 'httpOrigins', 'secretRead'].includes(key)) || typeof args.componentId !== 'string' || !args.componentId || args.componentId.length > 128) throw new BridgeError('invalid-request', 'not-started');
+    const runtime = args.runtime ?? [], httpOrigins = args.httpOrigins ?? [], secretRead = args.secretRead ?? [];
+    for (const list of [runtime, httpOrigins, secretRead]) if (!Array.isArray(list) || list.length > 64 || list.some(v => typeof v !== 'string' || !v || v.length > 2048) || new Set(list).size !== list.length) throw new BridgeError('invalid-request', 'not-started');
+    const request = { componentId: args.componentId, runtime, httpOrigins, secretRead } as PermissionRequest;
+    if (request.runtime.length + request.httpOrigins.length + request.secretRead.length > 64) throw new BridgeError('limit-exceeded', 'not-started');
+    for (const value of request.httpOrigins) {
+      let origin: URL; try { origin = new URL(value); } catch { throw new BridgeError('invalid-request', 'not-started'); }
+      if (origin.protocol !== 'http:' || origin.origin !== value || !(origin.hostname === 'localhost' || origin.hostname === '[::1]' || /^127\.\d+\.\d+\.\d+$/.test(origin.hostname))) throw new BridgeError('invalid-request', 'not-started');
+    }
+    const view = resolveView(binding.view.restoreKey, await this.list());
+    if (binding.closed || !view || view.id !== binding.view.id) throw new BridgeError('unavailable', 'not-started');
+    if (!this.#permissionRequest(view, request)) throw new BridgeError('limit-exceeded', 'not-started');
+    return null;
+  }
   async #navigate(binding: FrameBinding, args: Record<string, unknown>): Promise<null> {
-    if (Object.keys(args).some(key => !['instanceId', 'componentId', 'state'].includes(key)) || typeof args.instanceId !== 'string' || typeof args.componentId !== 'string' || !viewState(args.state) || !binding.view.worldId || !this.#navigation) throw new BridgeError('invalid-request', 'not-started');
+    if (Object.keys(args).some(key => !['instanceId', 'componentId', 'activation', 'state'].includes(key)) || typeof args.instanceId !== 'string' || typeof args.componentId !== 'string' || !viewState(args.state) || !binding.view.worldId || !this.#navigation) throw new BridgeError('invalid-request', 'not-started');
     const catalog = await this.list();
     const source = resolveView(binding.view.restoreKey, catalog);
     const target = resolveView({ worldId: binding.view.worldId, instanceId: args.instanceId, componentId: args.componentId }, catalog);
-    if (binding.closed || !source || source.id !== binding.view.id || !target) throw new BridgeError('unavailable', 'not-started');
+    if (binding.closed || !source || source.id !== binding.view.id || !target || (args.activation !== undefined && args.activation !== target.activation)) throw new BridgeError('unavailable', 'not-started');
     const handler = this.#navigation; const state = args.state;
     // Reply before navigation retires the source port. Never transfer its authority.
     setTimeout(() => { if (!binding.closed && this.#navigation === handler) handler(target, state, source); }, 0);
     return null;
   }
-  #detach(binding: FrameBinding): void { binding.closed = true; binding.port?.postMessage({ v: 1, type: 'close' }); binding.port?.close(); binding.frame.remove(); this.#frames.delete(binding); binding.onClosed(); }
+  #detach(binding: FrameBinding): void {
+    binding.closed = true;
+    clearTimeout(binding.bootstrap);
+    for (const id of [...binding.slots.keys()]) void this.#closeSlot(binding, id).catch(() => this.disconnect());
+    for (const child of this.#frames) if (child.parent === binding) void this.#release(child).catch(() => this.disconnect());
+    binding.port?.postMessage({ v: 1, type: 'close' }); binding.port?.close(); binding.frame.remove(); this.#frames.delete(binding); binding.onClosed();
+  }
   async #release(binding: FrameBinding): Promise<void> {
     if (binding.closed) return; this.#detach(binding);
     await this.#unmountChannel(binding.channel);
@@ -357,5 +519,5 @@ export class RootBridge {
   async setLayout(layout: unknown): Promise<unknown> { return this.client.request('ui.layout.set', { layout }); }
   async resetLayout(): Promise<unknown> { return this.client.request('ui.layout.reset'); }
   async logout(): Promise<void> { try { await this.client.request('session.close'); } finally { forgetSession(); this.disconnect(); } }
-  disconnect(): void { window.removeEventListener('message', this.#receive); for (const binding of this.#frames) this.#detach(binding); this.#socket.close(); this.#rpc.close(); this.client.dispose(); }
+  disconnect(): void { this.#closed = true; clearTimeout(this.#reconcileTimer); window.removeEventListener('message', this.#receive); for (const binding of this.#frames) this.#detach(binding); this.#socket.close(); this.#rpc.close(); this.client.dispose(); }
 }

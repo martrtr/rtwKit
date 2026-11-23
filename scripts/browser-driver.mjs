@@ -8,12 +8,12 @@ export async function eventually(action, label, timeout = 15000) {
 }
 export class CDP {
   constructor(socket) {
-    this.socket = socket; this.sequence = 0; this.pending = new Map(); this.contexts = new Map(); this.errors = []; this.worldCalls = []; this.resourceFailures = []; this.methods = new Map();
+    this.socket = socket; this.sequence = 0; this.pending = new Map(); this.contexts = new Map(); this.errors = []; this.worldCalls = []; this.worldCommands = []; this.resourceFailures = []; this.methods = new Map();
     socket.addEventListener('message', event => {
       const message = JSON.parse(event.data);
       if (message.id) { const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id); clearTimeout(pending.timer); message.error ? pending.reject(new Error(message.error.message)) : pending.resolve(message.result); }
-      if (message.method === 'Network.webSocketFrameSent') { try { const v = JSON.parse(message.params.response.payloadData); if (v.method?.startsWith('world-sessions.')) this.methods.set(v.id, v.method); } catch {} }
-      if (message.method === 'Network.webSocketFrameReceived') { try { const v = JSON.parse(message.params.response.payloadData); const method = this.methods.get(v.id); if (method) this.worldCalls.push({ method, ok: v.ok, value: v.value, error: v.error }); } catch {} }
+      if (message.method === 'Network.webSocketFrameSent') { try { const v = JSON.parse(message.params.response.payloadData); if (v.method?.startsWith('world-sessions.')) { this.methods.set(`${message.params.requestId}:${v.id}`, v.method); this.worldCommands.push({method:v.method,args:v.args}); } } catch {} }
+      if (message.method === 'Network.webSocketFrameReceived') { try { const v = JSON.parse(message.params.response.payloadData); const requestKey=`${message.params.requestId}:${v.id}`; const method = this.methods.get(requestKey); this.methods.delete(requestKey); if (method) this.worldCalls.push({ method, ok: v.ok, value: v.value, error: v.error }); } catch {} }
       if (message.method === 'Network.responseReceived' && message.params.response.status >= 400) this.resourceFailures.push({ url: redact(message.params.response.url), status: message.params.response.status, type: message.params.type });
       if (message.method === 'Runtime.executionContextCreated') this.contexts.set(`${message.sessionId ?? ''}:${message.params.context.id}`, { ...message.params.context, sessionId: message.sessionId });
       if (message.method === 'Runtime.executionContextDestroyed') this.contexts.delete(`${message.sessionId ?? ''}:${message.params.executionContextId}`);
@@ -31,7 +31,17 @@ export class CDP {
   call(method, params = {}, sessionId) { const id = ++this.sequence; return new Promise((resolve, reject) => { const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`CDP timeout: ${method}`)); }, 10000); this.pending.set(id, { resolve, reject, timer }); this.socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); }); }
   async evaluate(expression, contextId, userGesture = false) { const result = await this.call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, userGesture, ...(contextId ? { contextId: contextId.id } : {}) }, contextId?.sessionId); if (result.exceptionDetails) throw new Error(redact(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text)); return result.result.value; }
   async body(context) { return this.evaluate('document.body?.innerText ?? ""', context); }
-  async click(text, context) { return eventually(() => this.evaluate(`(() => { const scope = document.querySelector('dialog:modal') ?? document; const button = [...scope.querySelectorAll('button')].find(b => !b.disabled && b.getClientRects().length && getComputedStyle(b).visibility !== 'hidden' && (b.getAttribute('aria-label') === ${JSON.stringify(text)} || b.title === ${JSON.stringify(text)} || b.textContent.trim() === ${JSON.stringify(text)})); if (!button) return false; button.click(); return true; })()`, context, true), `visible enabled button ${text}`); }
+  async click(text, context) { return eventually(() => this.evaluate(`(() => { const scope = [...document.querySelectorAll('dialog:modal')].at(-1) ?? document; const button = [...scope.querySelectorAll('button')].find(b => !b.disabled && b.getClientRects().length && getComputedStyle(b).visibility !== 'hidden' && (b.getAttribute('aria-label') === ${JSON.stringify(text)} || b.title === ${JSON.stringify(text)} || b.textContent.trim() === ${JSON.stringify(text)})); if (!button) return false; button.click(); return true; })()`, context, true), `visible enabled button ${text}`); }
+  async openSettings() {
+    if (await this.evaluate('[...document.querySelectorAll("dialog:modal h2")].some(h=>h.textContent==="Settings")')) return;
+    if (!await this.evaluate('!!document.querySelector("#workspace-menu:popover-open")')) await this.click('Workspace controls');
+    await this.click('Settings');
+  }
+  async openSettingsSection(title) {
+    await this.openSettings();
+    const renderer=await eventually(async()=>(await this.panelContexts('.settings-layout'))[0],'selected Settings renderer',30000);
+    await this.waitText(title,renderer);await this.click(title,renderer);return renderer;
+  }
   async waitShell() { return eventually(() => this.evaluate('!!document.querySelector(\'button[aria-label="Home"]\')'), 'shell ready'); }
   async setInput(selector, value, context) { return this.evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('input unavailable');const proto=e instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`, context); }
   // Administrative empty-World fixture; story-onboarding-smoke exercises the actual chooser.

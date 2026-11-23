@@ -44,6 +44,7 @@ pub enum Call {
         payload: Vec<u8>,
     },
     PollQuery(Handle),
+    PollQuerySourced(Handle),
     CloseQuery(Handle),
     DeclarePolled(String),
     NextQuery(Handle),
@@ -100,7 +101,13 @@ pub enum Call {
         title: String,
         approve_runtime_permissions: bool,
     },
+    CreateFromTemplateWithPermissions(String),
     WorldEntry(String),
+    CurrentContext,
+    SelectedProviders {
+        id: String,
+        version: u32,
+    },
     GetViewState,
     SetViewState(std::collections::BTreeMap<String, String>),
     SetMetadata {
@@ -114,6 +121,18 @@ pub enum Call {
         world_id: String,
         active: bool,
     },
+    LivePolicy {
+        scope_id: String,
+        instance_id: String,
+        component_id: String,
+    },
+    ApplyLivePolicy(String),
+    GrantHttpOrigin {
+        scope_id: String,
+        instance_id: String,
+        component_id: String,
+        origin: String,
+    },
     ListUi,
     Mount(String),
     Unmount(String),
@@ -126,22 +145,13 @@ impl Call {
     pub fn shell_only(&self) -> bool {
         matches!(
             self,
-            Self::BeginPackageUpload(_)
-                | Self::AppendPackageUpload { .. }
-                | Self::FinishPackageUpload(_)
-                | Self::BeginExport(_)
-                | Self::PackageStatus(_)
-                | Self::ReadPackage { .. }
-                | Self::ClosePackage(_)
-                | Self::ListWorlds
-                | Self::CreateWorld
-                | Self::ListTemplates
-                | Self::TemplateInfo(_)
-                | Self::CreateFromTemplate { .. }
-                | Self::WorldEntry(_)
-                | Self::SetMetadata { .. }
-                | Self::DeleteWorld(_)
-                | Self::SetActive { .. }
+            Self::CreateFromTemplate {
+                approve_runtime_permissions: true,
+                ..
+            } | Self::CreateFromTemplateWithPermissions(_)
+                | Self::GrantHttpOrigin { .. }
+                | Self::LivePolicy { .. }
+                | Self::ApplyLivePolicy(_)
                 | Self::ListUi
                 | Self::Mount(_)
                 | Self::Unmount(_)
@@ -329,6 +339,29 @@ impl Request {
                 }
             }
             "transport.poll-query" => Call::PollQuery(args::<ResourceHandle>(value)?.handle),
+            "transport.poll-query-sourced" => {
+                Call::PollQuerySourced(args::<ResourceHandle>(value)?.handle)
+            }
+            "runtime-context.current" => {
+                empty(value)?;
+                Call::CurrentContext
+            }
+            "runtime-context.selected-providers" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args {
+                    id: String,
+                    version: u32,
+                }
+                let a: Args = args(value)?;
+                if a.id.is_empty() || a.id.len() > 256 {
+                    return Err("invalid contract id");
+                }
+                Call::SelectedProviders {
+                    id: a.id,
+                    version: a.version,
+                }
+            }
             "transport.close-query" => Call::CloseQuery(args::<ResourceHandle>(value)?.handle),
             "transport.close-queryable" => {
                 Call::CloseQueryable(args::<ResourceHandle>(value)?.handle)
@@ -456,6 +489,19 @@ impl Request {
                     approve_runtime_permissions: a.approve_runtime_permissions,
                 }
             }
+            "world-sessions.create-from-template-with-permissions" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args {
+                    request: serde_json::Map<String, Value>,
+                }
+                let a: Args = args(value)?;
+                let request = serde_json::to_string(&a.request).map_err(|_| "invalid request")?;
+                if request.len() > MAX_MESSAGE_BYTES {
+                    return Err("request too large");
+                }
+                Call::CreateFromTemplateWithPermissions(request)
+            }
             "world-sessions.entry" => Call::WorldEntry(args::<World>(value)?.world_id),
             "ui.state.get" => {
                 empty(value)?;
@@ -498,6 +544,67 @@ impl Request {
                 Call::SetActive {
                     world_id: a.world_id,
                     active: a.active,
+                }
+            }
+            "runtime-policy.live-component" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct Target {
+                    scope_id: String,
+                    instance_id: String,
+                    component_id: String,
+                }
+                let a: Target = args(value)?;
+                if [&a.scope_id, &a.instance_id, &a.component_id]
+                    .iter()
+                    .any(|s| s.is_empty() || s.len() > 2048)
+                {
+                    return Err("invalid policy target");
+                }
+                Call::LivePolicy {
+                    scope_id: a.scope_id,
+                    instance_id: a.instance_id,
+                    component_id: a.component_id,
+                }
+            }
+            "runtime-policy.apply-live-change" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Change {
+                    change: serde_json::Value,
+                }
+                let a: Change = args(value)?;
+                if !a.change.is_object() {
+                    return Err("invalid policy change");
+                }
+                let change =
+                    serde_json::to_string(&a.change).map_err(|_| "invalid policy change")?;
+                if change.len() > 64 * 1024 {
+                    return Err("policy change too large");
+                }
+                Call::ApplyLivePolicy(change)
+            }
+            "runtime-policy.grant-http-origin" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct Origin {
+                    scope_id: String,
+                    instance_id: String,
+                    component_id: String,
+                    origin: String,
+                }
+                let a: Origin = args(value)?;
+                if [&a.scope_id, &a.instance_id, &a.component_id, &a.origin]
+                    .iter()
+                    .any(|v| v.is_empty() || v.len() > 2048)
+                {
+                    return Err("invalid origin approval");
+                }
+                Call::GrantHttpOrigin {
+                    scope_id: a.scope_id,
+                    instance_id: a.instance_id,
+                    component_id: a.component_id,
+                    origin: a.origin,
                 }
             }
             "ui.list" => {
@@ -573,6 +680,52 @@ mod tests {
         }
     }
     #[test]
+    fn sourced_queries_and_runtime_context_accept_only_own_scope() {
+        let max = u64::MAX.to_string();
+        let call = Request::decode(&request(
+            "transport.poll-query-sourced",
+            json!({"handle":max}),
+        ))
+        .unwrap()
+        .call;
+        assert!(matches!(call, Call::PollQuerySourced(Handle(u64::MAX))));
+        for (method, mut arguments) in [
+            ("transport.poll-query-sourced", json!({"handle":"1"})),
+            ("runtime-context.current", json!({})),
+            (
+                "runtime-context.selected-providers",
+                json!({"id":"provider","version":1}),
+            ),
+        ] {
+            assert!(
+                !Request::decode(&request(method, arguments.clone()))
+                    .unwrap()
+                    .call
+                    .shell_only()
+            );
+            for field in ["scopeId", "worldId", "principal"] {
+                arguments[field] = json!("forged");
+                assert!(Request::decode(&request(method, arguments.clone())).is_err());
+                arguments.as_object_mut().unwrap().remove(field);
+            }
+        }
+    }
+    #[test]
+    fn template_creation_with_permissions_requires_shell_and_object() {
+        let method = "world-sessions.create-from-template-with-permissions";
+        let arguments = json!({"request":{"digest":"sha256:exact","title":"story","approveRuntimePermissions":true,"permissions":[]}});
+        let call = Request::decode(&request(method, arguments)).unwrap().call;
+        assert!(call.shell_only());
+        assert!(matches!(call, Call::CreateFromTemplateWithPermissions(_)));
+        for invalid in [
+            json!({}),
+            json!({"request":"{}"}),
+            json!({"request":{},"scopeId":"foreign"}),
+        ] {
+            assert!(Request::decode(&request(method, invalid)).is_err());
+        }
+    }
+    #[test]
     fn methods_preserve_bounds_and_shell_authority() {
         assert!(
             Request::decode(&request("ui.layout.get", json!({})))
@@ -599,7 +752,7 @@ mod tests {
         );
     }
     #[test]
-    fn templates_are_administrative_and_state_cannot_select_preference_owners() {
+    fn templates_use_own_authority_and_state_cannot_select_preference_owners() {
         for (method, args) in [
             ("world-sessions.list-templates", json!({})),
             (
@@ -613,7 +766,7 @@ mod tests {
             ),
         ] {
             assert!(
-                Request::decode(&request(method, args))
+                !Request::decode(&request(method, args))
                     .unwrap()
                     .call
                     .shell_only()
@@ -652,7 +805,7 @@ mod tests {
         );
     }
     #[test]
-    fn package_transfer_is_shell_only_bounded_and_has_no_path_dispatch() {
+    fn package_transfer_uses_own_authority_and_has_no_path_dispatch() {
         for (method, args) in [
             ("packages.begin-upload", json!({"size":"1073741824"})),
             (
@@ -669,7 +822,7 @@ mod tests {
             ("world-sessions.begin-export", json!({"worldId":"world"})),
         ] {
             assert!(
-                Request::decode(&request(method, args))
+                !Request::decode(&request(method, args))
                     .unwrap()
                     .call
                     .shell_only()
@@ -701,5 +854,41 @@ mod tests {
             ))
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    #[test]
+    fn live_policy_inspection_and_application_remain_shell_only() {
+        for (method, args) in [
+            (
+                "runtime-policy.live-component",
+                serde_json::json!({"scopeId":"world:a","instanceId":"ai","componentId":"backend"}),
+            ),
+            (
+                "runtime-policy.apply-live-change",
+                serde_json::json!({"change":{"target":{},"delta":{}}}),
+            ),
+        ] {
+            let mut request = serde_json::json!({"v":1,"id":"policy","channel":"channel","method":method,"args":args});
+            assert!(
+                Request::decode(&serde_json::to_vec(&request).unwrap())
+                    .unwrap()
+                    .call
+                    .shell_only()
+            );
+            request["args"]["foreignOwner"] = serde_json::json!("b");
+            assert!(Request::decode(&serde_json::to_vec(&request).unwrap()).is_err());
+        }
+    }
+    #[test]
+    fn exact_origin_approval_is_shell_only_and_rejects_forged_fields() {
+        let bytes = serde_json::to_vec(&serde_json::json!({"v":1,"id":"approval","channel":"channel","method":"runtime-policy.grant-http-origin","args":{"scopeId":"world:a","instanceId":"ai","componentId":"backend","origin":"http://127.0.0.1:11434"}})).unwrap();
+        assert!(Request::decode(&bytes).unwrap().call.shell_only());
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        value["args"]["grantAll"] = serde_json::json!(true);
+        assert!(Request::decode(&serde_json::to_vec(&value).unwrap()).is_err());
     }
 }

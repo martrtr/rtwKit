@@ -11,6 +11,6 @@ fn main() {
             "schema": card,
             "assetRefs": "browser-v1",
             "portable": true
-        }]})
+        }, {"key":model::GREETING,"componentId":"backend","schema":model::greeting_schema(),"assetRefs":"native","portable":true}]})
     );
 }

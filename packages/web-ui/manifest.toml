@@ -8,4 +8,12 @@ kind = "ui"
 target = "rintawa.runtime.web-bundle@2"
 entry = "web-bundle.toml"
 [components.permissions]
-runtime = ["background-task", "world-session-read", "world-session-write"]
+runtime = ["background-task", "world-session-read", "world-session-write", "runtime-policy-write"]
+
+[[components]]
+id = "home"
+kind = "ui"
+target = "rintawa.runtime.web-bundle@2"
+entry = "home-bundle.toml"
+[components.permissions]
+runtime = ["background-task", "world-session-read"]

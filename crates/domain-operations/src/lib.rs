@@ -42,27 +42,27 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
-enum State<W> {
+enum State<W, R> {
     Pending(W),
-    Terminal(Outcome),
+    Terminal(R),
 }
-struct Slot<W> {
+struct Slot<W, R> {
     caller: Caller,
-    state: State<W>,
+    state: State<W, R>,
     released: bool,
 }
 
-pub struct Operations<W> {
-    slots: BTreeMap<String, Slot<W>>,
+pub struct Operations<W, R = Outcome> {
+    slots: BTreeMap<String, Slot<W, R>>,
 }
-impl<W> Default for Operations<W> {
+impl<W, R> Default for Operations<W, R> {
     fn default() -> Self {
         Self {
             slots: BTreeMap::new(),
         }
     }
 }
-impl<W> Operations<W> {
+impl<W, R> Operations<W, R> {
     pub fn new() -> Self {
         Self::default()
     }
@@ -84,7 +84,7 @@ impl<W> Operations<W> {
         );
         Ok(())
     }
-    pub fn status(&self, token: &str, caller: &Caller) -> Result<Option<&Outcome>, Error> {
+    pub fn status(&self, token: &str, caller: &Caller) -> Result<Option<&R>, Error> {
         let slot = self
             .slots
             .get(token)
@@ -121,7 +121,7 @@ impl<W> Operations<W> {
             State::Terminal(_) => None,
         }
     }
-    pub fn finish(&mut self, token: &str, outcome: Outcome) -> Result<(), Error> {
+    pub fn finish(&mut self, token: &str, outcome: R) -> Result<(), Error> {
         let slot = self.slots.get_mut(token).ok_or(Error::InvalidOperation)?;
         if !matches!(slot.state, State::Pending(_)) {
             return Err(Error::InvalidOperation);

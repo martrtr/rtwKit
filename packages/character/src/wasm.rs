@@ -1,5 +1,7 @@
 //! Activation-owned, staged Character import. Only one file buffer is live at a time.
-use crate::model::{self, Asset, CARD, Card, IMPORT, Import, MAX_JSON, MAX_PNG};
+use crate::model::{
+    self, Asset, CARD, Card, GREETING, Greeting, IMPORT, Import, MAX_JSON, MAX_PNG,
+};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rintawa_character_library::{
     TavernV2Artwork, TavernV2DecodedSource, decode_tavern_v2_source, normalize_tavern_v2_source,
@@ -102,6 +104,7 @@ struct Work {
     item_id: Uuid,
     resource: Option<user_resources::ResourceRef>,
     upload: Option<u64>,
+    greeting: Option<Greeting>,
     stage: Stage,
 }
 #[derive(Default)]
@@ -169,6 +172,13 @@ impl exports::rintawa::engine::guest::Guest for Character {
             .expect("Character contract");
         registration::provide_contract(CONTRACT, 1, &[]).expect("Character provider");
         let (card, command) = model::schemas();
+        world_registration::register_world_schema(
+            "rintawa.character.greeting",
+            1,
+            world_registration::SchemaKind::Property,
+            &model::greeting_schema().to_string(),
+        )
+        .expect("Character greeting");
         world_registration::register_world_schema(
             "rintawa.character.card",
             1,
@@ -307,6 +317,7 @@ impl State {
                     item_id,
                     resource: None,
                     upload: None,
+                    greeting: None,
                     stage: Stage::Queued,
                 },
             )
@@ -417,6 +428,7 @@ impl Work {
             }
             Stage::Normalize { source, decoded } => {
                 let imported = normalize_tavern_v2_source(decoded).map_err(|_| "invalid-card")?;
+                self.greeting = Some(Greeting::from_source(imported.template.session.greeting));
                 let media_type = if imported.portrait.is_some() {
                     "image/png"
                 } else {
@@ -483,6 +495,7 @@ impl Work {
                 let input = Import {
                     item_id: self.item_id,
                     card,
+                    greeting: self.greeting.take().ok_or("invalid-card")?,
                 };
                 model::changes(&input, false)?;
                 let payload = serde_json::to_string(&input).map_err(|_| "invalid-character")?;
@@ -574,7 +587,10 @@ fn get(item_id: Uuid) -> Result<Value, &'static str> {
     let record = world_data::load_property(&item_id.to_string(), CARD)
         .map_err(world_error)?
         .ok_or("not-found")?;
-    Ok(json!({"id":item_id,"card":property_data(record)?}))
+    let greeting = world_data::load_property(&item_id.to_string(), GREETING)
+        .map_err(world_error)?
+        .ok_or("greeting-unavailable")?;
+    Ok(json!({"id":item_id,"card":property_data(record)?,"greeting":property_data(greeting)?}))
 }
 fn list(after: Option<Uuid>) -> Result<Value, &'static str> {
     let cursor = after.map(|id| id.to_string());

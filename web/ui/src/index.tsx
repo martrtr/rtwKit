@@ -3,6 +3,7 @@ export function Button({ className = '', type = 'button', ...props }: ButtonHTML
   return <button {...props} type={type} className={`rtw-button ${className}`} />;
 }
 const paths = {
+  settings: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2',
   plus: 'M12 5v14M5 12h14',
   close: 'm6 6 12 12M18 6 6 18',
   arrow: 'M5 12h14m-6-6 6 6-6 6',

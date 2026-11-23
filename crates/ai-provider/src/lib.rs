@@ -53,9 +53,12 @@ impl OpenAiConnection {
         if base.is_empty()
             || base.len() > MAX_PROVIDER_URL_BYTES
             || !(base.starts_with("https://")
-                || base.starts_with("http://localhost:")
-                || base.starts_with("http://127.0.0.1:")
-                || base.starts_with("http://[::1]:"))
+                || ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+                    .iter()
+                    .any(|prefix| {
+                        base.strip_prefix(prefix)
+                            .is_some_and(|tail| tail.is_empty() || tail.starts_with([':', '/']))
+                    }))
             || base.contains(['?', '#', '@', '\\', '\r', '\n'])
             || self.model.trim().is_empty()
             || self.model.len() > MAX_PROVIDER_MODEL_BYTES
@@ -243,6 +246,13 @@ impl OpenAiStreamDecoder {
             if choice.get("index").and_then(Value::as_u64) != Some(0) {
                 continue;
             }
+            if choice.get("delta").is_some_and(|delta| {
+                ["tool_calls", "function_call"]
+                    .iter()
+                    .any(|key| delta.get(key).is_some_and(|value| !value.is_null()))
+            }) {
+                return Err(ProviderError::InvalidStream);
+            }
             if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
                 if reason.is_empty() || reason.len() > 64 {
                     return Err(ProviderError::InvalidStream);
@@ -386,6 +396,21 @@ mod tests {
             parser.push(b"data: unexpected\n\n"),
             Err(ProviderError::InvalidStream)
         );
+    }
+
+    #[test]
+    fn should_reject_tool_deltas_even_with_stop_finish_reason() {
+        for key in ["tool_calls", "function_call"] {
+            let mut parser = OpenAiStreamDecoder::default();
+            let packet = format!(
+                "data: {}\n\n",
+                json!({"choices":[{"index":0,"delta":{key:{"name":"tool"},"content":"untrusted"},"finish_reason":"stop"}]})
+            );
+            assert_eq!(
+                parser.push(packet.as_bytes()),
+                Err(ProviderError::InvalidStream)
+            );
+        }
     }
 
     #[test]

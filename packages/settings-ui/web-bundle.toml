@@ -1,0 +1,6 @@
+entry = "web/index.html"
+title = "Settings"
+launchable = false
+[[provides]]
+id = "rintawa.ui.settings.renderer"
+version = 1

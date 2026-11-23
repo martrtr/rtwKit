@@ -82,7 +82,7 @@ try {
   await eventually(async () => Math.abs(await cdp.evaluate('document.querySelector("iframe").getBoundingClientRect().width') - widthBefore) > 30, 'real split resize');
   checks.push('Dockview split resizes through real browser pointer input');
   const before = await cdp.evaluate('Array.from(document.querySelector("canvas").getContext("2d").getImageData(0,0,1,1).data)', first);
-  await cdp.click('Light theme');
+  await cdp.click('Settings');await cdp.click('Appearance');await cdp.evaluate('(()=>{const e=document.querySelector("#settings-theme");e.value="light";e.dispatchEvent(new Event("change",{bubbles:true}));})()');await cdp.click('Close dialog');
   await eventually(async () => JSON.stringify(await cdp.evaluate('Array.from(document.querySelector("canvas").getContext("2d").getImageData(0,0,1,1).data)', first)) !== JSON.stringify(before), 'Canvas theme update');
   checks.push('theme reaches Canvas through bound MessagePort');
   await cdp.waitText('Layout saved');
