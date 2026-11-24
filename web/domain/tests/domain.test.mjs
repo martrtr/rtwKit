@@ -50,3 +50,22 @@ test('terminal release recovers from local rejection and a lost cleanup acknowle
   await domain.release(operation);
   assert.deepEqual(calls, ['release', 'release', 'release']);
 });
+
+test('cumulative pending text survives missed polls and is delivered once per changed snapshot before COMMIT', async () => {
+  const states = [{status:'pending',text:'При'}, {status:'pending',text:'При'}, {status:'pending'}, {status:'pending',text:'Привет 🌍'}, {status:'committed',itemIds:[id]}];
+  const calls=[], texts=[];
+  const domain=new DomainClient({query:async(_point,bytes)=>{const q=JSON.parse(new TextDecoder().decode(bytes));calls.push(q.method);return reply(q.method==='release'?null:states.shift());}},'owner/v1');
+  assert.deepEqual(await domain.wait(operation,undefined,text=>texts.push(text)),{status:'committed',itemIds:[id]});
+  assert.deepEqual(texts,['При','Привет 🌍']);assert.equal(calls.filter(c=>c.startsWith('begin-')).length,0);
+});
+test('invalid or rewritten snapshots fail closed; abort cannot deliver a late prefix', async () => {
+  for(const text of [42,'я'.repeat(8193)]){
+    const domain=new DomainClient({query:async()=>reply({status:'pending',text})},'owner/v1');
+    await assert.rejects(domain.status(operation),e=>e.code==='protocol-error');
+  }
+  let reads=0;const rewritten=new DomainClient({query:async()=>reply({status:'pending',text:++reads===1?'first':'other'})},'owner/v1');
+  await assert.rejects(rewritten.wait(operation),e=>e.code==='protocol-error');
+  const controller=new AbortController(),text=[];
+  const late=new DomainClient({query:async()=>{controller.abort();return reply({status:'pending',text:'late'});}},'owner/v1');
+  await assert.rejects(late.wait(operation,controller.signal,v=>text.push(v)),e=>e.name==='AbortError');assert.deepEqual(text,[]);
+});

@@ -617,6 +617,16 @@ impl State {
             .map_err(Failure::reject)?;
         let value=match &request.call {
             Call::BeginQuery {point,payload}=>{let h=host_result(transport::begin_query(point,payload))?;resources.insert(Kind::Query,h,None);json!(Handle(h))}
+            Call::BeginQueryTo {point,payload,expected}=>{
+                let target=runtime_context::Principal {
+                    instance_id:expected.instance_id.clone(),
+                    component_id:expected.component_id.clone(),
+                    activation:expected.activation.0,
+                };
+                let h=host_result(transport::begin_query_to(point,payload,&target))?;
+                resources.insert(Kind::Query,h,None);
+                json!(Handle(h))
+            }
             Call::PollQuery(h)=> {
                 let h=require(resources,Kind::Query,*h)?;
                 let result=host_result(transport::poll_query(h));

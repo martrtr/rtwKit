@@ -54,6 +54,8 @@ enum ResultValue {
     },
     Failed {
         reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
     },
 }
 #[derive(Default)]
@@ -152,8 +154,8 @@ fn catalog(world: bool) -> Result<Catalog, &'static str> {
 fn save_catalog(catalog: &Catalog, previous: Option<&str>) -> Result<(), &'static str> {
     catalog.validate()?;
     let value = serde_json::to_string(catalog).map_err(|_| "invalid-configuration")?;
-    preferences::compare_exchange_published_preference(previous, Some(&value)).map_err(|error| {
-        match error {
+    preferences::compare_exchange_published_preference(previous, Some(&value)).map_err(
+        |error| match error {
             preferences::PublishedWriteError::Conflict => "configuration-changed",
             preferences::PublishedWriteError::PermissionDenied => {
                 "shared-settings-write-permission-required"
@@ -162,8 +164,15 @@ fn save_catalog(catalog: &Catalog, previous: Option<&str>) -> Result<(), &'stati
             preferences::PublishedWriteError::MessageTooLarge
             | preferences::PublishedWriteError::QuotaExceeded => "limit-exceeded",
             preferences::PublishedWriteError::Unavailable => "configuration-write-unknown",
-        }
-    })
+        },
+    )?;
+    // Publish only into this activation's transport scope after the canonical CAS.
+    // Other Worlds discover this catalog change through authoritative reconciliation.
+    let _ = transport::publish(
+        "rintawa/ai/connections-changed/v1",
+        br#"{"v":1,"resource":null}"#,
+    );
+    Ok(())
 }
 fn new_connection_id() -> Result<Uuid, &'static str> {
     let bytes: [u8; 16] = host::random_bytes(16)
@@ -199,6 +208,7 @@ fn answer(result: Result<Value, &str>) -> Vec<u8> {
 fn failed(reason: &str) -> ResultValue {
     ResultValue::Failed {
         reason: reason.into(),
+        text: None,
     }
 }
 impl exports::rintawa::engine::guest::Guest for Provider {
@@ -344,7 +354,10 @@ impl State {
                 .status(&operation, &who)
                 .map_err(|_| "invalid-operation")?
             {
-                None => Ok(json!({"status":"pending"})),
+                None => Ok(match self.operations.work_mut(&operation) {
+                    Some(Work::Http(work)) => json!({"status":"pending","text":work.text}),
+                    _ => json!({"status":"pending"}),
+                }),
                 Some(v) => serde_json::to_value(v).map_err(|_| "unavailable"),
             },
             Call::Release { operation } => {
@@ -686,6 +699,13 @@ fn poll(work: &mut Work) -> Option<ResultValue> {
                                 }
                                 h.text.push_str(&text);
                             }
+                            if serde_json::to_vec(
+                                &json!({"ok":true,"value":{"status":"pending","text":h.text}}),
+                            )
+                            .map_or(true, |bytes| bytes.len() > 60 * 1024)
+                            {
+                                return Some(failed("answer-too-large"));
+                            }
                         }
                         Ok(http_request::Event::Completed) => {
                             let finished = std::mem::take(&mut h.decoder).finish(&h.model);
@@ -713,6 +733,23 @@ fn poll(work: &mut Work) -> Option<ResultValue> {
                 }
                 None
             })();
+            let result = result.map(|value| {
+                if let ResultValue::Failed { reason, .. } = &value
+                    && h.ok
+                    && !h.text.trim().is_empty()
+                {
+                    let retained = ResultValue::Failed {
+                        reason: reason.clone(),
+                        text: Some(std::mem::take(&mut h.text)),
+                    };
+                    if serde_json::to_vec(&json!({"ok":true,"value":&retained}))
+                        .is_ok_and(|bytes| bytes.len() <= 60 * 1024)
+                    {
+                        return retained;
+                    }
+                }
+                value
+            });
             if result.is_some() {
                 let _ = http_request::close(h.handle);
             }

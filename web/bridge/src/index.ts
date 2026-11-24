@@ -85,6 +85,10 @@ export class Client {
   #urls = new Set<string>();
   #stop = new AbortController();
   #policyListeners = new Set<() => void>();
+  #visibilityListeners = new Set<() => void>();
+  visible = true;
+  onVisibilityChanged(handler: () => void): () => void { this.#visibilityListeners.add(handler); return () => { this.#visibilityListeners.delete(handler); }; }
+  visibilityChanged(visible: boolean): void { if (this.visible === visible) return; this.visible = visible; for (const handler of this.#visibilityListeners) handler(); }
   #slots = new Map<string, () => void>();
   onPermissionsChanged(handler: () => void): () => void { this.#policyListeners.add(handler); return () => { this.#policyListeners.delete(handler); }; }
   permissionsChanged(): void { if (!this.#closed) for (const handler of this.#policyListeners) handler(); }
@@ -101,6 +105,28 @@ export class Client {
     if (payload.length > 65536) throw new BridgeError('message-too-large', 'not-started');
     return handle(await this.request('transport.begin-query', { point, payload: encodeBytes(payload) }));
   }
+  async beginQueryTo(point: string, payload: Uint8Array, expected: Caller): Promise<string> {
+    if (payload.length > 65536) throw new BridgeError('message-too-large', 'not-started');
+    if (!expected || typeof expected.instanceId !== 'string' || typeof expected.componentId !== 'string' || !expected.instanceId || !expected.componentId || expected.instanceId.length > 256 || expected.componentId.length > 256) throw new BridgeError('invalid-request', 'not-started');
+    return handle(await this.request('transport.begin-query-to', { point, payload: encodeBytes(payload), expected: { instanceId: expected.instanceId, componentId: expected.componentId, activation: handle(expected.activation) } }));
+  }
+  async queryTo(point: string, payload: Uint8Array, expected: Caller, signal?: AbortSignal): Promise<Uint8Array[]> {
+    if (signal?.aborted) throw new DOMException('Query observation stopped', 'AbortError');
+    const query = await this.beginQueryTo(point, payload, expected);
+    try {
+      for (;;) {
+        if (signal?.aborted) throw new DOMException('Query observation stopped', 'AbortError');
+        const replies = await this.request('transport.poll-query-sourced', { handle: query });
+        if (replies === null) { await delay(20); continue; }
+        if (!Array.isArray(replies) || replies.some(reply => !record(reply) || !record(reply.provider) || reply.provider.instanceId !== expected.instanceId || reply.provider.componentId !== expected.componentId || reply.provider.activation !== expected.activation)) throw new BridgeError('unavailable');
+        return replies.map(reply => decodeBytes(reply.payload));
+      }
+    } catch (error) {
+      void this.closeQuery(query).catch(() => {});
+      if (error instanceof BridgeError) throw new BridgeError(error.code, 'unknown');
+      throw error;
+    }
+  }
   async pollQuery(query: string): Promise<Uint8Array[] | null> {
     const result = await this.request('transport.poll-query', { handle: handle(query) });
     if (result === null) return null;
@@ -108,10 +134,12 @@ export class Client {
     return result.map(decodeBytes);
   }
   closeQuery(query: string): Promise<unknown> { return this.request('transport.close-query', { handle: handle(query) }); }
-  async query(point: string, payload: Uint8Array): Promise<Uint8Array[]> {
+  async query(point: string, payload: Uint8Array, signal?: AbortSignal): Promise<Uint8Array[]> {
+    if (signal?.aborted) throw new DOMException('Query observation stopped', 'AbortError');
     const query = await this.beginQuery(point, payload);
     try {
       for (;;) {
+        if (signal?.aborted) throw new DOMException('Query observation stopped', 'AbortError');
         const result = await this.pollQuery(query);
         if (result !== null) return result;
         await delay(20);
@@ -125,10 +153,12 @@ export class Client {
       throw error;
     }
   }
-  async querySourced(point: string, payload: Uint8Array): Promise<SourcedReply[]> {
+  async querySourced(point: string, payload: Uint8Array, signal?: AbortSignal): Promise<SourcedReply[]> {
+    if (signal?.aborted) throw new DOMException('Query observation stopped', 'AbortError');
     const query = await this.beginQuery(point, payload);
     try {
       for (;;) {
+        if (signal?.aborted) throw new DOMException('Query observation stopped', 'AbortError');
         const replies = await this.request('transport.poll-query-sourced', { handle: query });
         if (replies === null) { await delay(20); continue; }
         if (!Array.isArray(replies)) throw new BridgeError('protocol-error');
@@ -226,14 +256,14 @@ export class Client {
     const url = URL.createObjectURL(new Blob(parts, { type: reference.mediaType })); this.#urls.add(url);
     return { url, revoke: () => { URL.revokeObjectURL(url); this.#urls.delete(url); } };
   }
-  dispose(): void { if (this.#slots.size) void this.#call('ui.slot.clear', {}).catch(() => {}); for (const cleanup of this.#slots.values()) cleanup(); this.#slots.clear(); this.#policyListeners.clear(); this.#closed = true; this.#stop.abort(); for (const url of this.#urls) URL.revokeObjectURL(url); this.#urls.clear(); }
+  dispose(): void { if (this.#slots.size) void this.#call('ui.slot.clear', {}).catch(() => {}); for (const cleanup of this.#slots.values()) cleanup(); this.#slots.clear(); this.#policyListeners.clear(); this.#visibilityListeners.clear(); this.#closed = true; this.#stop.abort(); for (const url of this.#urls) URL.revokeObjectURL(url); this.#urls.clear(); }
 }
 
 function forgetSession(): void { try { sessionStorage.removeItem('rintawa.session'); } catch { /* Server rejects/revokes the credential independently. */ } }
 
 const tokens = {
-  light: { background: '#ffffff', surface: '#f6f6f7', text: '#171719', muted: '#6d6d76', accent: '#765383', border: '#e6e6e9', hover: '#ededf0', raised: '#ffffff', error: '#be4545', positive: '#438462' },
-  dark: { background: '#000000', surface: '#080808', text: '#eeeeef', muted: '#85858f', accent: '#c9a6db', border: '#1b1b1f', hover: '#131315', raised: '#101012', error: '#e58a8a', positive: '#8cbaa2' },
+  light: { background: '#ffffff', surface: '#f6f6f7', text: '#171719', muted: '#6d6d76', accent: '#765383', border: '#e6e6e9', hover: '#ededf0', raised: '#ffffff', error: '#be4545', positive: '#30724d', 'on-accent': '#ffffff', 'accent-hover': '#674574', 'accent-surface': '#f0eaf4', selected: '#e9dff0', 'selected-text': '#382044', 'border-strong': '#b3acba', placeholder: '#706a77', selection: '#765383', 'selection-text': '#ffffff', 'error-surface': '#fff0f0', overlay: '#0006', shadow: '#0003' },
+  dark: { background: '#000000', surface: '#080808', text: '#eeeeef', muted: '#85858f', accent: '#c9a6db', border: '#1b1b1f', hover: '#131315', raised: '#101012', error: '#e58a8a', positive: '#8cbaa2', 'on-accent': '#170f1c', 'accent-hover': '#dfc1ed', 'accent-surface': '#1b1421', selected: '#211927', 'selected-text': '#eadcf2', 'border-strong': '#514758', placeholder: '#85808e', selection: '#634871', 'selection-text': '#ffffff', 'error-surface': '#190d10', overlay: '#000b', shadow: '#0009' },
 };
 export type Palette = typeof tokens.light;
 export function applyTheme(theme: Theme, element: HTMLElement = document.documentElement): Palette {
@@ -253,12 +283,14 @@ export async function connectPanel(onTheme: (theme: Theme, palette: Palette) => 
       if (event.source !== window.parent || event.origin !== origin || !record(data) || data.v !== 1 || data.type !== 'rtw:init' || data.nonce !== nonce || event.ports.length !== 1) return;
       clearTimeout(timer); window.removeEventListener('message', receive);
       const port = event.ports[0]; const rpc = new Rpc(value => port.postMessage(value), 2000, () => port.close()); const client = new Client((method, args) => rpc.request(method, args), viewState(data.state) ? data.state : {});
+      client.visibilityChanged(data.visible !== false);
       const dispose = () => { client.dispose(); rpc.close(); port.close(); };
       port.onmessage = event => {
         const value = event.data;
         if (record(value) && value.v === 1 && value.type === 'theme' && record(value.theme) && (value.theme.mode === 'light' || value.theme.mode === 'dark')) {
           const theme = value.theme as Theme; onTheme(theme, applyTheme(theme));
-        } else if (record(value) && value.v === 1 && value.type === 'permissions-changed') client.permissionsChanged();
+        } else if (record(value) && value.v === 1 && value.type === 'visibility' && typeof value.visible === 'boolean') client.visibilityChanged(value.visible);
+        else if (record(value) && value.v === 1 && value.type === 'permissions-changed') client.permissionsChanged();
         else if (record(value) && value.v === 1 && value.type === 'slot-closed' && typeof value.slot === 'string') client.slotClosed(value.slot);
         else if (record(value) && value.v === 1 && value.type === 'close') dispose();
         else rpc.accept(value);
@@ -266,19 +298,40 @@ export async function connectPanel(onTheme: (theme: Theme, palette: Palette) => 
       port.onmessageerror = dispose; window.addEventListener('pagehide', dispose, { once: true }); port.start(); resolve(client);
     };
     window.addEventListener('message', receive);
-    const hello = () => window.parent.postMessage({ v: 1, type: 'rtw:hello', nonce }, origin);
+    const hello = () => window.parent.postMessage({ v: 1, type: 'rtw:hello', nonce, visibility: true }, origin);
     if (document.readyState === 'complete') hello(); else window.addEventListener('load', hello, { once: true });
   });
 }
 
 type Rectangle = { x: number; y: number; width: number; height: number };
 type Slot = { rect: Rectangle; box: HTMLDivElement; abort: AbortController; close?: () => Promise<void>; frame?: HTMLIFrameElement };
-type FrameBinding = { view: View; state: ViewState; frame: HTMLIFrameElement; channel: string; nonce: string; parent?: FrameBinding; slots: Map<string, Slot>; bootstrap?: ReturnType<typeof setTimeout>; port?: MessagePort; loaded: boolean; used: boolean; closed: boolean; pending: Set<string>; onClosed: () => void };
+type FrameBinding = { view: View; state: ViewState; frame: HTMLIFrameElement; channel: string; nonce: string; parent?: FrameBinding; slots: Map<string, Slot>; bootstrap?: ReturnType<typeof setTimeout>; port?: MessagePort; loaded: boolean; used: boolean; closed: boolean; pending: Set<string>; visible?: boolean; visibilityEvents?: boolean; onClosed: () => void };
 export class RootBridge {
   #socket: WebSocket;
   #rpc: Rpc;
   #channel: string;
   #frames = new Set<FrameBinding>();
+  #visibilityTimer?: ReturnType<typeof setTimeout>;
+  #visibilityWatch = () => {
+    clearTimeout(this.#visibilityTimer); this.#visibilityTimer = undefined;
+    if (this.#closed) return;
+    for (const binding of this.#frames) {
+      const visible = this.#frameVisible(binding);
+      if (binding.visible !== visible) { binding.visible = visible; if (binding.visibilityEvents) binding.port?.postMessage({ v: 1, type: 'visibility', visible }); }
+    }
+    if (this.#frames.size && typeof document !== 'undefined') this.#visibilityTimer = setTimeout(this.#visibilityWatch, 250);
+  };
+  #frameVisible(binding: FrameBinding): boolean {
+    if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return true;
+    if (document.visibilityState === 'hidden' || !binding.frame.getClientRects().length) return false;
+    const rect = binding.frame.getBoundingClientRect();
+    if (!rect.width || !rect.height || rect.right <= 0 || rect.bottom <= 0 || rect.left >= innerWidth || rect.top >= innerHeight) return false;
+    for (let element: HTMLElement | null = binding.frame; element; element = element.parentElement) {
+      const style = getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    }
+    return !binding.parent || this.#frameVisible(binding.parent);
+  }
   #theme: Theme = { mode: 'dark' };
   #closed = false;
   #reconcileTimer?: ReturnType<typeof setTimeout>;
@@ -296,10 +349,11 @@ export class RootBridge {
     this.#socket = socket; this.#rpc = rpc; this.#channel = channel;
     this.client = new Client((method, args) => rpc.request(method, args, channel));
     this.#receive = event => this.#hello(event); window.addEventListener('message', this.#receive);
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.#visibilityWatch);
     socket.addEventListener('close', () => {
       window.removeEventListener('message', this.#receive); rpc.close(); this.client.dispose();
       for (const binding of this.#frames) this.#detach(binding); this.#frames.clear();
-      this.#closed = true;
+      this.#closed = true; clearTimeout(this.#visibilityTimer); if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.#visibilityWatch);
       for (const listener of this.#disconnectListeners) listener();
     });
   }
@@ -354,7 +408,7 @@ export class RootBridge {
       const frame = document.createElement('iframe'); frame.sandbox.add('allow-scripts'); frame.referrerPolicy = 'no-referrer'; frame.src = target.href;
       const binding: FrameBinding = { view, state, frame, channel: mounted.channel, nonce, slots: new Map(), loaded: false, used: false, closed: false, pending: new Set(), onClosed };
       binding.bootstrap = setTimeout(() => { if (!binding.used) void this.#release(binding).catch(() => this.disconnect()); }, 5000);
-      this.#frames.add(binding); frame.addEventListener('load', () => { if (binding.loaded) void this.#release(binding).catch(() => this.disconnect()); else binding.loaded = true; });
+      this.#frames.add(binding); this.#visibilityWatch(); frame.addEventListener('load', () => { if (binding.loaded) void this.#release(binding).catch(() => this.disconnect()); else binding.loaded = true; });
       container.append(frame);
       return { frame, close: () => this.#release(binding) };
     } catch (error) {
@@ -367,7 +421,7 @@ export class RootBridge {
     if (event.origin !== 'null' || !record(data) || data.v !== 1 || data.type !== 'rtw:hello' || typeof data.nonce !== 'string') return;
     const binding = [...this.#frames].find(binding => binding.loaded && !binding.used && !binding.closed && binding.frame.contentWindow === event.source && binding.nonce === data.nonce);
     if (!binding || !binding.frame.contentWindow) return;
-    binding.used = true; clearTimeout(binding.bootstrap); const ports = new MessageChannel(); binding.port = ports.port1;
+    binding.used = true; binding.visibilityEvents = data.visibility === true; clearTimeout(binding.bootstrap); const ports = new MessageChannel(); binding.port = ports.port1;
     ports.port1.onmessage = event => {
       const value = event.data;
       if (binding.closed) return;
@@ -382,7 +436,7 @@ export class RootBridge {
       ).finally(() => binding.pending.delete(id));
     };
     ports.port1.onmessageerror = () => { void this.#release(binding).catch(() => this.disconnect()); }; ports.port1.start();
-    binding.frame.contentWindow.postMessage({ v: 1, type: 'rtw:init', nonce: binding.nonce, state: binding.state }, '*', [ports.port2]);
+    binding.frame.contentWindow.postMessage({ v: 1, type: 'rtw:init', nonce: binding.nonce, state: binding.state, visible: this.#frameVisible(binding) }, '*', [ports.port2]);
     ports.port1.postMessage({ v: 1, type: 'theme', theme: this.#theme });
   }
   async #callFrame(binding: FrameBinding, method: string, args: Record<string, unknown>): Promise<unknown> {
@@ -519,5 +573,5 @@ export class RootBridge {
   async setLayout(layout: unknown): Promise<unknown> { return this.client.request('ui.layout.set', { layout }); }
   async resetLayout(): Promise<unknown> { return this.client.request('ui.layout.reset'); }
   async logout(): Promise<void> { try { await this.client.request('session.close'); } finally { forgetSession(); this.disconnect(); } }
-  disconnect(): void { this.#closed = true; clearTimeout(this.#reconcileTimer); window.removeEventListener('message', this.#receive); for (const binding of this.#frames) this.#detach(binding); this.#socket.close(); this.#rpc.close(); this.client.dispose(); }
+  disconnect(): void { this.#closed = true; clearTimeout(this.#visibilityTimer); if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.#visibilityWatch); clearTimeout(this.#reconcileTimer); window.removeEventListener('message', this.#receive); for (const binding of this.#frames) this.#detach(binding); this.#socket.close(); this.#rpc.close(); this.client.dispose(); }
 }

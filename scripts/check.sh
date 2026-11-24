@@ -16,6 +16,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-de
 cargo run --quiet --locked -p rtwkit-registry-tool -- validate-repository .
 npm run typecheck
 npm run test:bridge
+node scripts/story-commit-recovery-test.mjs
 npm run build:web
 node scripts/assemble-web-package.mjs web-ui
 node scripts/assemble-web-package.mjs settings-ui

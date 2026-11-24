@@ -33,3 +33,5 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) { return <in
 export function Status({ children, error = false }: { children: ReactNode; error?: boolean }) {
   return <p className={`rtw-status${error ? ' error' : ''}`} role={error ? 'alert' : 'status'}>{children}</p>;
 }
+
+export { SplitPane } from './SplitPane';

@@ -6,7 +6,7 @@ type World = { worldId: string; title: string; active: boolean; pendingActive: b
 type Export = { world: World; phase: 'review' | 'working' | 'ready' | 'saving'; handle?: string; size?: number };
 const message = (error: unknown) => error instanceof Error ? error.message : 'Operation unavailable';
 const cancelled = (error: unknown) => error instanceof DOMException && error.name === 'AbortError';
-export function WorldActions({ bridge, world, views, open, reset, refresh, deleted, stopping, fail, settings }: {
+export function WorldActions({closeView, canCloseView, bridge, world, views, open, reset, refresh, deleted, stopping, fail, settings }: {closeView: () => void; canCloseView: boolean;
   bridge: RootBridge; world: World | null; views: View[];
   open: (view: View) => void; reset: () => Promise<void>; refresh: () => Promise<unknown>;
   settings: () => void; deleted: (id: string) => Promise<void>; stopping: (id: string) => void; fail: (error: unknown) => void;
@@ -103,6 +103,7 @@ export function WorldActions({ bridge, world, views, open, reset, refresh, delet
     }}>
       <button role="menuitem" onClick={() => menuAction(settings)}><Icon name="settings" size={15} />Settings</button>
       {world && <>
+      <button role="menuitem" disabled={!canCloseView} onClick={()=>menuAction(closeView)}>Close active view</button>
       <button role="menuitem" disabled={!world} onClick={() => menuAction(() => { setError(''); setJob({ world: world!, phase: 'review' }); })}>Export World…</button>
       <button role="menuitem" className="danger" disabled={!world} onClick={() => menuAction(() => { setError(''); setRemove(world); })}>Delete World…</button>
       <div className="menu-divider" role="separator" />

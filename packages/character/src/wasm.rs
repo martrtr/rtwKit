@@ -251,9 +251,17 @@ impl State {
             };
             let outcome = match world_data::poll(ticket) {
                 Ok(world_data::TicketStatus::Pending) => continue,
-                Ok(world_data::TicketStatus::Committed) => Outcome::Committed {
-                    item_ids: vec![work.item_id.to_string()],
-                },
+                Ok(world_data::TicketStatus::Committed) => {
+                    // A hint is best effort; the native commit remains authoritative.
+                    if let Ok(payload) = serde_json::to_vec(&json!({"v":1,"resource":work.item_id}))
+                        && payload.len() <= 256
+                    {
+                        let _ = transport::publish("rintawa/character/changed/v1", &payload);
+                    }
+                    Outcome::Committed {
+                        item_ids: vec![work.item_id.to_string()],
+                    }
+                }
                 Ok(world_data::TicketStatus::Failed(reason)) => Outcome::Failed { reason },
                 Err(_) => {
                     let _ = world_data::close(ticket);

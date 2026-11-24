@@ -5,7 +5,7 @@
 .character-count { min-width: 23px; padding: 1px 6px; border-radius: 6px; text-align: center; font-size: 11px; color: var(--rtw-muted, #9995a3); background: var(--rtw-raised, #111); }
 .character-subtitle { margin-left: 5px; color: var(--rtw-muted, #9995a3); font-size: 12px; }
 .character-actions .rtw-button { padding: 7px 12px; font-size: 12px; }
-.import-button { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 7px 13px; border: 1px solid var(--rtw-accent, #b8a4e8); border-radius: 8px; color: #09070d; background: var(--rtw-accent, #b8a4e8); font-size: 12px; font-weight: 650; cursor: pointer; }
+.import-button { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 7px 13px; border: 1px solid var(--rtw-accent, #b8a4e8); border-radius: 8px; color: var(--rtw-on-accent); background: var(--rtw-accent, #b8a4e8); font-size: 12px; font-weight: 650; cursor: pointer; }
 .import-button:hover { filter: brightness(1.1); }.import-button.disabled { opacity: .45; cursor: default; }.file-input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; opacity: 0; overflow: hidden; clip-path: inset(50%); }.character-actions:has(.file-input:focus-visible) .import-button { outline: 2px solid var(--rtw-accent, #b8a4e8); outline-offset: 3px; }
 .character-body { max-width: 1080px; margin: 0 auto; padding: 26px 24px 48px; }
 .character-unknown { padding: 12px; border: 1px solid var(--rtw-border, #1b1b1b); border-radius: 8px; overflow-wrap: anywhere; }.character-unknown p { margin: 0 0 8px; }.character-unknown > div { display: flex; flex-wrap: wrap; gap: 8px; }

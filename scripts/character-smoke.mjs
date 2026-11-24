@@ -71,7 +71,7 @@ async function setFile(path, context) {
   await cdp.call('Runtime.releaseObject', { objectId: value.result.objectId }, context.sessionId);
 }
 async function openPanel(title, selector) {
-  await eventually(async () => { await cdp.click('Refresh'); return cdp.evaluate(`!!document.querySelector(${JSON.stringify(`button[title="Open ${title}"]`)})`); }, `${title} catalog`);
+  await eventually(() => cdp.evaluate(`!!document.querySelector(${JSON.stringify(`button[title="Open ${title}"]`)})`), `${title} catalog`);
   await cdp.click(`Open ${title}`);
   return eventually(async () => (await cdp.panelContexts(selector))[0], `${title} iframe`);
 }

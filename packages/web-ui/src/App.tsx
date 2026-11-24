@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { DockviewReact, themeDark, themeLight, type DockviewApi, type DockviewReadyEvent, type IDockviewPanelProps } from 'dockview-react';
 import { BridgeError, RootBridge, resolveView, type View, type Theme, type ViewState, type PermissionRequest } from '@rintawa/bridge';
+import { observeResource, type Observation } from '@rintawa/domain';
 import { Button, Dialog, Icon, Input, Status } from '@rintawa/ui';
 import logo from './assets/logo.png';
 import { WorldActions } from './WorldActions';
@@ -70,27 +71,30 @@ export function App({ bridge }: { bridge: RootBridge }) {
   const [settings, setSettings] = useState<{ scope: string | null } | null>(null);
   const [notice, setNotice] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const dock = useRef<DockviewApi | null>(null);
   const activeByWorld = useRef(new Map<string, string>());
-  const ready = useRef(false); const canSave = useRef(false); const timer = useRef<ReturnType<typeof setTimeout> | null>(null); const [loaded, setLoaded] = useState(false); const saved = useRef<SavedLayout | null>(null);
+  const ready = useRef(false); const canSave = useRef(false); const timer = useRef<ReturnType<typeof setTimeout> | null>(null); const [loaded, setLoaded] = useState(false); const saved = useRef<SavedLayout | null>(null); const initialized=useRef(false);
+  const autoOpenedEntries=useRef(new Set<string>());
   const lastActiveWorlds = useRef(new Set<string>()); const catalogRefreshUntil = useRef(0);
   const updateEntries = useCallback((value: Map<string, SavedPanel>) => { entriesRef.current = value; setEntries(value); }, []);
-  const refresh = useCallback(async () => {
-    const catalog = await bridge.list(); const worlds = await readHost(bridge, 'world-sessions.list-worlds') as World[];
-    if (worlds.some(world => world.active && !lastActiveWorlds.current.has(world.worldId))) catalogRefreshUntil.current = Date.now() + 3000;
-    lastActiveWorlds.current = new Set(worlds.filter(world => world.active).map(world => world.worldId));
-    setViews(catalog); setWorlds(worlds); setReadError(''); return { catalog, worlds };
-  }, [bridge]);
-  useEffect(() => {
-    let live = true;
-    (async () => {
-      const { worlds } = await refresh(); const value = await bridge.getLayout(); const layout = value === null ? null : readLayout(value);
-      if (!live) return;
-      saved.current = layout; updateEntries(new Map(layout?.panels.map(panel => [panel.panelId, panel])));
-      setSelectedWorld(layout?.panels[0]?.restoreKey.worldId ?? null);
-      if (value !== null && !layout) setError('Saved layout is unsupported. Reset it to start fresh.');
-      setLoaded(true);
-    })().catch(error => { if (live) setError(errorText(error)); });
-    return () => { live = false; };
-  }, [bridge, refresh, updateEntries]);
+  const catalogWatch=useRef<Observation|null>(null),catalogValue=useRef<{catalog:View[];worlds:World[]}|null>(null);
+  useEffect(()=>{
+    const watch=observeResource({client:bridge.client,
+      read:async()=>({catalog:await bridge.list(),worlds:await readHost(bridge,'world-sessions.list-worlds') as World[],initialLayout:initialized.current?undefined:await bridge.getLayout()}),
+      apply:value=>{
+        if(!initialized.current){
+          const layout=value.initialLayout===null?null:readLayout(value.initialLayout as string);
+          saved.current=layout;updateEntries(new Map(layout?.panels.map(panel=>[panel.panelId,panel])));
+          setSelectedWorld(layout?.panels[0]?.restoreKey.worldId??null);
+          if(value.initialLayout!==null&&!layout)setError('Saved layout is unsupported. Reset it to start fresh.');
+          initialized.current=true;setLoaded(true);
+        }
+        if(value.worlds.some(world=>world.active&&!lastActiveWorlds.current.has(world.worldId)))catalogRefreshUntil.current=Date.now()+3000;
+        for(const world of value.worlds)if(world.active&&!lastActiveWorlds.current.has(world.worldId))autoOpenedEntries.current.delete(world.worldId);
+        lastActiveWorlds.current=new Set(value.worlds.filter(world=>world.active).map(world=>world.worldId));
+        catalogValue.current=value;setViews(value.catalog);setWorlds(value.worlds);setReadError('');
+      },failed:error=>setReadError(errorText(error))});
+    catalogWatch.current=watch;return()=>{watch.close();catalogWatch.current=null;};
+  },[bridge]);
+  const refresh=useCallback(async()=>{await catalogWatch.current!.refresh();return catalogValue.current!;},[]);
   useEffect(() => { bridge.theme(theme); }, [bridge, theme]);
   useEffect(() => bridge.onDisconnect(() => setError('Connection closed. Reconnect to continue.')), [bridge]);
   useEffect(() => {
@@ -129,7 +133,7 @@ export function App({ bridge }: { bridge: RootBridge }) {
     if (saved.current) { try { api.fromJSON(saved.current.dockview); } catch { api.clear(); updateEntries(new Map()); setError('Saved layout could not be restored. Reset it to start fresh.'); } }
     ready.current = true; setDockReady(true);
     api.onDidActivePanelChange(({ panel }) => { if (panel) { const key = entriesRef.current.get(panel.id)?.restoreKey; if (key?.worldId) activeByWorld.current.set(key.worldId, panel.id); } });
-    api.onDidRemovePanel(panel => { for (const [world, id] of activeByWorld.current) if (id === panel.id) activeByWorld.current.delete(world); const entries = new Map(entriesRef.current); entries.delete(panel.id); updateEntries(entries); scheduleSave(); });
+    api.onDidRemovePanel(panel => { const scope=entriesRef.current.get(panel.id)?.restoreKey.worldId;if(scope)autoOpenedEntries.current.add(scope);for (const [world, id] of activeByWorld.current) if (id === panel.id) activeByWorld.current.delete(world); const entries = new Map(entriesRef.current); entries.delete(panel.id); updateEntries(entries); scheduleSave(); });
     api.onDidLayoutChange(scheduleSave);
   }, [scheduleSave, updateEntries]);
   const open = (view: View, split: boolean, state?: ViewState) => {
@@ -173,10 +177,10 @@ export function App({ bridge }: { bridge: RootBridge }) {
     void read(); return () => { cancelled = true; clearTimeout(timer); };
   }, [bridge, selectedWorld]);
   useEffect(() => {
-    if (!dockReady || !selectedWorld || !worlds.some(world => world.worldId === selectedWorld && world.active) || [...entriesRef.current.values()].some(panel => panel.restoreKey.worldId === selectedWorld)) return;
+    if (!dockReady || !selectedWorld || autoOpenedEntries.current.has(selectedWorld) || !worlds.some(world => world.worldId === selectedWorld && world.active) || [...entriesRef.current.values()].some(panel => panel.restoreKey.worldId === selectedWorld)) return;
     const entry = entryByWorld.get(selectedWorld); if (!entry) return;
     const view = resolveView({ worldId: selectedWorld, ...entry }, views);
-    if (view) { openRef.current(view, false); return; }
+    if (view) { autoOpenedEntries.current.add(selectedWorld);openRef.current(view, false); return; }
     const timer = setInterval(() => void refresh().catch(error => setReadError(errorText(error))), 500);
     return () => clearInterval(timer);
   }, [dockReady, selectedWorld, worlds, views, entryByWorld, refresh]);
@@ -224,7 +228,7 @@ export function App({ bridge }: { bridge: RootBridge }) {
       if (error instanceof BridgeError && error.outcome === 'unknown') setNotice('Checking World status…');
       else setError(errorText(error));
     }
-    finally { setBusy(false); }
+    finally { setBusy(false); void refresh().catch(error=>setReadError(errorText(error))); }
   };
   useEffect(()=>bridge.onIntent(async(method,args,source)=>{
     const provides=(id:string)=>source.provides.some(p=>p.id===id&&p.version===1&&p.selected);
@@ -251,9 +255,14 @@ export function App({ bridge }: { bridge: RootBridge }) {
     !(entry && view.restoreKey.instanceId === entry.instanceId && view.restoreKey.componentId === entry.componentId));
   const navigationViews = workspaceViews.filter(view =>
     worldPanels.some(panel => panel.restoreKey.instanceId === view.restoreKey.instanceId && panel.restoreKey.componentId === view.restoreKey.componentId));
-  const controls = <WorldActions bridge={bridge} world={home ? null : selected ?? null} views={home ? [] : workspaceViews} settings={() => setSettings({ scope: selectedWorld })} open={view => open(view, true)} refresh={refresh} deleted={removeWorldPanels} stopping={id => setWorlds(rows => rows.map(row => row.worldId === id ? { ...row, pendingActive: false } : row))} fail={failure => setError(errorText(failure))} reset={async () => {
+  const controls = <WorldActions canCloseView={worldPanels.length>0} closeView={()=>{
+    const api=dock.current;if(!api)return;
+    const active=api.activePanel;
+    const panel=active&&entriesRef.current.get(active.id)?.restoreKey.worldId===selectedRef.current?active:api.panels.find(p=>entriesRef.current.get(p.id)?.restoreKey.worldId===selectedRef.current);
+    if(panel)api.removePanel(panel);
+  }} bridge={bridge} world={home ? null : selected ?? null} views={home ? [] : workspaceViews} settings={() => setSettings({ scope: selectedWorld })} open={view => open(view, true)} refresh={refresh} deleted={removeWorldPanels} stopping={id => setWorlds(rows => rows.map(row => row.worldId === id ? { ...row, pendingActive: false } : row))} fail={failure => setError(errorText(failure))} reset={async () => {
           if (timer.current) { clearTimeout(timer.current); timer.current = null; }
-          canSave.current = false; await bridge.resetLayout(); saved.current = null; dock.current?.clear(); updateEntries(new Map()); setNotice('Layout reset');
+          canSave.current = false; if(selectedRef.current)autoOpenedEntries.current.delete(selectedRef.current);await bridge.resetLayout(); saved.current = null; dock.current?.clear(); updateEntries(new Map());if(selectedRef.current)autoOpenedEntries.current.delete(selectedRef.current);setNotice('Layout reset');
         }} />;
   return <Context.Provider value={{ bridge, entries, views, selectedWorld, initialStates, liveWorlds: new Set(worlds.filter(world => world.active && world.pendingActive !== false).map(world => world.worldId)) }}><main className="shell">
     <nav className="world-rail" aria-label="Worlds">
@@ -264,16 +273,16 @@ export function App({ bridge }: { bridge: RootBridge }) {
       <div className="rail-bottom"><button className="rail-button utility" aria-label="Log out" title="Log out" onClick={() => void bridge.logout().then(() => location.reload())}><Icon name="logout" /></button></div>
     </nav>
     <section className="shell-body">
-      {home && <section className="home-page" aria-label="Home"><header className="home-topbar"><span>Home</span><div className="world-actions"><button className="icon-button" aria-label="Refresh worlds" onClick={() => void action(refresh)}><Icon name="refresh" size={18} /></button>{controls}</div></header>
+      {home && <section className="home-page" aria-label="Home"><header className="home-topbar"><span>Home</span><div className="world-actions">{controls}</div></header>
         <Surface bridge={bridge} view={selectedView(views,null,'rintawa.ui.home.renderer')} label="Home"/>
       </section>}
       <section className={`world-workspace${home ? ' hidden-workspace' : ''}`} aria-hidden={home}>
-        <header className="world-topbar"><div className="world-title"><Icon name="world" size={18} /><strong>{selected?.title ?? 'World unavailable'}</strong></div><nav className="world-apps" aria-label="World apps">{navigationViews.map(view => <button key={view.id} title={`Open ${view.title}`} onClick={() => open(view, false)}>{view.title}</button>)}</nav><div className="world-actions"><button className="icon-button" title="Refresh" aria-label="Refresh" disabled={busy || !loaded} onClick={() => void action(refresh)}><Icon name="refresh" size={17} /></button>{selected && <button className={`world-power${selected.active ? ' running' : ''}`} title={selected.active ? 'Stop World; unfinished work may be discarded' : 'Start World'} disabled={busy || selected.pendingActive !== null} onClick={() => void setWorldActive(selected)}><Icon name="power" size={15} />{selected.pendingActive !== null ? 'Working…' : selected.active ? 'Stop World' : 'Start World'}</button>}{!home && controls}</div></header>
+        <header className="world-topbar"><div className="world-title"><Icon name="world" size={18} /><strong>{selected?.title ?? 'World unavailable'}</strong></div><nav className="world-apps" aria-label="World apps">{navigationViews.map(view => <button key={view.id} title={`Open ${view.title}`} onClick={() => open(view, false)}>{view.title}</button>)}</nav><div className="world-actions">{selected && <button className={`world-power${selected.active ? ' running' : ''}`} title={selected.active ? 'Stop World; unfinished work may be discarded' : 'Start World'} disabled={busy || selected.pendingActive !== null} onClick={() => void setWorldActive(selected)}><Icon name="power" size={15} />{selected.pendingActive !== null ? 'Working…' : selected.active ? 'Stop World' : 'Start World'}</button>}{!home && controls}</div></header>
         {selected?.lastError && <Status error>{selected.lastError}</Status>}
         <div className={`dock-area${worldPanels.length <= 1 ? ' single-panel' : ''}`}>{loaded && <DockviewReact components={components} onReady={onReady} theme={theme.mode === 'dark' ? themeDark : themeLight} defaultRenderer="always" disableFloatingGroups getTabContextMenuItems={() => ['close', 'closeOthers']} getTabGroupChipContextMenuItems={() => ['close']} />}</div>
         {!worldPanels.length && !home && <div className="world-welcome"><div className="empty-symbol"><Icon name="world" size={34} /></div><h1>{selected?.title ?? 'World unavailable'}</h1><p>{selected?.active ? 'Choose an app to step into this world.' : 'Start this world to open its chats and characters.'}</p>{selected?.active ? <div className="world-launchers">{available.map(view => <Button key={view.id} title={`Open ${view.title}`} onClick={() => open(view, false)}><Icon name="grid" size={18} /> {view.title}<Icon name="arrow" size={16} /></Button>)}{!available.length && <Status>Waiting for World apps…</Status>}</div> : selected && <Button className="primary" disabled={busy || selected.pendingActive !== null} onClick={() => void setWorldActive(selected)}><Icon name="power" size={16} />{selected.pendingActive !== null ? 'Working…' : 'Start World'}</Button>}</div>}
       </section>
-      {(error || readError) && <div className="shell-error" role="alert"><span>{error || readError}</span><button onClick={() => { setError(''); setReadError(''); }} aria-label="Dismiss error"><Icon name="close" size={16} /></button><button onClick={() => location.reload()}>Reconnect</button></div>}
+      {(error || readError) && <div className="shell-error" role="alert"><span>{error || readError}</span><button onClick={() => { setError(''); setReadError(''); }} aria-label="Dismiss error"><Icon name="close" size={16} /></button><button onClick={() => void refresh().catch(failure=>setReadError(errorText(failure)))}>Retry reads</button><button onClick={() => location.reload()}>Reconnect</button></div>}
     </section>
     {settings && <div className="settings-overlay"><Dialog open title="Settings" onClose={()=>setSettings(null)}><Surface bridge={bridge} view={selectedView(views,settings.scope,'rintawa.ui.settings.renderer')} label="Settings"/></Dialog></div>}
     {permissionRequest && <Permissions bridge={bridge} source={permissionRequest} scopeTitle={permissionRequest.view.worldId ? worlds.find(w => w.worldId === permissionRequest.view.worldId)?.title ?? permissionRequest.view.worldId : 'Home'} close={closePermissions} />}

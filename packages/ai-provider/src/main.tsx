@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { connectPanel, BridgeError, type Client } from '@rintawa/bridge';
-import { DomainClient, DomainError } from '@rintawa/domain';
+import { DomainClient, DomainError, observeResource, type Observation } from '@rintawa/domain';
 import { Button, Dialog, Input, Status } from '@rintawa/ui';
 import '@rintawa/ui/style.css';
 import './style.css';
@@ -14,10 +14,15 @@ type Draft = { expected?: Connection; label: string; template: Kind; config: Con
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 const keyPath = (connection: Connection) => `ai.connection_${connection.id.replaceAll('-', '')}.api_key`;
 const originFor = (base: string) => { try { const url = new URL(base); return url.protocol === 'http:' ? url.origin : null; } catch { return null; } };
-const errorText = (error: unknown) => error instanceof Error ? error.message : 'Settings unavailable';
+const providerError = (code: string) => ({
+  'shared-connections-unavailable': 'Cannot load shared providers. Ai Provider on Home and in this World must be running and use the same build. An imported World may need updating.',
+  'shared-connections-permission-required': 'Allow access to the shared provider list for this World.',
+} as Record<string, string>)[code] ?? code;
+const errorText = (error: unknown) => providerError(error instanceof Error ? error.message : 'Settings unavailable');
 function ConnectionHealth({ domain, connection, enabled, revision, queue }: { domain: DomainClient | null; connection: Connection; enabled: boolean; revision: number; queue: ProbeQueue }) {
-  const probe = useModels(domain, connection.config, connection, enabled, revision, queue);
-  return <ConnectionState probe={probe} />;
+  const [attempt,setAttempt]=useState(0);
+  const probe = useModels(domain, connection.config, connection, enabled, revision+attempt, queue);
+  return <><ConnectionState probe={probe} /><button className="icon-button" aria-label="Check connection" title="Check connection" disabled={!enabled||probe.state==='Checking'} onClick={()=>setAttempt(v=>v+1)}>↻</button></>;
 }
 function App() {
   const client = useRef<Client | null>(null); const domain = useRef<DomainClient | null>(null); const alive = useRef(true);
@@ -25,20 +30,19 @@ function App() {
   const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [uncertain, setUncertain] = useState(false); const [writeDenied, setWriteDenied] = useState(false);
   const queue = useRef(Promise.resolve()); const [revision, setRevision] = useState(0);
   const [adding, setAdding] = useState(false); const [draft, setDraft] = useState<Draft | null>(null); const [removing, setRemoving] = useState<Connection | null>(null);
-  const read = async () => { const data = await domain.current!.request<Description>('describe'); if (alive.current) setInfo(data); };
+  const watch = useRef<Observation|null>(null); const [readError,setReadError]=useState('');
+  const read = async () => { await watch.current?.refresh(); };
   useEffect(() => {
     alive.current = true;
     connectPanel().then(async value => {
       if (!alive.current) { value.dispose(); return; }
       client.current = value; value.onPermissionsChanged(() => { if (alive.current) { setRevision(v => v + 1); setWriteDenied(false); setNotice('Access allowed.'); void read().catch(failure => setError(errorText(failure))); } }); domain.current = new DomainClient(value, 'rintawa/inference/v1');
-      for (let attempt = 0; ; attempt++) {
-        try { await read(); break; }
-        catch (failure) { if (attempt >= 9 || !(failure instanceof DomainError || failure instanceof BridgeError) || !['unavailable', 'limit-exceeded'].includes(failure.code)) throw failure; }
-        if (!alive.current) return;
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
+      watch.current=observeResource({client:value,points:['rintawa/ai/connections-changed/v1'],
+        read:signal=>domain.current!.request<Description>('describe',{},signal),
+        apply:data=>{setInfo(data);setReadError('');},failed:failure=>{setReadError(errorText(failure));}});
+      await read();
     }).catch(failure => { if (alive.current) setError(errorText(failure)); }).finally(() => { if (alive.current) setBusy(false); });
-    return () => { alive.current = false; client.current?.dispose(); };
+    return () => { alive.current = false; watch.current?.close(); client.current?.dispose(); };
   }, []);
   const mutate = async (method: string, args: Record<string, unknown> = {}) => {
     if (!domain.current) return;
@@ -46,14 +50,14 @@ function App() {
     try {
       const result = await domain.current.request<Connection | null>(method, args);
       if (!alive.current) return;
-      setDraft(null); setRemoving(null); setNotice('Saved.'); await read();
+      setDraft(null); setRemoving(null); setNotice('Saved.'); await read().catch(()=>{});
       if (result && (method === 'add-connection' || (method === 'edit-connection' && result.id !== (args.expected as Connection).id))) await requestAccess(result);
     } catch (failure) {
       if (alive.current) {
         const rejected = (failure instanceof DomainError || failure instanceof BridgeError) && failure.outcome === 'not-started' && failure.code !== 'configuration-write-unknown';
         if(failure instanceof DomainError && failure.code==='shared-settings-write-permission-required')setWriteDenied(true);
-        if (!rejected) { setUncertain(true); setError('Save outcome unknown. Refresh connections before making another change.'); }
-        else setError(failure instanceof DomainError && failure.code==='configuration-changed' ? 'Settings changed in another window. Refresh connections and reopen the editor.' : errorText(failure));
+        if (!rejected) { setUncertain(true); setError('Save outcome unknown. Check saved connections before making another change.'); }
+        else setError(failure instanceof DomainError && failure.code==='configuration-changed' ? 'Settings changed in another window. Reopen the editor to use the latest settings.' : errorText(failure));
       }
     } finally { if (alive.current) setBusy(false); }
   };
@@ -73,13 +77,13 @@ function App() {
   const draftExpected = draft?.expected && draft.expected.config.baseUrl === draft.config.baseUrl && draft.expected.config.requiresApiKey === draft.config.requiresApiKey ? draft.expected : undefined;
   const draftProbe = useModels(domain.current, draft?.config, draftExpected, !!draft, revision, queue);
   const locked = busy || uncertain;
-  return <main className="ai-settings"><header className="ai-heading"><h2>Ai Provider</h2><button className="icon-button" aria-label="Refresh connections" disabled={busy} onClick={() => void refresh()}>↻</button></header>
-    <p className="ai-help">Settings are shared across worlds.</p>
+  return <main className="ai-settings"><header className="ai-heading"><h2>Ai Provider</h2></header>
+    <p className="ai-help">Settings are shared across worlds.</p>{(readError||uncertain)&&<div><Status error>{readError||'Check saved connections before another change.'}</Status><Button disabled={busy} onClick={()=>void refresh()}>{uncertain?'Check saved connections':'Retry reads'}</Button></div>}
     {busy && !info && <Status>Loading connections…</Status>}
-    {info?.catalogError && <Status error>{info.catalogError === 'shared-connections-unavailable' ? 'Start Ai Provider on Home using the same installed package version.' : info.catalogError === 'shared-connections-permission-required' ? 'Allow access to the shared provider list for this World.' : info.catalogError}</Status>}
+    {info?.catalogError && <Status error>{providerError(info.catalogError)}</Status>}
     {writeDenied && <Button disabled={locked} onClick={() => void client.current?.request('ui.request-permissions', {componentId:'backend',runtime:['published-preference-read','published-preference-write'],httpOrigins:[],secretRead:[]}).catch(failure=>setError(errorText(failure)))}>Allow shared settings…</Button>}
     {info?.catalogError === 'shared-connections-permission-required' && <Button disabled={locked} onClick={() => void client.current?.request('ui.request-permissions', { componentId: 'backend', runtime: ['published-preference-read'], httpOrigins: [], secretRead: [] }).catch(failure => setError(errorText(failure)))}>Allow shared providers…</Button>}
-    {info && <div className="ai-toolbar"><Button className="primary" disabled={locked || (info.connections?.length ?? 0) >= 16} onClick={() => setAdding(true)}>Add provider</Button></div>}
+    {info && <div className="ai-toolbar"><Button className="primary" disabled={locked || !!info.catalogError || (info.connections?.length ?? 0) >= 16} onClick={() => setAdding(true)}>Add provider</Button></div>}
     <div className="ai-connections">{info?.connections?.map(connection => <article className="ai-connection" key={connection.id}>
       <div className="ai-connection-name"><h3>{connection.label}</h3><ConnectionHealth domain={domain.current} connection={connection} enabled={!draft} revision={revision} queue={queue} />{info.defaultConnectionId === connection.id && <span className="ai-selected">Primary</span>}</div>
       <p>{connection.config.model || 'No model'} <span>· {connection.template === 'ollama' ? 'Ollama' : 'OpenAI-compatible'}</span></p><code>{connection.config.baseUrl}</code>
@@ -105,7 +109,7 @@ function App() {
         {!!draft.expected && <Status>Changing the URL or key requirement needs approval for the new destination or credential.</Status>}
         {writeDenied && <Button disabled={locked} onClick={() => void client.current?.request('ui.request-permissions',{componentId:'backend',runtime:['published-preference-read','published-preference-write'],httpOrigins:[],secretRead:[]}).catch(failure=>setError(errorText(failure)))}>Allow shared settings…</Button>}
         {error && <Status error>{error}</Status>}
-        <footer><Button disabled={busy} onClick={() => setDraft(null)}>Cancel</Button><Button className="primary" disabled={locked || !draft.label.trim() || !draft.config.baseUrl.trim() || !draft.config.model.trim()} onClick={() => void mutate(draft.expected ? 'edit-connection' : 'add-connection', { ...(draft.expected ? { expected: draft.expected } : {}), label: draft.label, template: draft.template, config: draft.config })}>Save provider</Button></footer>
+        <footer><Button disabled={busy} onClick={() => setDraft(null)}>Cancel</Button><Button className="primary" disabled={locked || !!info?.catalogError || !draft.label.trim() || !draft.config.baseUrl.trim() || !draft.config.model.trim()} onClick={() => void mutate(draft.expected ? 'edit-connection' : 'add-connection', { ...(draft.expected ? { expected: draft.expected } : {}), label: draft.label, template: draft.template, config: draft.config })}>Save provider</Button></footer>
       </div>}
     </Dialog>
     <Dialog open={!!removing} title="Delete provider" onClose={() => { if (!busy) setRemoving(null); }}><p>Delete {removing?.label}? Its API key remains in system credentials until you explicitly remove it.</p><footer><Button disabled={busy} onClick={() => setRemoving(null)}>Cancel</Button><Button disabled={locked} onClick={() => removing && void mutate('delete-connection', { expected: removing })}>Delete provider</Button></footer></Dialog>

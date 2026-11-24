@@ -59,7 +59,6 @@ try {
   checks.push('actual React shell and Root authentication');
   await cdp.createEmptyWorld('Acceptance World A');
   assert.equal(await cdp.click('Start World'), true); await cdp.waitText('Stop World');
-  await cdp.click('Refresh');
   assert.equal(await cdp.click('Open Dice'), true);
   const first = await eventually(async () => (await cdp.panelContexts())[0], 'first Dice iframe');
   await cdp.waitText('Contribution ready', first);
@@ -93,13 +92,13 @@ try {
   await cdp.createEmptyWorld('Acceptance World B');
   await eventually(async () => await cdp.evaluate('document.querySelectorAll("iframe").length') === 0, 'old World frames unmounted');
   await cdp.waitText('Another World');
-  await cdp.click('Start World'); await cdp.waitText('Stop World'); await cdp.click('Refresh'); await cdp.click('Open Dice');
+  await cdp.click('Start World'); await cdp.waitText('Stop World'); await cdp.click('Open Dice');
   const worldB = await eventually(async () => (await cdp.panelContexts())[0], 'World B Dice iframe');
   await cdp.waitText('Contribution ready', worldB); await cdp.click('Ask contributions', worldB); await cdp.waitText('dice.roll', worldB);
   checks.push('World switch releases old frames and binds new World independently');
-  await cdp.click('Stop World'); await cdp.waitText('Start World'); await cdp.click('Refresh');
+  await cdp.click('Stop World'); await cdp.waitText('Start World');
   await eventually(async () => await cdp.evaluate('document.querySelectorAll("iframe").length') === 0, 'stopped component frames released');
-  await cdp.click('Start World'); await cdp.waitText('Stop World'); await cdp.click('Refresh');
+  await cdp.click('Start World'); await cdp.waitText('Stop World');
   const restarted = await eventually(async () => (await cdp.panelContexts())[0], 'restarted component restores stable panel');
   await cdp.waitText('Contribution ready', restarted);
   checks.push('stop and reactivation recreate channels under stable panel identity');
@@ -111,8 +110,9 @@ try {
   checks.push('iframe navigation retires its channel and explicit reopen creates a fresh binding');
   // Global postMessage is never an API entry point, including from a real panel.
   const worldsBefore = await cdp.evaluate('document.querySelectorAll(".world-button").length');
+  const worldListReadsBefore = cdp.worldCommands.filter(call => call.method === 'world-sessions.list-worlds').length;
   await cdp.evaluate('parent.postMessage({v:1,id:"forged",method:"world-sessions.create",args:{}}, new URL(location.href).origin)', reopened);
-  await pause(100); await cdp.click('Refresh');
+  await eventually(() => cdp.worldCommands.filter(call => call.method === 'world-sessions.list-worlds').length > worldListReadsBefore, 'normal Home catalog reread after rejected panel message');
   assert.equal(await cdp.evaluate('document.querySelectorAll(".world-button").length'), worldsBefore);
   checks.push('panel global postMessage cannot invoke Root World operations');
   await stopHost();
@@ -120,7 +120,7 @@ try {
   const restartedNavigation = await cdp.call('Page.navigate', { url: launch }); cdp.rootFrame = restartedNavigation.frameId;
   await cdp.waitText('Start World');
   await eventually(async () => await cdp.evaluate('document.querySelectorAll("iframe").length') === 0, 'inactive World placeholders after Host restart');
-  await cdp.click('Start World'); await cdp.waitText('Stop World'); await cdp.click('Refresh');
+  await cdp.click('Start World'); await cdp.waitText('Stop World');
   await eventually(async () => (await cdp.panelContexts()).length === 2, 'stable saved panels restored after Host restart');
   await eventually(async () => { const contexts = await cdp.panelContexts(); return (await Promise.all(contexts.map(context => cdp.body(context)))).some(text => text.includes('Contribution ready')); }, 'fresh runtime service after Host restart');
   checks.push('Host restart preserves layout and exact instance keys; explicit World activation restores panels');

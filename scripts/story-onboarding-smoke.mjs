@@ -92,11 +92,11 @@ try {
       await cdp.click('Toggle conversations', chat);
       assert.equal(await cdp.evaluate('document.querySelector(".navigation-toggle").getAttribute("aria-expanded")', chat), String(expanded));
       assert.equal(await cdp.evaluate('getComputedStyle(document.querySelector(".conversation-sidebar")).display !== "none"', chat), expanded);
-      assert.equal(await cdp.evaluate('document.querySelector(".thread-refresh").nextElementSibling === document.querySelector(".navigation-toggle")', chat), true);
+      assert.equal(await cdp.evaluate('!document.querySelector(".thread-refresh") && document.querySelector(".navigation-toggle")?.getAttribute("aria-label") === "Toggle conversations"', chat), true);
     }
   }
   await cdp.call('Emulation.setDeviceMetricsOverride', { width:1280,height:900,deviceScaleFactor:1,mobile:false });
-  checks.push('only Chat shortcut; drawer opens and closes beside Refresh at desktop and narrow widths');
+  checks.push('only Chat shortcut; drawer opens and closes with an accessible toggle at desktop and narrow widths');
   await cdp.setInput('#message', 'Saved from the template workflow', chat); await cdp.click('Send', chat); await cdp.waitText('Saved from the template workflow', chat);
   await cdp.click('Workspace controls');
   assert.deepEqual(await cdp.evaluate('[...document.querySelectorAll("#workspace-menu button")].map(button=>button.textContent.trim()).filter(text=>text.startsWith("Split ")).sort()'), ['Split Characters', 'Split Chat']);
@@ -139,7 +139,6 @@ try {
   await eventually(() => cdp.evaluate('!document.querySelector(".shell-error")'),'no stale shell error');
   const destinationB = (await query(second.worldId, 'Story', 'rintawa/chat/v1', { method: 'describe' })).value;
   await cdp.evaluate(`(()=>{const send=MessagePort.prototype.postMessage;MessagePort.prototype.postMessage=function(value,...rest){if(value?.method)window.__storyPort=this;return send.call(this,value,...rest);};})()`,chat);
-  await cdp.click('Refresh',chat);
   await eventually(()=>cdp.evaluate('!!window.__storyPort',chat),'capture actual panel port for negative navigation');
   const navigation = await cdp.evaluate(`new Promise((resolve,reject)=>{const port=window.__storyPort;const timer=setTimeout(()=>reject(Error('navigation timeout')),5000);const id='foreign-navigation';const receive=e=>{if(e.data?.id===id){clearTimeout(timer);port.removeEventListener('message',receive);resolve(e.data);}};port.addEventListener('message',receive);port.postMessage({v:1,id,method:'ui.navigate',args:{instanceId:${JSON.stringify(destinationB.instanceId)},componentId:'ui',state:{}}});})`,chat);
   assert.equal(navigation.ok,false);assert.equal(navigation.error.code,'unavailable');
@@ -156,7 +155,7 @@ try {
   // Exercise native top-layer menu over an empty World, where the former overlay hid it.
   const empty = await cdp.evaluate("window.__storyAdmin.rpc('world-sessions.create')");
   await cdp.evaluate(`window.__storyAdmin.rpc('world-sessions.set-metadata',{worldId:${JSON.stringify(empty.worldId)},title:'Empty menu world',description:null,cover:null})`);
-  await cdp.click('Home'); await cdp.click('Refresh worlds'); await cdp.openWorld('Empty menu world');
+  await cdp.click('Home'); await cdp.openWorld('Empty menu world');
   for (let i=0;i<3;i++) {
     await cdp.click('Workspace controls');
     await eventually(()=>cdp.evaluate('document.querySelector("#workspace-menu").matches(":popover-open")'),'menu opens over empty World');

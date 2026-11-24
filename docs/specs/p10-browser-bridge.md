@@ -218,3 +218,68 @@ navigation. No arbitrary URL, foreign DOM or delegated Chat writer.
 Reproduce with build-ui-protocol-fixtures.py + ui-replacement-smoke.mjs; fixtures
 only demonstrate alternate renderers and are not new Better products. Actual local
 Ollama acceptance uses ui-protocols-smoke.mjs with an explicit installed model.
+
+
+## Browser appearance and internal panes (2026-11-24)
+
+Owner-selected UI slice; no Native API, World schema or transport changes.
+The existing theme delivery supplies semantic tokens for text/surfaces, selection,
+hover, focus, disabled states, feedback and accent foregrounds to every isolated
+view. DockView uses the same tokens in both theme modes. Shared CSS and feature
+CSS use these tokens; an authored image keeps its original colors.
+
+`@rintawa/ui` supplies a local `SplitPane` for a sidebar and content. This is a
+browser component, not a view/extension registry. Chat uses it for conversations.
+The sidebar starts closed. Its existing toggle restores it; Enter on the focused
+separator collapses it and returns focus to the toggle. Arrow keys resize (Shift
+for a larger step), Home/End select bounds, double-click restores the default
+ratio; pointer cancel/Escape discard a drag. Pointer capture is released when the
+drag ends or the pane unmounts. No World command is issued by layout changes.
+
+Chat stores `navigationRatio` and `navigationOpen` alongside `conversationId` in
+its existing component-owned `ui.state` preferences. Ratio is finite, bounded
+0–1. Rendered width is clamped to 160–420px and reserves 280px for content
+when available; narrower viewports proportionally relax minima. A clamped render
+does not rewrite the user's stored ratio. One coalescing preference writer keeps
+selection and layout updates ordered without concurrent writes. Save failure is
+visible; reopening does not promise a failed preference was stored. No automatic
+retry of a failed write.
+
+Acceptance: dark/light shell, Chat, dialog, Settings and isolated section;
+readable text/selection/action/focus states; pointer and keyboard resize,
+collapse/restore, cancelled drag, selection plus resize persistence, reload and
+same-home process restart at a narrower viewport; retire a view during dragging
+and keep another view usable. Existing transcript/send behavior must remain.
+
+
+Modal layout invariants: opening a dialog/popover must not resize the workspace,
+its document iframe, or the composer's viewport. Native dialogs use the browser
+top layer; structural wrappers must not participate as extra shell grid items.
+Settings' wrapper uses `display: contents` and retains its DOM selector scope.
+Check geometry while dialogs are open, including nested permission confirmation,
+not only after closing them. Resize handles keep a wide hit area, with their
+visible stroke touching the sidebar edge without an inset gap.
+
+## Freshness and directed message actions (2026-11-24)
+
+`@rintawa/domain` exports `observeResource`: subscribe before reading, coalesce
+bounded resource hints, serialize authoritative reads and reconcile visible views
+periodically (initially 5 seconds), on focus/visibility return and after writes.
+It preserves displayed data on read failure, aborts retired observations and
+releases subscriptions. A successful read applies before its dirty follow-up;
+continuous hints cannot starve reads. Visibility metadata is opt-in in the panel
+handshake, so existing panels do not receive unsolicited protocol messages.
+Baseline catalogs reconcile independently in each World; notifications grant no
+cross-World access. Chat, Character and AI publish only after successful writes.
+
+`Client.beginQueryTo` / `queryTo` expose Native `begin-query-to` through
+`transport.begin-query-to` with `{point,payload,expected}`. `expected` is the
+Native sourced principal `{instanceId,componentId,activation}`; activation stays
+a canonical decimal u64 string. Scope and caller come from the mounted channel.
+Native checks the exact point pin and live activation before delivery. A wrong
+pin or retired recipient never receives the payload. Sourced replies must match
+the expected principal; abort closes retained query handles. An unknown outcome
+never triggers an automatic replay. This additive operation preserves ordinary
+queries and view contributions. Chat's separate message-action discovery point
+uses captured conversation/message/revision IDs and provider-owned authorization;
+it grants neither Chat writes nor a different caller's native channel.

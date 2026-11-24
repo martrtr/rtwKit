@@ -39,7 +39,7 @@ async function stopHost() {
 }
 async function setValue(selector,value,context){await cdp.evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});const proto=e instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`,context);}
 async function openChat(){
-  await eventually(async()=>{await cdp.click('Refresh');return cdp.evaluate('!!document.querySelector(\'button[title="Open Chat"]\')');},'Chat catalog');
+  await eventually(()=>cdp.evaluate('!!document.querySelector(\'button[title="Open Chat"]\')'),'Chat catalog');
   await cdp.click('Open Chat');
   return eventually(async()=>(await cdp.panelContexts('.chat'))[0],'Chat iframe');
 }
@@ -106,7 +106,7 @@ try{
   checks.push('second World sharing the UI provider Store cannot see the first World conversation');
   await cdp.openWorld('Acceptance World A'); await cdp.waitText('Stop World');
   await stopHost();await cdp.waitText('Connection closed. Reconnect to continue.');checks.push('lost Root connection exposes explicit reconnect without replay');launch=await startHost();cdp.rootFrame=(await cdp.call('Page.navigate',{url:launch})).frameId;
-  await cdp.waitText('Start World');await cdp.click('Start World');await cdp.waitText('Stop World');await cdp.click('Refresh');
+  await cdp.waitText('Start World');await cdp.click('Start World');await cdp.waitText('Stop World');
   panel=await eventually(async()=>(await cdp.panelContexts('.chat'))[0],'Chat after Host restart');
   await cdp.selectConversation('Acceptance conversation',panel);await cdp.waitText('Saved through real WASM and SQL COMMIT.',panel);await cdp.waitText('Later ID committed first.',panel);
   checks.push('Host restart preserves exact World conversation/message graph');

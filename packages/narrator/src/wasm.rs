@@ -272,7 +272,16 @@ impl State {
                 .status(&operation, &who)
                 .map_err(|_| "invalid-operation")?
             {
-                None => Ok(json!({"status":"pending"})),
+                None => Ok(
+                    match self
+                        .operations
+                        .work_mut(&operation)
+                        .and_then(|work| work.text.as_ref())
+                    {
+                        Some(text) => json!({"status":"pending","text":text}),
+                        None => json!({"status":"pending"}),
+                    },
+                ),
                 Some(v) => serde_json::to_value(v).map_err(|_| "unavailable"),
             },
             Call::Release { operation } => {
@@ -415,10 +424,17 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
                 INFERENCE,
                 json!({"method":"release","operation":w.provider}),
             ),
-            Step::Append => (
-                CHAT,
-                json!({"method":"begin-assistant-append","conversationId":w.request.conversation_id,"userMessageId":w.request.user_message_id,"messageId":w.request.message_id,"entryId":w.request.entry_id,"expectedLastEntryId":w.recent.as_ref().unwrap().conversation.last_entry_id,"text":w.text}),
-            ),
+            Step::Append => {
+                let call = match model::append_request(
+                    w.recent.as_ref().unwrap(),
+                    &w.request,
+                    w.text.as_deref().unwrap(),
+                ) {
+                    Ok(call) => call,
+                    Err(reason) => return Some(failed(reason)),
+                };
+                (CHAT, call)
+            }
             Step::AppendStatus => (CHAT, json!({"method":"status","operation":w.append})),
             Step::AppendRelease => (CHAT, json!({"method":"release","operation":w.append})),
             Step::Source => unreachable!(),
@@ -529,24 +545,37 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
             w.step = Step::ProviderStatus;
         }
         Step::ProviderStatus => match value["status"].as_str() {
-            Some("pending") => {}
+            Some("pending") => {
+                if let Some(text) = value.get("text") {
+                    match model::stream_text(w.text.as_deref(), text, false) {
+                        Ok(text) => w.text = Some(text),
+                        Err(reason) => return Some(failed(reason)),
+                    }
+                }
+            }
             Some("completed") => {
-                let Some(text) = value["text"]
-                    .as_str()
-                    .filter(|t| !t.trim().is_empty() && t.len() <= 16 * 1024)
-                else {
-                    return Some(failed("invalid-answer"));
+                let text = match model::stream_text(w.text.as_deref(), &value["text"], true) {
+                    Ok(text) => text,
+                    Err(reason) => return Some(failed(reason)),
                 };
-                w.text = Some(text.into());
+                w.text = Some(text);
                 w.step = Step::ProviderRelease;
             }
             Some("failed") => {
-                w.terminal = Some(failed(
-                    value["reason"]
-                        .as_str()
-                        .filter(|s| s.len() <= 2048)
-                        .unwrap_or("provider-failed"),
-                ));
+                match model::interrupted_text(w.text.as_deref(), &value) {
+                    Ok(Some(text)) => w.text = Some(text),
+                    Ok(None) => {
+                        w.terminal = Some(failed(
+                            value["reason"]
+                                .as_str()
+                                .filter(|s| s.len() <= 2048)
+                                .unwrap_or("provider-failed"),
+                        ))
+                    }
+                    Err(reason) => w.terminal = Some(failed(reason)),
+                }
+                // A prefix is only a candidate. The ordinary append below still
+                // checks the captured revisions and must actually commit.
                 w.step = Step::ProviderRelease;
             }
             _ => return Some(unknown(w)),
@@ -566,7 +595,6 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
                 return Some(unknown(w));
             }
             w.append = Some(token.into());
-            w.text = None;
             w.step = Step::AppendStatus;
         }
         Step::AppendStatus => match value["status"].as_str() {

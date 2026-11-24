@@ -47,7 +47,7 @@ export class CDP {
   // Administrative empty-World fixture; story-onboarding-smoke exercises the actual chooser.
   async createEmptyWorld(name) {
     await this.evaluate(`(async()=>{const ws=new WebSocket('ws://'+location.host+'/bridge');let channel,n=0;const pending=new Map();await new Promise((resolve,reject)=>{ws.onopen=()=>ws.send(JSON.stringify({v:1,type:'auth',token:sessionStorage.getItem('rintawa.session')}));ws.onerror=()=>reject(Error('fixture auth failed'));ws.onmessage=e=>{const v=JSON.parse(e.data);if(v.type==='ready'){channel=v.channel;resolve();}else{const p=pending.get(v.id);if(p){pending.delete(v.id);clearTimeout(p.timer);v.ok?p.resolve(v.value):p.reject(Error(v.error.code));}}};});const rpc=(method,args={})=>new Promise((resolve,reject)=>{const id=String(++n);const timer=setTimeout(()=>reject(Error('fixture timeout')),5000);pending.set(id,{resolve,reject,timer});ws.send(JSON.stringify({v:1,id,channel,method,args}));});try{const world=await rpc('world-sessions.create');await rpc('world-sessions.set-metadata',{worldId:world.worldId,title:${JSON.stringify(name)},description:null,cover:null});}finally{ws.close();}})()`);
-    await this.click('Home'); await this.click('Refresh worlds'); await this.openWorld(name); await this.waitText('Start World');
+    await this.click('Home'); await this.openWorld(name); await this.waitText('Start World');
   }
   async openWorld(name) { await this.click(`Open world ${name}`); }
   async selectConversation(title, context) { if (await this.evaluate('document.querySelector(".chat")?.classList.contains("navigation-closed")', context)) await this.click('Toggle conversations', context); await this.click(title, context); }

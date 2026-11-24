@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::model::{self, Append, AssistantAppend, Conversation, Create};
+use crate::model::{self, Append, AssistantAppend, Conversation, Create, Message};
 wit_bindgen::generate!({ path: "../../wit", world: "domain-plugin" });
 use rintawa::engine::{
     host, registration, runtime_context, runtime_tasks, transport, world_data, world_registration,
@@ -22,6 +22,7 @@ const ENTRY: &str = "rintawa.chat.entry@1";
 const MAX_REPLY: usize = 64 * 1024;
 struct Pending {
     ticket: Option<u64>,
+    conversation_id: Uuid,
     item_ids: Vec<String>,
 }
 #[derive(Default)]
@@ -65,6 +66,10 @@ enum Call {
         entry_id: Uuid,
         user_message_id: Uuid,
         expected_last_entry_id: Uuid,
+        #[serde(deserialize_with = "model::deserialize_revision")]
+        expected_conversation_revision: String,
+        #[serde(deserialize_with = "model::deserialize_revision")]
+        expected_user_revision: String,
         text: String,
     },
     Status {
@@ -81,6 +86,12 @@ enum Call {
         conversation_id: Uuid,
         #[serde(default)]
         after: Option<Uuid>,
+    },
+    GetMessage {
+        conversation_id: Uuid,
+        message_id: Uuid,
+        #[serde(deserialize_with = "model::deserialize_revision")]
+        expected_revision: String,
     },
     Recent {
         conversation_id: Uuid,
@@ -225,9 +236,18 @@ impl State {
             let Some(ticket) = work.ticket else { continue };
             let outcome = match world_data::poll(ticket) {
                 Ok(world_data::TicketStatus::Pending) => continue,
-                Ok(world_data::TicketStatus::Committed) => Outcome::Committed {
-                    item_ids: work.item_ids.clone(),
-                },
+                Ok(world_data::TicketStatus::Committed) => {
+                    // A hint is best effort; the native commit remains authoritative.
+                    if let Ok(payload) =
+                        serde_json::to_vec(&json!({"v":1,"resource":work.conversation_id}))
+                        && payload.len() <= 256
+                    {
+                        let _ = transport::publish("rintawa/chat/changed/v1", &payload);
+                    }
+                    Outcome::Committed {
+                        item_ids: work.item_ids.clone(),
+                    }
+                }
                 Ok(world_data::TicketStatus::Failed(reason)) => Outcome::Failed { reason },
                 Err(_) => {
                     let _ = world_data::close(ticket);
@@ -242,6 +262,7 @@ impl State {
     fn begin(
         &mut self,
         who: Caller,
+        conversation_id: Uuid,
         schema: &str,
         payload: Value,
         item_ids: Vec<String>,
@@ -256,6 +277,7 @@ impl State {
                 who.clone(),
                 Pending {
                     ticket: None,
+                    conversation_id,
                     item_ids: item_ids.clone(),
                 },
             )
@@ -321,6 +343,11 @@ impl State {
                 Ok(json!({"instanceId":context.principal.instance_id,"componentId":"ui"}))
             }
             Call::List { after } => list_conversations(after),
+            Call::GetMessage {
+                conversation_id,
+                message_id,
+                expected_revision,
+            } => get_message(conversation_id, message_id, &expected_revision),
             Call::Page {
                 conversation_id,
                 after,
@@ -370,6 +397,7 @@ impl State {
                 model::create_changes(&input, false, true, false)?;
                 self.begin(
                     who,
+                    conversation_id,
                     "rintawa.chat.create@1",
                     serde_json::to_value(input).map_err(|_| "invalid-request")?,
                     vec![conversation_id.to_string()],
@@ -381,6 +409,8 @@ impl State {
                 entry_id,
                 user_message_id,
                 expected_last_entry_id,
+                expected_conversation_revision,
+                expected_user_revision,
                 text,
             } => {
                 if !narrator(principal) {
@@ -392,10 +422,13 @@ impl State {
                     entry_id,
                     user_message_id,
                     expected_last_entry_id,
+                    expected_conversation_revision,
+                    expected_user_revision,
                     text,
                 };
                 self.begin(
                     who,
+                    conversation_id,
                     "rintawa.chat.assistant-append@1",
                     serde_json::to_value(input).map_err(|_| "invalid-request")?,
                     vec![message_id.to_string(), entry_id.to_string()],
@@ -420,10 +453,12 @@ impl State {
                     title: String::new(),
                     character_id: None,
                     last_entry_id: None,
+                    revision: "0".into(),
                 };
                 model::append_changes(&input, &provisional, false, false)?;
                 self.begin(
                     who,
+                    conversation_id,
                     "rintawa.chat.append@1",
                     serde_json::to_value(input).map_err(|_| "invalid-request")?,
                     vec![message_id.to_string(), entry_id.to_string()],
@@ -439,7 +474,9 @@ fn list_conversations(after: Option<Uuid>) -> Result<Value, &'static str> {
     let mut items = Vec::new();
     for row in &rows {
         let record: Value = serde_json::from_str(row).map_err(|_| "invalid-stored-data")?;
-        items.push(json!({"id":record["item"],"conversation":record["data"]}));
+        let conversation: Conversation =
+            serde_json::from_value(record["data"].clone()).map_err(|_| "invalid-stored-data")?;
+        items.push(json!({"id":record["item"],"conversation":conversation}));
     }
     let next = if rows.len() == 32 {
         items.last().map(|row| row["id"].clone())
@@ -455,7 +492,9 @@ fn page(conversation: Uuid, cursor: Option<Uuid>, recent: bool) -> Result<Value,
     let metadata = world_data::load_property(&id, CONVERSATION)
         .map_err(world_error)?
         .ok_or("not-found")?;
-    let metadata = property_data(metadata)?;
+    let metadata: Conversation =
+        serde_json::from_value(property_data(metadata)?).map_err(|_| "invalid-stored-data")?;
+    let metadata = json!(metadata);
     let cursor = cursor.map(|id| id.to_string());
     let query = if recent {
         world_data::find_relations_before
@@ -478,7 +517,9 @@ fn page(conversation: Uuid, cursor: Option<Uuid>, recent: bool) -> Result<Value,
         let message = world_data::load_property(message_id, MESSAGE)
             .map_err(world_error)?
             .ok_or("invalid-stored-data")?;
-        let entry = json!({"entryId":relation["id"],"messageId":message_id,"message":property_data(message)?});
+        let message: Message =
+            serde_json::from_value(property_data(message)?).map_err(|_| "invalid-stored-data")?;
+        let entry = json!({"entryId":relation["id"],"messageId":message_id,"message":message});
         items.push(entry);
         // Reserve the full continuation cursor even if this is the last row.
         let candidate = page_value(&metadata, &items, Some(relation["id"].clone()), recent);
@@ -500,6 +541,55 @@ fn page(conversation: Uuid, cursor: Option<Uuid>, recent: bool) -> Result<Value,
     }
     Ok(page_value(&metadata, &items, next, recent))
 }
+fn get_message(
+    conversation_id: Uuid,
+    message_id: Uuid,
+    expected_revision: &str,
+) -> Result<Value, &'static str> {
+    // Each immutable Chat message has one incoming Chat entry. The bounded owner-tag
+    // query excludes unrelated extension relations; IDs in the request confer no access.
+    let relations = world_data::find_relations(
+        &[message_id.to_string()],
+        world_system_snapshot::Direction::Incoming,
+        Some(ENTRY),
+        None,
+        32,
+    )
+    .map_err(world_error)?;
+    let mut membership = None;
+    for relation in relations {
+        let row: Value = serde_json::from_str(&relation).map_err(|_| "invalid-stored-data")?;
+        if row["kind"] == "relation"
+            && row["subject"] == conversation_id.to_string()
+            && row["object"] == message_id.to_string()
+        {
+            membership = Some((conversation_id, message_id, true));
+            break;
+        }
+    }
+    if membership.is_none() {
+        return Err("not-found");
+    }
+    let conversation = world_data::load_property(&conversation_id.to_string(), CONVERSATION)
+        .map_err(world_error)?
+        .ok_or("not-found")?;
+    let message = world_data::load_property(&message_id.to_string(), MESSAGE)
+        .map_err(world_error)?
+        .ok_or("not-found")?;
+    let conversation: Conversation =
+        serde_json::from_value(property_data(conversation)?).map_err(|_| "invalid-stored-data")?;
+    let message: Message =
+        serde_json::from_value(property_data(message)?).map_err(|_| "invalid-stored-data")?;
+    model::message_context(
+        conversation_id,
+        message_id,
+        expected_revision,
+        &conversation,
+        &message,
+        membership,
+    )
+}
+
 fn page_value(metadata: &Value, items: &[Value], next: Option<Value>, recent: bool) -> Value {
     if recent {
         json!({
@@ -588,11 +678,15 @@ impl exports::rintawa::engine::world_system::Guest for Chat {
                     .map(property_data)
                     .transpose()
                     .map_err(str::to_owned)?;
+                    let user: Option<Message> = user
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(|_| "invalid-stored-data")?;
                     model::assistant_changes(
                         &input,
                         &conversation,
                         boundary,
-                        user.as_ref().and_then(|v| v["role"].as_str()),
+                        user.as_ref(),
                         system_item(input.message_id)?.is_some(),
                         system_item(input.entry_id)?.is_some(),
                     )

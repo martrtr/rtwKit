@@ -37,11 +37,24 @@ pub struct AssetRef {
     pub media_type: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Principal {
+    pub instance_id: String,
+    pub component_id: String,
+    pub activation: Handle,
+}
+
 #[derive(Debug)]
 pub enum Call {
     BeginQuery {
         point: String,
         payload: Vec<u8>,
+    },
+    BeginQueryTo {
+        point: String,
+        payload: Vec<u8>,
+        expected: Principal,
     },
     PollQuery(Handle),
     PollQuerySourced(Handle),
@@ -195,6 +208,13 @@ struct Payload {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct DirectedPayload {
+    point: String,
+    payload: String,
+    expected: Principal,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ResourceHandle {
     handle: Handle,
 }
@@ -317,6 +337,14 @@ impl Request {
                         point: a.point,
                         payload,
                     }
+                }
+            }
+            "transport.begin-query-to" => {
+                let a: DirectedPayload = args(value)?;
+                Call::BeginQueryTo {
+                    point: a.point,
+                    payload: decode_bytes(&a.payload, MAX_MESSAGE_BYTES)?,
+                    expected: a.expected,
                 }
             }
             "transport.declare-polled" | "transport.subscribe" => {
@@ -709,6 +737,42 @@ mod tests {
                 arguments.as_object_mut().unwrap().remove(field);
             }
         }
+    }
+    #[test]
+    fn directed_queries_decode_exact_recipient_and_keep_transport_bounds() {
+        let method = "transport.begin-query-to";
+        let valid = json!({
+            "point":"fixture/action", "payload":"AQI=",
+            "expected":{"instanceId":"package", "componentId":"provider", "activation":u64::MAX.to_string()}
+        });
+        let call = Request::decode(&request(method, valid.clone()))
+            .unwrap()
+            .call;
+        assert!(!call.shell_only());
+        assert!(
+            matches!(call, Call::BeginQueryTo { point, payload, expected }
+            if point == "fixture/action" && payload == [1, 2]
+                && expected.instance_id == "package" && expected.component_id == "provider"
+                && expected.activation == Handle(u64::MAX))
+        );
+
+        for invalid in [json!(7), json!("07"), json!("18446744073709551616")] {
+            let mut arguments = valid.clone();
+            arguments["expected"]["activation"] = invalid;
+            assert!(Request::decode(&request(method, arguments)).is_err());
+        }
+        let mut arguments = valid.clone();
+        arguments["caller"] = valid["expected"].clone();
+        assert!(Request::decode(&request(method, arguments)).is_err());
+        let mut arguments = valid.clone();
+        arguments["expected"]["scopeId"] = json!("world:elsewhere");
+        assert!(Request::decode(&request(method, arguments)).is_err());
+        let mut arguments = valid.clone();
+        arguments.as_object_mut().unwrap().remove("expected");
+        assert!(Request::decode(&request(method, arguments)).is_err());
+        let mut arguments = valid;
+        arguments["payload"] = json!(encode_bytes(&vec![0; MAX_MESSAGE_BYTES + 1]));
+        assert!(Request::decode(&request(method, arguments)).is_err());
     }
     #[test]
     fn template_creation_with_permissions_requires_shell_and_object() {

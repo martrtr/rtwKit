@@ -12,17 +12,17 @@ html,body,#root{height:100%;margin:0}*{box-sizing:border-box}body{overflow:auto}
 .world-search input { width: 100%; min-width: 0; background: none; border: 0; color: var(--rtw-text); outline: none; font: inherit; font-size: 12px; }
 .world-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr)); gap: 12px; }
 .world-card { display: flex; align-items: center; gap: 16px; padding: 23px 20px; text-align: left; color: var(--rtw-text); background: var(--rtw-surface); border: 1px solid var(--rtw-border); border-radius: 10px; cursor: pointer; }
-.world-card:hover { background: var(--rtw-raised); border-color: #39303f; }
-.world-card-icon { flex-shrink: 0; width: 46px; height: 46px; display: grid; place-items: center; background: #1b151f; color: var(--rtw-accent); border-radius: 14px; font-size: 17px; font-weight: 600; }
+.world-card:hover { background: var(--rtw-raised); border-color: var(--rtw-border-strong); }
+.world-card-icon { flex-shrink: 0; width: 46px; height: 46px; display: grid; place-items: center; background: var(--rtw-accent-surface); color: var(--rtw-accent); border-radius: 14px; font-size: 17px; font-weight: 600; }
 .world-card-copy { flex: 1; min-width: 0; }
 .world-card h3 { margin: 0 0 5px; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .world-card p { font-size: 12px; line-height: 1.5; color: var(--rtw-muted); margin: 0 0 11px; }
 .world-card > svg { color: var(--rtw-muted); flex-shrink: 0; }
 .world-state { color: var(--rtw-muted); display: inline-flex; align-items: center; gap: 5px; font-size: 10px; }
-.world-state::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: #56545d; }
+.world-state::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--rtw-muted); }
 .world-state.online { color: var(--rtw-positive); }.world-state.online::before { background: var(--rtw-positive); }
 .home-empty { min-height: 290px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 35px 24px; text-align: center; border: 1px dashed var(--rtw-border); border-radius: 10px; }
-.empty-symbol { color: var(--rtw-accent); width: 68px; height: 68px; border: 1px solid #29212f; border-radius: 22px; display: grid; place-items: center; background: #0d0a10; margin-bottom: 20px; }
+.empty-symbol { color: var(--rtw-accent); width: 68px; height: 68px; border: 1px solid var(--rtw-border); border-radius: 22px; display: grid; place-items: center; background: var(--rtw-accent-surface); margin-bottom: 20px; }
 .home-empty h3 { font-size: 18px; font-weight: 500; margin: 0; letter-spacing: -.3px; }.home-empty p { color: var(--rtw-muted); font-size: 13px; margin: 9px 0 22px; }
 .worlds-heading{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:24px}.worlds-heading h2{font-size:20px}
 @media(max-width:700px){.home-content{padding:30px 20px}.home-intro{margin-bottom:36px}.worlds-heading{align-items:flex-start;flex-direction:column}}

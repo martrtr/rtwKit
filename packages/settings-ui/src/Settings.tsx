@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { connectPanel, type Client } from '@rintawa/bridge';
+import { observeResource, type Observation } from '@rintawa/domain';
 import { Button, Status } from '@rintawa/ui';
 import { viewContributions, type ViewContribution } from '../../../web/ui/src/contributions';
 import '@rintawa/ui/style.css';
@@ -17,18 +18,18 @@ function Section({ client, item }: { client: Client; item: ViewContribution | nu
 }
 function App() {
   const [client, setClient] = useState<Client | null>(null), [items, setItems] = useState<ViewContribution[]>([]), [selected, setSelected] = useState(''), [error, setError] = useState('');
-  const refresh = useRef<() => void>(() => {});
+  const watch=useRef<Observation|null>(null);
   useEffect(() => {
-    let disposed = false, active: Client | undefined, timer: ReturnType<typeof setTimeout> | undefined;
-    connectPanel().then(value => {
-      if (disposed) { value.dispose(); return; } active = value; setClient(value);
-      let reading = false;
-      const read = async () => { if (disposed || reading) return; reading = true; try { const next = await viewContributions(value, 'rintawa/ui/settings/sections/v1', 'title'); if (!disposed) { setItems(next.items); setError(next.rejected ? 'Some settings contributions are invalid or ambiguous.' : ''); } } catch (error) { if (!disposed) setError(error instanceof Error ? error.message : 'Settings unavailable.'); } finally { reading = false; if (!disposed) timer = setTimeout(() => void read(), 1500); } };
-      refresh.current = () => { clearTimeout(timer); void read(); }; void read();
-    }).catch(error => { if (!disposed) setError(error.message); });
-    return () => { disposed = true; clearTimeout(timer); active?.dispose(); };
+    let disposed=false,active:Client|undefined;
+    connectPanel().then(value=>{
+      if(disposed){value.dispose();return;}active=value;setClient(value);
+      watch.current=observeResource({client:value,read:signal=>viewContributions(value,'rintawa/ui/settings/sections/v1','title',signal),
+        apply:next=>{setItems(next.items);setError(next.rejected?'Some settings contributions are invalid or ambiguous.':'');},
+        failed:error=>setError(error instanceof Error?error.message:'Settings unavailable.')});
+    }).catch(error=>{if(!disposed)setError(error.message);});
+    return ()=>{disposed=true;watch.current?.close();active?.dispose();};
   }, []);
   const item = items.find(item => item.id === selected) ?? items[0] ?? null;
-  return <main className="settings-layout"><aside className="settings-navigation" aria-label="Settings sections">{items.map(section => <button key={section.id} aria-current={item?.id === section.id ? 'page' : undefined} onClick={() => setSelected(section.id)}>{section.label}</button>)}<button className="settings-refresh" aria-label="Refresh settings" onClick={() => refresh.current()}>↻</button>{error && <Status error>{error}</Status>}</aside>{client && <Section client={client} item={item} />}</main>;
+  return <main className="settings-layout"><aside className="settings-navigation" aria-label="Settings sections">{items.map(section => <button key={section.id} aria-current={item?.id === section.id ? 'page' : undefined} onClick={() => setSelected(section.id)}>{section.label}</button>)}<>{error && <div><Status error>{error}</Status><Button onClick={()=>void watch.current?.refresh().catch(()=>{})}>Retry reads</Button></div>}</></aside>{client && <Section client={client} item={item} />}</main>;
 }
 createRoot(document.getElementById('root')!).render(<App />);

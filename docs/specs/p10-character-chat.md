@@ -316,3 +316,21 @@ under Chat UI's own fixed preference. No extra World table or durable job is add
 The owner-directed AI continuation is specified in [p10-narrator-ai.md](p10-narrator-ai.md).
 It adds a separate selected-Narrator assistant append command and AI settings; existing
 conversation/message property schemas and user append semantics remain unchanged.
+
+## Provisional reply display (2026-11-24)
+
+AI Provider and Narrator pending `status` may include cumulative `text`, bounded
+to 16 KiB UTF-8 and the existing 60 KiB encoded envelope. It is a snapshot, not a
+destructive chunk read. Existing status consumers ignore unneeded pending fields.
+The browser DomainClient validates the prefix and can observe changed text while
+waiting for its usual terminal result. It does not retry generation admission.
+
+Chat displays one temporary assistant row bound to the conversation and future
+message ID. Only a confirmed Chat COMMIT produces a persistent reply; notification
+reads and terminal reads replace the temporary row without duplicates. A broken stream with a nonempty validated prefix enters the same revision-checked
+append and becomes an ordinary assistant message only after COMMIT. A failed empty
+stream shows one short error. An unknown outcome stays unknown, and a confirmed
+COMMIT with a failed read uses read recovery. Changing selection or retiring the
+frame fences late snapshots. Releasing observation keeps accepted-work semantics.
+Pending snapshots remain transient; retained interrupted text is ordinary World
+history after its transaction commits. No new Core API is required.

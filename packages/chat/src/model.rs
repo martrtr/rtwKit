@@ -36,6 +36,10 @@ pub struct AssistantAppend {
     pub entry_id: Uuid,
     pub user_message_id: Uuid,
     pub expected_last_entry_id: Uuid,
+    #[serde(deserialize_with = "deserialize_revision")]
+    pub expected_conversation_revision: String,
+    #[serde(deserialize_with = "deserialize_revision")]
+    pub expected_user_revision: String,
     pub text: String,
 }
 
@@ -46,12 +50,69 @@ pub struct Conversation {
     #[serde(default)]
     pub character_id: Option<Uuid>,
     pub last_entry_id: Option<Uuid>,
+    #[serde(
+        default = "initial_revision",
+        deserialize_with = "deserialize_revision"
+    )]
+    pub revision: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Message {
+    #[serde(
+        default = "initial_revision",
+        deserialize_with = "deserialize_revision"
+    )]
+    pub revision: String,
     pub role: String,
     pub text: String,
+}
+
+fn initial_revision() -> String {
+    "0".into()
+}
+
+pub fn revision(value: &str) -> Result<u64, &'static str> {
+    let counter = value.parse::<u64>().map_err(|_| "invalid-revision")?;
+    if counter.to_string() != value {
+        return Err("invalid-revision");
+    }
+    Ok(counter)
+}
+
+pub fn deserialize_revision<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    revision(&value).map_err(serde::de::Error::custom)?;
+    Ok(value)
+}
+
+/// Facts come from Chat-owned reads; an arbitrary item ID alone proves no membership.
+pub fn message_context(
+    conversation_id: Uuid,
+    message_id: Uuid,
+    expected_revision: &str,
+    conversation: &Conversation,
+    message: &Message,
+    membership: Option<(Uuid, Uuid, bool)>,
+) -> Result<Value, &'static str> {
+    revision(expected_revision)?;
+    revision(&conversation.revision)?;
+    revision(&message.revision)?;
+    if membership != Some((conversation_id, message_id, true)) {
+        return Err("not-found");
+    }
+    if message.revision != expected_revision {
+        return Err("stale-context");
+    }
+    if !matches!(message.role.as_str(), "user" | "assistant") || message.text.trim().is_empty() {
+        return Err("invalid-stored-data");
+    }
+    Ok(
+        json!({"conversationId":conversation_id,"messageId":message_id,"revision":message.revision,
+        "conversationRevision":conversation.revision,"role":message.role,"text":message.text}),
+    )
 }
 
 fn key(id: &str) -> Value {
@@ -77,6 +138,7 @@ pub fn create_changes(
         title: input.title.clone(),
         character_id: input.character_id,
         last_entry_id: None,
+        revision: initial_revision(),
     };
     let mut changes = json!({"changes":[
         {"operation":"create-object","id":input.conversation_id},
@@ -120,6 +182,7 @@ pub fn append_changes(
     entry_exists: bool,
 ) -> Result<Value, &'static str> {
     let message = Message {
+        revision: "1".into(),
         role: "user".into(),
         text: input.text.clone(),
     };
@@ -148,6 +211,10 @@ pub fn append_changes(
     }
     let mut updated = conversation.clone();
     updated.last_entry_id = Some(input.entry_id);
+    updated.revision = revision(&conversation.revision)?
+        .checked_add(1)
+        .ok_or("revision-exhausted")?
+        .to_string();
     Ok(json!({"changes":[
         {"operation":"create-object","id":input.message_id},
         {"operation":"set-property","item":input.message_id,"key":key("rintawa.chat.message"),"data":message},
@@ -162,13 +229,21 @@ pub fn assistant_changes(
     input: &AssistantAppend,
     conversation: &Conversation,
     boundary: Option<(Uuid, Uuid, bool)>,
-    user_role: Option<&str>,
+    user: Option<&Message>,
     message_exists: bool,
     entry_exists: bool,
 ) -> Result<Value, &'static str> {
-    if conversation.last_entry_id != Some(input.expected_last_entry_id)
+    revision(&input.expected_conversation_revision)?;
+    revision(&input.expected_user_revision)?;
+    revision(&conversation.revision)?;
+    if let Some(message) = user {
+        revision(&message.revision)?;
+    }
+    if conversation.revision != input.expected_conversation_revision
+        || user.is_none_or(|message| message.revision != input.expected_user_revision)
+        || conversation.last_entry_id != Some(input.expected_last_entry_id)
         || boundary != Some((input.conversation_id, input.user_message_id, true))
-        || user_role != Some("user")
+        || user.is_none_or(|message| message.role != "user")
     {
         return Err("stale-context");
     }
@@ -198,11 +273,11 @@ pub fn property_schemas() -> Vec<(&'static str, Value)> {
     vec![
         (
             "rintawa.chat.conversation",
-            json!({"type":"object","properties":{"title":{"type":"string","minLength":1,"maxLength":256},"characterId":{"type":["string","null"],"format":"uuid"},"lastEntryId":{"type":["string","null"],"format":"uuid"}},"required":["title","lastEntryId"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"revision":{"type":"string","pattern":"^(0|[1-9][0-9]*)$","maxLength":20},"title":{"type":"string","minLength":1,"maxLength":256},"characterId":{"type":["string","null"],"format":"uuid"},"lastEntryId":{"type":["string","null"],"format":"uuid"}},"required":["title","lastEntryId"],"additionalProperties":false}),
         ),
         (
             "rintawa.chat.message",
-            json!({"type":"object","properties":{"role":{"type":"string","enum":["user","assistant"]},"text":{"type":"string","minLength":1}},"required":["role","text"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"revision":{"type":"string","pattern":"^(0|[1-9][0-9]*)$","maxLength":20},"role":{"type":"string","enum":["user","assistant"]},"text":{"type":"string","minLength":1}},"required":["role","text"],"additionalProperties":false}),
         ),
         (
             "rintawa.chat.entry",
@@ -214,7 +289,7 @@ pub fn command_schemas() -> Vec<(&'static str, Value)> {
     vec![
         (
             "rintawa.chat.assistant-append",
-            json!({"type":"object","properties":{"conversationId":{"type":"string","format":"uuid"},"messageId":{"type":"string","format":"uuid"},"entryId":{"type":"string","format":"uuid"},"userMessageId":{"type":"string","format":"uuid"},"expectedLastEntryId":{"type":"string","format":"uuid"},"text":{"type":"string","minLength":1}},"required":["conversationId","messageId","entryId","userMessageId","expectedLastEntryId","text"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"conversationId":{"type":"string","format":"uuid"},"messageId":{"type":"string","format":"uuid"},"entryId":{"type":"string","format":"uuid"},"userMessageId":{"type":"string","format":"uuid"},"expectedLastEntryId":{"type":"string","format":"uuid"},"expectedConversationRevision":{"type":"string","pattern":"^(0|[1-9][0-9]*)$","maxLength":20},"expectedUserRevision":{"type":"string","pattern":"^(0|[1-9][0-9]*)$","maxLength":20},"text":{"type":"string","minLength":1}},"required":["conversationId","messageId","entryId","userMessageId","expectedLastEntryId","expectedConversationRevision","expectedUserRevision","text"],"additionalProperties":false}),
         ),
         (
             "rintawa.chat.create",
@@ -238,6 +313,7 @@ mod tests {
             title: "A".into(),
             character_id: Some(id(9)),
             last_entry_id: None,
+            revision: initial_revision(),
         }
     }
     fn append(entry: u128) -> Append {
@@ -259,7 +335,7 @@ mod tests {
         let changes = create_changes(&create, false, true, false).unwrap();
         assert_eq!(
             changes["changes"][1]["data"],
-            json!({"title":"Story","characterId":id(9),"lastEntryId":null})
+            json!({"title":"Story","characterId":id(9),"lastEntryId":null,"revision":"0"})
         );
         assert!(create_changes(&create, true, true, false).is_err());
         assert!(create_changes(&create, false, false, false).is_err());
@@ -283,6 +359,105 @@ mod tests {
             Err("stale-entry-id")
         );
     }
+    #[test]
+    fn revisions_increment_atomically_and_overflow_leaves_input_untouched() {
+        let mut original = conversation();
+        original.revision = "18446744073709551614".into();
+        let changes = append_changes(&append(5), &original, false, false).unwrap();
+        assert_eq!(changes["changes"][1]["data"]["revision"], "1");
+        assert_eq!(
+            changes["changes"][4]["data"]["revision"],
+            u64::MAX.to_string()
+        );
+        assert_eq!(original.revision, "18446744073709551614");
+        let exhausted: Conversation =
+            serde_json::from_value(changes["changes"][4]["data"].clone()).unwrap();
+        assert_eq!(
+            append_changes(&append(6), &exhausted, false, false),
+            Err("revision-exhausted")
+        );
+        assert_eq!(exhausted.last_entry_id, Some(id(5)));
+        for invalid in [
+            "",
+            "00",
+            "01",
+            "+1",
+            "-1",
+            " 1",
+            "1 ",
+            "1.0",
+            "1e0",
+            "18446744073709551616",
+        ] {
+            let mut corrupt = original.clone();
+            corrupt.revision = invalid.into();
+            assert_eq!(
+                append_changes(&append(5), &corrupt, false, false),
+                Err("invalid-revision"),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn active_absent_fields_read_as_zero_but_invalid_present_revisions_reject() {
+        let raw_conversation = json!({"title":"Existing","lastEntryId":null});
+        let raw_message = json!({"role":"user","text":"Existing"});
+        let conversation: Conversation = serde_json::from_value(raw_conversation.clone()).unwrap();
+        let message: Message = serde_json::from_value(raw_message.clone()).unwrap();
+        assert_eq!(conversation.revision, "0");
+        assert_eq!(message.revision, "0");
+        assert!(raw_conversation.get("revision").is_none());
+        assert!(raw_message.get("revision").is_none());
+        for invalid in [
+            json!(null),
+            json!(1),
+            json!("01"),
+            json!("+1"),
+            json!("18446744073709551616"),
+        ] {
+            let mut conversation = raw_conversation.clone();
+            let mut message = raw_message.clone();
+            conversation["revision"] = invalid.clone();
+            message["revision"] = invalid;
+            assert!(serde_json::from_value::<Conversation>(conversation).is_err());
+            assert!(serde_json::from_value::<Message>(message).is_err());
+        }
+        for valid in ["0", "1", "18446744073709551615"] {
+            assert_eq!(revision(valid).unwrap().to_string(), valid);
+        }
+    }
+
+    #[test]
+    fn get_message_requires_tagged_membership_and_exact_version() {
+        let conversation = conversation();
+        let message = Message {
+            role: "user".into(),
+            text: "private transcript".into(),
+            revision: "1".into(),
+        };
+        let membership = Some((id(1), id(2), true));
+        assert_eq!(
+            message_context(id(1), id(2), "1", &conversation, &message, membership).unwrap(),
+            json!({"conversationId":id(1),"messageId":id(2),"revision":"1","conversationRevision":"0","role":"user","text":"private transcript"})
+        );
+        assert_eq!(
+            message_context(id(1), id(2), "0", &conversation, &message, membership),
+            Err("stale-context")
+        );
+        for wrong in [
+            None,
+            Some((id(9), id(2), true)),
+            Some((id(1), id(9), true)),
+            Some((id(1), id(2), false)),
+        ] {
+            assert_eq!(
+                message_context(id(1), id(2), "1", &conversation, &message, wrong),
+                Err("not-found")
+            );
+        }
+    }
+
     #[test]
     fn append_rejects_invalid_text_and_conflicts() {
         let conv = conversation();
@@ -311,11 +486,21 @@ mod tests {
             entry_id: id(7),
             user_message_id: id(2),
             expected_last_entry_id: id(5),
+            expected_conversation_revision: "0".into(),
+            expected_user_revision: "1".into(),
             text: "reply".into(),
         };
         let boundary = Some((id(1), id(2), true));
-        let result =
-            assistant_changes(&input, &conv, boundary, Some("user"), false, false).unwrap();
+        let user = Message {
+            role: "user".into(),
+            text: "input".into(),
+            revision: "1".into(),
+        };
+        let assistant = Message {
+            role: "assistant".into(),
+            ..user.clone()
+        };
+        let result = assistant_changes(&input, &conv, boundary, Some(&user), false, false).unwrap();
         assert_eq!(result["changes"].as_array().unwrap().len(), 5);
         assert_eq!(result["changes"][1]["data"]["role"], "assistant");
         assert_eq!(result["changes"][4]["data"]["lastEntryId"], json!(id(7)));
@@ -326,19 +511,49 @@ mod tests {
             Some((id(1), id(2), false)),
         ] {
             assert_eq!(
-                assistant_changes(&input, &conv, wrong, Some("user"), false, false),
+                assistant_changes(&input, &conv, wrong, Some(&user), false, false),
                 Err("stale-context")
             );
         }
         assert_eq!(
-            assistant_changes(&input, &conv, boundary, Some("assistant"), false, false),
+            assistant_changes(&input, &conv, boundary, Some(&assistant), false, false),
             Err("stale-context")
         );
-        assert!(assistant_changes(&input, &conv, boundary, Some("user"), true, false).is_err());
-        assert!(assistant_changes(&input, &conv, boundary, Some("user"), false, true).is_err());
+        assert!(assistant_changes(&input, &conv, boundary, Some(&user), true, false).is_err());
+        assert!(assistant_changes(&input, &conv, boundary, Some(&user), false, true).is_err());
+
+        let mut stale = conv.clone();
+        stale.revision = "1".into();
+        assert_eq!(
+            assistant_changes(&input, &stale, boundary, Some(&user), false, false),
+            Err("stale-context")
+        );
+        let revised_user = Message {
+            revision: "2".into(),
+            ..user.clone()
+        };
+        assert_eq!(
+            assistant_changes(&input, &conv, boundary, Some(&revised_user), false, false),
+            Err("stale-context")
+        );
+        assert_eq!(
+            assistant_changes(&input, &conv, boundary, None, false, false),
+            Err("stale-context")
+        );
+        let serialized = serde_json::to_value(&input).unwrap();
+        for field in ["expectedConversationRevision", "expectedUserRevision"] {
+            let mut missing = serialized.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<AssistantAppend>(missing).is_err());
+            for invalid in ["01", "-1", "18446744073709551616"] {
+                let mut invalid_input = serialized.clone();
+                invalid_input[field] = json!(invalid);
+                assert!(serde_json::from_value::<AssistantAppend>(invalid_input).is_err());
+            }
+        }
         conv.last_entry_id = Some(id(8));
         assert_eq!(
-            assistant_changes(&input, &conv, boundary, Some("user"), false, false),
+            assistant_changes(&input, &conv, boundary, Some(&user), false, false),
             Err("stale-context")
         );
     }
@@ -362,6 +577,8 @@ mod greeting_tests {
         let tx = create_changes(&input, false, true, false).unwrap();
         assert_eq!(tx["changes"].as_array().unwrap().len(), 7);
         assert_eq!(tx["changes"][3]["data"]["role"], "assistant");
+        assert_eq!(tx["changes"][3]["data"]["revision"], "1");
+        assert_eq!(tx["changes"][6]["data"]["revision"], "1");
         assert_eq!(
             tx["changes"][6]["data"]["lastEntryId"],
             input.greeting.as_ref().unwrap().entry_id.to_string()

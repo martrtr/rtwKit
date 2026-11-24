@@ -2,8 +2,8 @@ import type { Client, View } from '@rintawa/bridge';
 export type ViewContribution = { id: string; label: string; order: number; view: View };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 /** Consumers validate their own point. Only Native responder identity can select a view. */
-export async function viewContributions(client: Client, point: string, labelKey: 'title' | 'label'): Promise<{ items: ViewContribution[]; rejected: number }> {
-  const replies = await client.querySourced(point, new TextEncoder().encode('{"method":"describe"}'));
+export async function viewContributions(client: Client, point: string, labelKey: 'title' | 'label', signal?: AbortSignal): Promise<{ items: ViewContribution[]; rejected: number }> {
+  const replies = await client.querySourced(point, new TextEncoder().encode('{"method":"describe"}'), signal);
   const views = await client.views(); let rejected = 0; const items: ViewContribution[] = [], duplicate = new Set<string>(), seen = new Set<string>();
   for (const reply of replies) {
     try {

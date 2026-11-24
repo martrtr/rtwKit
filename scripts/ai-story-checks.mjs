@@ -16,7 +16,7 @@ export function characterPng(card) {
   return Buffer.concat([Buffer.from('89504e470d0a1a0a','hex'),chunk('IHDR',ihdr),chunk('tEXt',metadata),chunk('IDAT',deflateSync(pixels)),chunk('IEND',Buffer.alloc(0))]);
 }
 export async function runAiChecks({ cdp, cli, query, worlds, panel, first, second, home, root, checks, retiredViews }) {
-  let mode = 'normal'; const requests = []; const pending = new Set(); const live = new Set();
+  let mode = 'streaming'; const requests = []; const pending = new Set(); const live = new Set();
   const text = 'Local deterministic reply: Привет.';
   const emit = (response, content = text) => {
     if (response.destroyed) return;
@@ -33,8 +33,13 @@ export async function runAiChecks({ cdp, cli, query, worlds, panel, first, secon
       assert.equal(request.headers.authorization, undefined);
       if (mode === 'http-error') { response.writeHead(500); response.end('private upstream body must not be exposed'); return; }
       response.writeHead(200, { 'content-type': 'text/event-stream' }); response.flushHeaders();
-      if ((mode === 'delayed' || mode === 'timeout')) { pending.add(response); const heartbeat = setInterval(() => { if (!response.destroyed) response.write(': keepalive\n\n'); }, 100); response.once('close', () => clearInterval(heartbeat)); return; }
-      if (mode === 'incomplete') { response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'provisional, never commit' }, finish_reason: null }] })}\n\n`); return; }
+      if ((mode === 'delayed' || mode === 'timeout')) { if(mode==='timeout')response.write(`data: ${JSON.stringify({choices:[{index:0,delta:{content:'Timed out reply prefix'},finish_reason:null}]})}\n\n`);pending.add(response); const heartbeat = setInterval(() => { if (!response.destroyed) response.write(': keepalive\n\n'); }, 100); response.once('close', () => clearInterval(heartbeat)); return; }
+      if (mode === 'streaming' || mode === 'incomplete') {
+        pending.add(response);
+        const content = mode === 'streaming' ? 'Local deterministic reply: ' : 'Interrupted reply prefix';
+        response.write(`data: ${JSON.stringify({choices:[{index:0,delta:{content},finish_reason:null}]})}\n\n`);
+        return;
+      }
       emit(response, mode === 'oversize' ? 'x'.repeat(16 * 1024 + 1) : text);
     });
   });
@@ -92,7 +97,7 @@ export async function runAiChecks({ cdp, cli, query, worlds, panel, first, secon
     assert.equal((await describe(first)).defaultConnectionId,localConnection.id);
     const settingsFrame=await cdp.evaluate('location.href',settings);
     await cdp.evaluate(`window.__storyAdmin.rpc('runtime-policy.apply-live-change',{change:{target:${JSON.stringify(beforeActivation)},delta:{revokeRuntime:['published-preference-read']}}})`);
-    await cdp.click('Refresh connections',settings);await cdp.waitText('Allow shared providers…',settings);
+    await cdp.waitText('Allow shared providers…',settings);
     assert.deepEqual(await describe(first,'Chat'),{ready:false,reason:'shared-connections-permission-required'});
     assert.deepEqual(await describe(second,'Chat'),{ready:true,reason:null});
     await cdp.click('Allow shared providers…',settings);await consentReady();await cdp.click('Allow selected');await consentClosed();await waitPrimary(settings,'Ollama');
@@ -117,7 +122,25 @@ export async function runAiChecks({ cdp, cli, query, worlds, panel, first, secon
     const recent = async () => (await query(first.worldId, 'Chat', 'rintawa/chat/v1', { method: 'recent', conversationId: conversation })).value;
     const send = async value => { await eventually(() => cdp.evaluate('!!document.querySelector("#message")&&!document.querySelector("#message").disabled', chat), 'composer ready'); await cdp.setInput('#message', value, chat); await cdp.click('Send', chat); };
     const waitIdle = async (timeout = 30000) => eventually(() => cdp.evaluate('!!document.querySelector("#message")&&!document.querySelector("#message").disabled', chat), 'generation terminal', timeout);
-    await send('AI local request'); await cdp.waitText(text, chat); await waitIdle();
+    await send('AI local request');
+    await cdp.waitText('Local deterministic reply: ', chat);
+    assert.equal(await cdp.evaluate('document.querySelector(".reply-preview")?.getAttribute("aria-busy") === "true"',chat),true);
+    assert.equal((await recent()).items.some(row=>row.message.text.startsWith('Local deterministic reply:')),false,'prefix is not a World message');
+    const stream=[...pending][0];assert.ok(stream);
+    await cdp.evaluate('(()=>{const v=document.querySelector(".transcript");v.style.maxHeight="80px";v.scrollTop=0;})()',chat);
+    const delta=Buffer.from(`data: ${JSON.stringify({choices:[{index:0,delta:{content:'При'},finish_reason:null}]})}\n\n`);
+    const split=delta.indexOf(Buffer.from('При'))+1;
+    stream.write(delta.subarray(0,split));await pause(30);stream.write(delta.subarray(split));
+    await cdp.waitText('Local deterministic reply: При',chat);
+    assert.equal(await cdp.evaluate('document.querySelector(".transcript").scrollTop',chat),0,'stream updates do not pull a reader away from older messages');
+    await cdp.evaluate('(()=>{const v=document.querySelector(".transcript");v.style.maxHeight="";v.scrollTop=v.scrollHeight;})()',chat);
+    await pause(300);assert.equal((await recent()).items.some(row=>row.message.text.startsWith('Local deterministic reply:')),false,'repeated status reads cannot COMMIT a prefix');
+    await writeFile(join(root,'streaming-prefix.png'),Buffer.from((await cdp.call('Page.captureScreenshot',{format:'png'})).data,'base64'));
+    emit(stream,'вет.');mode='normal';
+    await cdp.waitText(text, chat); await waitIdle();
+    await eventually(()=>cdp.evaluate('!document.querySelector(".reply-preview")',chat),'canonical answer replaces preview');
+    assert.equal(await cdp.evaluate(`[...document.querySelectorAll('article.message p')].filter(p=>p.textContent===${JSON.stringify(text)}).length`,chat),1);
+    checks.push('fragmented UTF-8 SSE renders cumulative Chat text before upstream completion and before COMMIT; final answer replaces its preview exactly once');
     let page = await recent(); assert.equal(page.items.at(-1).message.role, 'assistant'); assert.equal(page.items.at(-1).message.text, text); assert.equal(requests.length, 1);
     assert.ok(requests[0].body.messages[0].content.includes('Name: Story Alice'));assert.ok(Buffer.byteLength(requests[0].body.messages[0].content)>8192,'full character beyond former per-card cap reaches provider');assert.equal(requests[0].body.model,'local-fixture');
     assert.equal(requests[0].body.messages.at(-1).content, 'AI local request');
@@ -160,22 +183,28 @@ export async function runAiChecks({ cdp, cli, query, worlds, panel, first, secon
     checks.push('B adds a provider and switches the shared primary; missing credentials leave its user message committed with zero provider requests');
     await cdp.openWorld('Story A');chat=await panel('.chat');await cdp.waitText(text,chat);
 
-    const assistantCount = page.items.filter(row => row.message.role === 'assistant').length;
+    let assistantCount = page.items.filter(row => row.message.role === 'assistant').length;
     for (const failure of ['http-error', 'incomplete', 'oversize', 'timeout']) {
       mode = failure;
-      if (failure === 'http-error') await send('AI failure test'); else await cdp.click('Retry reply', chat);
+      const beforeCount=(await recent()).items.filter(row=>row.message.role==='assistant').length;
+      await send('AI failure test: '+failure);
       await eventually(() => requests.at(-1)?.mode === failure, `${failure} request`);
-      await waitIdle(failure === 'timeout' ? 110000 : 30000);
-      if (failure === 'timeout') {
-        await cdp.waitText('The AI request timed out.',chat);
-        await eventually(() => pending.size === 0,'deadline closes held HTTP');
+      if (failure === 'incomplete') {
+        await cdp.waitText('Interrupted reply prefix',chat);
+        assert.equal((await recent()).items.some(row=>row.message.text==='Interrupted reply prefix'),false);
+        for(const response of pending)response.end();
       }
-      page = await recent(); assert.equal(page.items.filter(row => row.message.role === 'assistant').length, assistantCount);
+      await waitIdle(failure === 'timeout' ? 110000 : 30000);
+      page=await recent();
+      const retained=failure==='incomplete'||failure==='timeout';
+      assert.equal(page.items.filter(row=>row.message.role==='assistant').length,beforeCount+(retained?1:0));
+      if(retained){assert.equal(page.items.at(-1).message.text,failure==='incomplete'?'Interrupted reply prefix':'Timed out reply prefix');assert.equal(page.items.at(-1).message.role,'assistant');}
+      if(failure==='timeout')await eventually(()=>pending.size===0,'deadline closes held HTTP');
       assert.ok(!(await cdp.body(chat)).includes('private upstream body must not be exposed'));
-      assert.ok(!(await cdp.body(chat)).includes('provisional, never commit'));
     }
-    checks.push('HTTP 500, incomplete SSE, oversized output and deadline timeout preserve user messages, disclose no upstream error body and commit no assistant');
-    mode = 'delayed'; await cdp.click('Retry reply', chat); await eventually(() => pending.size === 1, 'upstream generation held');
+    assistantCount=page.items.filter(row=>row.message.role==='assistant').length;
+    checks.push('failed empty/oversized replies create no assistant; interrupted and timed-out valid prefixes commit ordinary messages without exposing upstream errors');
+    mode = 'delayed'; await send('Concurrent context test'); await eventually(() => pending.size === 1, 'upstream generation held');
     const lastUser = (await recent()).items.at(-1).messageId;
     const spare = (await query(first.worldId, 'Chat', 'rintawa/chat/v1', { method: 'allocate', count: 2 })).value;
     assert.equal((await query(first.worldId, 'Chat', 'rintawa/narrator/v1', { method: 'begin-generate', conversationId: conversation, userMessageId: lastUser, messageId: spare[0], entryId: spare[1] })).error.code, 'generation-busy');
@@ -186,12 +215,19 @@ export async function runAiChecks({ cdp, cli, query, worlds, panel, first, secon
     for (const response of pending) emit(response); await waitIdle(); await cdp.waitText('The conversation changed.', chat);
     page = await recent(); assert.equal(page.items.at(-1).message.text, 'Concurrent later user message'); assert.equal(page.items.filter(row => row.message.role === 'assistant').length, assistantCount);
     checks.push('one generation per conversation; a concurrent COMMIT rejects stale AI context without partial reply');
-    await cdp.click('Refresh', chat); await cdp.waitText('Concurrent later user message', chat);
+    await cdp.waitText('Concurrent later user message', chat);
     mode = 'delayed';
     const releasedIds = (await query(first.worldId, 'Chat', 'rintawa/chat/v1', { method: 'allocate', count: 2 })).value;
     const released = (await query(first.worldId, 'Chat', 'rintawa/narrator/v1', { method: 'begin-generate', conversationId: conversation, userMessageId: page.items.at(-1).messageId, messageId: releasedIds[0], entryId: releasedIds[1] })).value;
     assert.equal(released.status, 'pending');
-    await query(first.worldId, 'Chat', 'rintawa/narrator/v1', { method: 'release', operation: released.operation });
+    await eventually(async () => {
+      try {
+        const result = await query(first.worldId, 'Chat', 'rintawa/narrator/v1', { method: 'release', operation: released.operation });
+        if (result.error?.code === 'unavailable' || result.error?.code === 'limit-exceeded') return false;
+        assert.ok(!result.error || result.error.code === 'invalid-operation');
+        return true;
+      } catch (error) { if (/^(Error: )?(unavailable|limit-exceeded)(?:\n|$)/.test(error.message)) return false; throw error; }
+    }, 'idempotent result cleanup after a transient lookup failure');
     assert.equal((await query(first.worldId, 'Chat', 'rintawa/narrator/v1', { method: 'status', operation: released.operation })).error.code, 'invalid-operation');
     assert.equal((await query(first.worldId, 'Chat', 'rintawa/narrator/v1', { method: 'begin-generate', conversationId: conversation, userMessageId: page.items.at(-1).messageId, messageId: spare[0], entryId: spare[1] })).error.code, 'generation-busy');
     await eventually(() => pending.size === 1, 'released pending generation still performs accepted work');
