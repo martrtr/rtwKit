@@ -15,7 +15,8 @@ wit_bindgen::generate!({ path:"../../wit",world:"runtime-provider-task-plugin" }
 use exports::rintawa::engine::target_provider::{ComponentDescriptor, Error as TargetError};
 use rintawa::engine::{
     asset_store, execution_targets, host, network, preferences, registration, runtime_context,
-    runtime_policy, runtime_tasks, transport, user_resources, world_sessions,
+    runtime_policy, runtime_tasks, secret_administration, secret_prompt, transport, user_resources,
+    world_sessions,
 };
 const TARGET: &str = "rintawa.runtime.web-bundle@2";
 const CACHE_BYTES: usize = 16 * 1024 * 1024;
@@ -123,8 +124,15 @@ struct Socket {
     closing: bool,
     accepted: u64,
 }
+struct PromptLink {
+    handle: u64,
+    channel: String,
+    shell: String,
+    connection: u64,
+}
 #[derive(Default)]
 struct State {
+    prompts: HashMap<String, PromptLink>,
     bundles: HashMap<u64, Bundle>,
     next: u64,
     bytes: usize,
@@ -388,6 +396,7 @@ impl exports::rintawa::engine::task_handler::Guest for Runtime {
             {
                 publication.tick(contribution, time);
             }
+            state.reconcile_prompts();
             state.cleanup(&owner);
             let mut channels: Vec<_> = state
                 .sessions
@@ -460,6 +469,7 @@ macro_rules! host_errors {
         }
     };
 }
+host_errors!(secret_administration::Error, {Denied=>"permission-denied",Unavailable=>"unavailable",InvalidRequest=>"invalid-request",NotFound=>"not-found",Busy=>"busy",MessageTooLarge=>"message-too-large"});
 host_errors!(transport::Error, {
     AccessNotActive => "access-not-active", InvalidName => "invalid-name",
     Duplicate => "duplicate", LimitExceeded => "limit-exceeded", Unavailable => "unavailable",
@@ -507,6 +517,7 @@ fn require(resources: &Resources, kind: Kind, handle: Handle) -> Result<u64, Fai
             Kind::Upload => "invalid-resource",
             Kind::Reader => "invalid-asset",
             Kind::Package => "not-found",
+            Kind::SecretOperation | Kind::SecretPrompt => "invalid-handle",
         }))
     }
 }
@@ -569,6 +580,179 @@ impl State {
         }
         Ok(())
     }
+    fn reconcile_prompts(&mut self) {
+        let dead: Vec<_> = self
+            .prompts
+            .iter()
+            .filter(|(_, link)| {
+                !self.sessions.channels.contains_key(&link.channel)
+                    || !self.sessions.channels.contains_key(&link.shell)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in dead {
+            self.dismiss_prompt(&id);
+        }
+    }
+    fn dismiss_prompt(&mut self, id: &str) {
+        if let Some(link) = self.prompts.remove(id) {
+            self.send(
+                link.connection,
+                json!({"v":1,"type":"secret-prompt-closed","channel":link.shell,"reference":id}),
+            );
+            if let Some(channel) = self.sessions.channels.get_mut(&link.channel) {
+                channel.resources.remove(Kind::SecretPrompt, link.handle);
+                let owner = channel.owner.clone();
+                let mut resources = Resources::default();
+                resources.insert(Kind::SecretPrompt, link.handle, None);
+                self.retire(owner, resources);
+            }
+        }
+    }
+    fn secret_call(
+        &mut self,
+        request: &Request,
+        method: &str,
+        args: &Value,
+        resources: &mut Resources,
+        connection: u64,
+    ) -> Result<Value, Failure> {
+        self.reconcile_prompts();
+        let prompt = method.starts_with("secret-prompt.");
+        let action = method.rsplit('.').next().unwrap_or("");
+        if action == "dismiss" {
+            let id = args
+                .get("reference")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Failure::reject("invalid-request"))?;
+            if args.as_object().is_none_or(|a| a.len() != 1)
+                || !self.prompts.get(id).is_some_and(|link| {
+                    link.shell == request.channel && link.connection == connection
+                })
+            {
+                return Err(Failure::reject("invalid-handle"));
+            }
+            self.dismiss_prompt(id);
+            return Ok(Value::Null);
+        }
+        if action == "begin" {
+            if prompt {
+                let shell = self
+                    .sessions
+                    .channels
+                    .iter()
+                    .find(|(_, c)| c.connection == connection && c.shell)
+                    .map(|(id, _)| id.clone())
+                    .ok_or_else(|| Failure::reject("channel-closed"))?;
+                let text =
+                    serde_json::to_string(args).map_err(|_| Failure::reject("invalid-request"))?;
+                let reference = fresh().map_err(Failure::reject)?;
+                let h = host_result(secret_prompt::begin(&text))?;
+                resources.insert(Kind::SecretPrompt, h, None);
+                self.prompts.insert(
+                    reference.clone(),
+                    PromptLink {
+                        handle: h,
+                        channel: request.channel.clone(),
+                        shell: shell.clone(),
+                        connection,
+                    },
+                );
+                self.send(
+                    connection,
+                    json!({"v":1,"type":"secret-prompt","channel":shell,"reference":reference}),
+                );
+                return Ok(json!({"reference":reference}));
+            }
+            let mut args = args.clone();
+            if matches!(
+                args.get("operation").and_then(Value::as_str),
+                Some("inspect-prompt" | "bind-prompt")
+            ) {
+                let reference = args
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Failure::reject("invalid-request"))?;
+                let link = self
+                    .prompts
+                    .get(reference)
+                    .filter(|link| {
+                        link.shell == request.channel
+                            && link.connection == connection
+                            && self.sessions.channels.contains_key(&link.channel)
+                    })
+                    .ok_or_else(|| Failure::reject("invalid-handle"))?;
+                args["prompt"] = json!(link.handle.to_string());
+            }
+            let text =
+                serde_json::to_string(&args).map_err(|_| Failure::reject("invalid-request"))?;
+            let h = host_result(secret_administration::begin(&text))?;
+            resources.insert(Kind::SecretOperation, h, None);
+            return Ok(json!(Handle(h)));
+        }
+        let (h, reference) = if prompt {
+            let id = args
+                .get("reference")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Failure::reject("invalid-request"))?;
+            let link = self
+                .prompts
+                .get(id)
+                .filter(|link| link.channel == request.channel && link.connection == connection)
+                .ok_or_else(|| Failure::reject("invalid-handle"))?;
+            (link.handle, Some(id.to_string()))
+        } else {
+            let h: Handle = serde_json::from_value(
+                args.get("handle")
+                    .cloned()
+                    .ok_or_else(|| Failure::reject("invalid-request"))?,
+            )
+            .map_err(|_| Failure::reject("invalid-request"))?;
+            (h.0, None)
+        };
+        if args.as_object().is_none_or(|a| a.len() != 1) {
+            return Err(Failure::reject("invalid-request"));
+        }
+        let kind = if prompt {
+            Kind::SecretPrompt
+        } else {
+            Kind::SecretOperation
+        };
+        require(resources, kind, Handle(h))?;
+        match action {
+            "status" => {
+                let result = if prompt {
+                    host_result(secret_prompt::status(h))?
+                } else {
+                    host_result(secret_administration::status(h))?
+                };
+                serde_json::from_str(&result).map_err(|_| Failure::reject("protocol-error"))
+            }
+            "cancel" => {
+                if prompt {
+                    host_result(secret_prompt::cancel(h))?
+                } else {
+                    host_result(secret_administration::cancel(h))?
+                };
+                Ok(Value::Null)
+            }
+            "release" => {
+                if prompt {
+                    host_result(secret_prompt::release(h))?
+                } else {
+                    host_result(secret_administration::release(h))?
+                };
+                resources.remove(kind, h);
+                if let Some(id) = reference
+                    && let Some(link) = self.prompts.remove(&id)
+                {
+                    self.send(link.connection,json!({"v":1,"type":"secret-prompt-closed","channel":link.shell,"reference":id}));
+                }
+                Ok(Value::Null)
+            }
+            _ => Err(Failure::reject("invalid-request")),
+        }
+    }
     fn retire(&mut self, owner: Owner, resources: Resources) {
         if !resources.0.is_empty() {
             self.retired.entry(owner).or_default().append(resources);
@@ -583,6 +767,14 @@ impl State {
         let mut remaining = Resources::default();
         for ((kind, handle), tracked) in entries {
             let result = match kind {
+                Kind::SecretOperation => {
+                    let _ = secret_administration::cancel(handle);
+                    host_result(secret_administration::release(handle))
+                }
+                Kind::SecretPrompt => {
+                    let _ = secret_prompt::cancel(handle);
+                    host_result(secret_prompt::release(handle))
+                }
                 Kind::Query => host_result(transport::close_query(handle)),
                 Kind::Queryable => host_result(transport::close_queryable(handle)),
                 Kind::Incoming => host_result(transport::reply_query(handle, None)),
@@ -616,6 +808,7 @@ impl State {
             .check(&request.channel, connection, time)
             .map_err(Failure::reject)?;
         let value=match &request.call {
+            Call::Secret{method,args}=>self.secret_call(request,method,args,resources,connection)?,
             Call::BeginQuery {point,payload}=>{let h=host_result(transport::begin_query(point,payload))?;resources.insert(Kind::Query,h,None);json!(Handle(h))}
             Call::BeginQueryTo {point,payload,expected}=>{
                 let target=runtime_context::Principal {

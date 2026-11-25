@@ -101,6 +101,22 @@ export class Client {
   request(method: string, args: Record<string, unknown> = {}): Promise<unknown> {
     return this.#closed ? Promise.reject(new BridgeError('channel-closed', 'not-started')) : this.#call(method, args);
   }
+  async requestSecret(componentId: string, slot: string): Promise<string> {
+    const admitted = await this.request('secrets.request-selection', {componentId, slot}) as {reference:string};
+    try {
+      for (;;) {
+        let status: {status:string;result?:{outcome:string};code?:string};
+        try {status = await this.request('secret-prompt.status', {reference:admitted.reference}) as typeof status;}
+        catch(failure){if(failure instanceof BridgeError&&failure.code==='unavailable'){await delay(150);continue;}throw failure;}
+        if (status.status === 'completed') return status.result!.outcome;
+        if (status.status === 'failed') throw new BridgeError(status.code ?? 'unavailable');
+        await delay(150);
+      }
+    } catch(failure) {
+      if(failure instanceof BridgeError)return ['invalid-handle','not-found'].includes(failure.code)?'cancelled':failure.code==='permission-denied'?'stale':'unknown';
+      return 'unavailable';
+    } finally { await this.request('secret-prompt.release', {reference:admitted.reference}).catch(()=>{}); }
+  }
   async beginQuery(point: string, payload: Uint8Array): Promise<string> {
     if (payload.length > 65536) throw new BridgeError('message-too-large', 'not-started');
     return handle(await this.request('transport.begin-query', { point, payload: encodeBytes(payload) }));
@@ -344,6 +360,44 @@ export class RootBridge {
   notifyPermissionsChanged(viewId: string): void { for (const b of this.#frames) if (!b.closed && b.view.id === viewId) b.port?.postMessage({ v: 1, type: 'permissions-changed' }); }
   #intent: ((method: string, args: Record<string, unknown>, source: View) => Promise<unknown>) | null = null;
   onIntent(handler: (method: string, args: Record<string, unknown>, source: View) => Promise<unknown>): () => void { this.#intent = handler; return () => { if (this.#intent === handler) this.#intent = null; }; }
+  #secretEnded: ((reference:string)=>void) | null = null;
+  onSecretPromptEnded(handler:(reference:string)=>void):()=>void {this.#secretEnded=handler;return()=>{if(this.#secretEnded===handler)this.#secretEnded=null;};}
+  #secretHandler: ((reference: string) => boolean) | null = null;
+  #secretQueue: string[] = [];
+  onSecretPrompt(handler: (reference: string) => boolean): () => void {
+    this.#secretHandler = handler;
+    for (const reference of this.#secretQueue.splice(0)) this.#secretNotification(reference);
+    return () => { if (this.#secretHandler === handler) this.#secretHandler = null; };
+  }
+  #secretNotification(reference: string): void {
+    if (!this.#secretHandler && this.#secretQueue.length < 16) { this.#secretQueue.push(reference); return; }
+    if (!this.#secretHandler?.(reference)) void this.client.request('secret-prompt.dismiss', {reference}).catch(()=>{});
+  }
+  async secretOperation(request: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    if(new TextEncoder().encode(JSON.stringify(request)).length>60*1024)throw new BridgeError('message-too-large','not-started');
+    const readOnly = ['list','consumers','inspect-prompt'].includes(String(request.operation));
+    for(let attempt=0;;attempt++) {
+      try {return await this.#secretOnce(request,signal);}
+      catch(failure) {if(!readOnly||attempt>=9||!(failure instanceof BridgeError)||failure.code!=='unavailable'||signal?.aborted)throw failure;await delay(100);}
+    }
+  }
+  async #secretOnce(request: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    if(signal?.aborted)throw new BridgeError('channel-closed');
+    const handle = await this.client.request('secret-administration.begin', request) as string;
+    try {
+      const deadline = Date.now()+120000;
+      while (Date.now()<deadline) {
+        if(signal?.aborted)throw new BridgeError('channel-closed');
+        let status: {status:string;result?:unknown;code?:string};
+        try {status = await this.client.request('secret-administration.status', {handle}) as typeof status;}
+        catch(failure) {if(failure instanceof BridgeError && failure.code==='unavailable'){await delay(100);continue;}throw failure;}
+        if (status.status==='completed') return status.result;
+        if (status.status==='failed') throw new BridgeError(status.code ?? 'unavailable');
+        await delay(100);
+      }
+      throw new BridgeError('outcome-unknown');
+    } finally { await this.client.request('secret-administration.release', {handle}).catch(()=>{}); }
+  }
   readonly client: Client;
   private constructor(socket: WebSocket, rpc: Rpc, channel: string) {
     this.#socket = socket; this.#rpc = rpc; this.#channel = channel;
@@ -380,8 +434,14 @@ export class RootBridge {
         if (!record(value) || value.v !== 1 || value.type !== 'ready' || typeof value.token !== 'string' || !asciiId(value.channel)) { fail(); return; }
         clearTimeout(timer); socket.removeEventListener('message', ready); socket.removeEventListener('close', closed); socket.removeEventListener('error', fail);
         try { sessionStorage.setItem('rintawa.session', value.token); } catch { rpc.close(); socket.close(); reject(new BridgeError('unavailable')); return; }
-        socket.addEventListener('message', event => { try { rpc.accept(JSON.parse(event.data)); } catch { rpc.close('protocol-error'); socket.close(); } });
-        resolve(new RootBridge(socket, rpc, value.channel));
+        const bridge = new RootBridge(socket, rpc, value.channel);
+        socket.addEventListener('message', event => { try {
+          const message = JSON.parse(event.data);
+          if (record(message) && message.v === 1 && message.type === 'secret-prompt' && message.channel === bridge.#channel && asciiId(message.reference)) bridge.#secretNotification(message.reference);
+          else if(record(message)&&message.v===1&&message.type==='secret-prompt-closed'&&message.channel===bridge.#channel&&asciiId(message.reference))bridge.#secretEnded?.(message.reference);
+          else rpc.accept(message);
+        } catch { rpc.close('protocol-error'); socket.close(); } });
+        resolve(bridge);
       };
       socket.addEventListener('message', ready);
     });

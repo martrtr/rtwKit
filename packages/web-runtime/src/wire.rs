@@ -47,6 +47,10 @@ pub struct Principal {
 
 #[derive(Debug)]
 pub enum Call {
+    Secret {
+        method: String,
+        args: Value,
+    },
     BeginQuery {
         point: String,
         payload: Vec<u8>,
@@ -157,6 +161,9 @@ pub enum Call {
 impl Call {
     pub fn shell_only(&self) -> bool {
         matches!(
+            self,
+            Self::Secret { method, .. } if method.starts_with("secret-administration.") || method == "secret-prompt.dismiss"
+        ) || matches!(
             self,
             Self::CreateFromTemplate {
                 approve_runtime_permissions: true,
@@ -324,6 +331,32 @@ impl Request {
         }
         let value = request.args;
         let call = match request.method.as_str() {
+            "secret-administration.begin"
+            | "secret-administration.status"
+            | "secret-administration.cancel"
+            | "secret-administration.release"
+            | "secrets.request-selection"
+            | "secret-prompt.status"
+            | "secret-prompt.cancel"
+            | "secret-prompt.release"
+            | "secret-prompt.dismiss" => {
+                if serde_json::to_vec(&value)
+                    .map_err(|_| "invalid request")?
+                    .len()
+                    > 60 * 1024
+                {
+                    return Err("request too large");
+                }
+                Call::Secret {
+                    method: if request.method == "secrets.request-selection" {
+                        "secret-prompt.begin".into()
+                    } else {
+                        request.method.clone()
+                    },
+                    args: value,
+                }
+            }
+
             "transport.begin-query" | "transport.publish" => {
                 let a: Payload = args(value)?;
                 let payload = decode_bytes(&a.payload, MAX_MESSAGE_BYTES)?;

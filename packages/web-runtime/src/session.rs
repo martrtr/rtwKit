@@ -24,6 +24,8 @@ pub enum ResourceKind {
     Upload,
     Reader,
     Package,
+    SecretOperation,
+    SecretPrompt,
 }
 #[derive(Default)]
 pub struct Resources(pub HashMap<(ResourceKind, u64), Tracked>);

@@ -1,3 +1,4 @@
+import { Secrets } from './Secrets';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { DockviewReact, themeDark, themeLight, type DockviewApi, type DockviewReadyEvent, type IDockviewPanelProps } from 'dockview-react';
 import { BridgeError, RootBridge, resolveView, type View, type Theme, type ViewState, type PermissionRequest } from '@rintawa/bridge';
@@ -62,7 +63,10 @@ export function App({ bridge }: { bridge: RootBridge }) {
   const [creationPermissions,setCreationPermissions]=useState<CreationPermission[]>([]);const [accessReady,setAccessReady]=useState(false);
   const [readError, setReadError] = useState('');
   const [permissionRequest, setPermissionRequest] = useState<{ view: View; request: PermissionRequest } | null>(null);
+  const [secretDialog, setSecretDialog] = useState<{reference?:string}|null>(null);
   const consentPending = useRef(false);
+  useEffect(()=>bridge.onSecretPromptEnded(reference=>setSecretDialog(current=>{if(current?.reference===reference){consentPending.current=false;return null;}return current;})),[bridge]);
+  useEffect(() => bridge.onSecretPrompt(reference => { if(consentPending.current)return false;consentPending.current=true;setSecretDialog({reference});return true; }), [bridge]);
   const closePermissions = useCallback(() => { setPermissionRequest(null); consentPending.current = false; }, []);
   useEffect(() => bridge.onPermissionRequest((view, request) => {
     if (consentPending.current) return false;
@@ -96,7 +100,7 @@ export function App({ bridge }: { bridge: RootBridge }) {
   },[bridge]);
   const refresh=useCallback(async()=>{await catalogWatch.current!.refresh();return catalogValue.current!;},[]);
   useEffect(() => { bridge.theme(theme); }, [bridge, theme]);
-  useEffect(() => bridge.onDisconnect(() => setError('Connection closed. Reconnect to continue.')), [bridge]);
+  useEffect(() => bridge.onDisconnect(() => {setSecretDialog(null);consentPending.current=false;setError('Connection closed. Reconnect to continue.');}), [bridge]);
   useEffect(() => {
     if (!worlds.some(world => world.pendingActive !== null) && Date.now() >= catalogRefreshUntil.current) return;
     let cancelled = false;
@@ -284,7 +288,8 @@ export function App({ bridge }: { bridge: RootBridge }) {
       </section>
       {(error || readError) && <div className="shell-error" role="alert"><span>{error || readError}</span><button onClick={() => { setError(''); setReadError(''); }} aria-label="Dismiss error"><Icon name="close" size={16} /></button><button onClick={() => void refresh().catch(failure=>setReadError(errorText(failure)))}>Retry reads</button><button onClick={() => location.reload()}>Reconnect</button></div>}
     </section>
-    {settings && <div className="settings-overlay"><Dialog open title="Settings" onClose={()=>setSettings(null)}><Surface bridge={bridge} view={selectedView(views,settings.scope,'rintawa.ui.settings.renderer')} label="Settings"/></Dialog></div>}
+    {settings && <div className="settings-overlay"><Dialog open title="Settings" onClose={()=>setSettings(null)}><Button onClick={()=>{if(!consentPending.current){consentPending.current=true;setSecretDialog({});}}}>Secrets…</Button><Surface bridge={bridge} view={selectedView(views,settings.scope,'rintawa.ui.settings.renderer')} label="Settings"/></Dialog></div>}
+    {secretDialog && <Secrets bridge={bridge} reference={secretDialog.reference} close={()=>{setSecretDialog(null);consentPending.current=false;}} />}
     {permissionRequest && <Permissions bridge={bridge} source={permissionRequest} scopeTitle={permissionRequest.view.worldId ? worlds.find(w => w.worldId === permissionRequest.view.worldId)?.title ?? permissionRequest.view.worldId : 'Home'} close={closePermissions} />}
     <Dialog open={createOpen} title="Create a world" onClose={closeCreate}><form onSubmit={event => { event.preventDefault(); void createWorld(); }}><label htmlFor="world-template">TEMPLATE</label><input ref={fileInput} className="template-file" type="file" accept=".rtw" hidden disabled={uploadBusy || busy} onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) void importTemplate(file); }} /><select id="world-template" value={template} disabled={busy || uploadBusy} onChange={event => { if (event.target.value === '__file__') fileInput.current?.click(); else setTemplate(event.target.value); }}>{!templates.length && <option value="">No installed templates</option>}{templates.map(row => <option key={row.digest} value={row.digest} disabled={!!row.invalidReason}>{row.name}{row.invalidReason ? ' · unavailable' : ''}</option>)}<option value="__file__">From file (.rtw)…</option></select>{uploadProgress && <Status>{uploadProgress}</Status>}
       {templateInfo && <details className="template-requirements"><summary>Included extensions and permissions</summary>{templateInfo.components.map(slot => <p key={slot.slot}>{slot.packageId ?? slot.slot} {slot.version}</p>)}<ul>{templateInfo.composition.requestedGrants.map(grant => <li key={`${grant.slot}/${grant.componentId}/${grant.permission}`}>{grant.slot}/{grant.componentId}: {grant.permission}{grant.permission==='published-preference-write'&&' (changes shared settings for all worlds)'}</li>)}{creationPermissions.flatMap(p=>[...p.httpOrigins.map(origin=><li key={`${p.slot}/${p.componentId}/http/${origin}`}>{p.slot}/{p.componentId}: connect to {origin}</li>),...p.secretRead.map(path=><li key={`${p.slot}/${p.componentId}/secret/${path}`}>{p.slot}/{p.componentId}: read saved credential {path}</li>)])}</ul></details>}

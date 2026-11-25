@@ -18,4 +18,4 @@ kind = "ui"
 target = "rintawa.runtime.web-bundle@2"
 entry = "web-bundle.toml"
 [components.permissions]
-runtime = ["background-task"]
+runtime = ["background-task", "secret-prompt"]

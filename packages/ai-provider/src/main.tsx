@@ -11,7 +11,6 @@ type Kind = 'ollama' | 'openai-compatible';
 export type Connection = { id: string; label: string; template: Kind; config: Config };
 type Description = { worldId: string | null; instanceId: string; connections: Connection[] | null; catalogError: string | null; defaultConnectionId: string | null };
 type Draft = { expected?: Connection; label: string; template: Kind; config: Config };
-const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 const keyPath = (connection: Connection) => `ai.connection_${connection.id.replaceAll('-', '')}.api_key`;
 const originFor = (base: string) => { try { const url = new URL(base); return url.protocol === 'http:' ? url.origin : null; } catch { return null; } };
 const providerError = (code: string) => ({
@@ -67,10 +66,9 @@ function App() {
   const requestAccess = async (connection?: Connection, config = connection?.config ?? draft?.config ?? selected?.config) => {
     if (!client.current || !config) return;
     const origin = originFor(config.baseUrl);
-    const bound = connection ?? draft?.expected ?? selected;
-    const secretRead = config.requiresApiKey && bound && bound.config.baseUrl === config.baseUrl && bound.config.requiresApiKey === config.requiresApiKey ? [keyPath(bound)] : [];
+
     try {
-      await client.current.request('ui.request-permissions', { componentId: 'backend', runtime: ['http-request', ...(info?.worldId ? ['published-preference-read', 'published-preference-write'] : [])], httpOrigins: origin ? [origin] : [], secretRead });
+      await client.current.request('ui.request-permissions', { componentId: 'backend', runtime: ['http-request', ...(info?.worldId ? ['published-preference-read', 'published-preference-write'] : [])], httpOrigins: origin ? [origin] : [], secretRead: [] });
       setNotice('Confirm access in Rintawa.');
     } catch (failure) { setError(errorText(failure)); }
   };
@@ -88,7 +86,7 @@ function App() {
       <div className="ai-connection-name"><h3>{connection.label}</h3><ConnectionHealth domain={domain.current} connection={connection} enabled={!draft} revision={revision} queue={queue} />{info.defaultConnectionId === connection.id && <span className="ai-selected">Primary</span>}</div>
       <p>{connection.config.model || 'No model'} <span>· {connection.template === 'ollama' ? 'Ollama' : 'OpenAI-compatible'}</span></p><code>{connection.config.baseUrl}</code>
       <div className="ai-connection-actions">{info.defaultConnectionId !== connection.id && <Button disabled={locked} onClick={() => void mutate('set-default', { expected: connection, expectedDefault: info.defaultConnectionId })}>Make primary</Button>}<Button disabled={locked} onClick={() => setDraft({ expected: connection, label: connection.label, template: connection.template, config: { ...connection.config } })}>Edit</Button><Button disabled={locked} onClick={() => setRemoving(connection)}>Delete</Button><Button disabled={locked} onClick={() => void requestAccess(connection)}>Allow access…</Button></div>
-      {connection.config.requiresApiKey && <details><summary>API key setup</summary><p>Store the API key in system credentials through your terminal, then choose Allow access:</p><pre>{`read -rs -p 'API key: ' rtw_api_key\nprintf '\\n'\nprintf '%s' "$rtw_api_key" | rintawa secret-set ${quote(keyPath(connection))}\nunset rtw_api_key`}</pre></details>}
+      {connection.config.requiresApiKey && <Button disabled={locked} onClick={() => { void client.current?.requestSecret('backend', keyPath(connection)).then(outcome => { setNotice(outcome === 'bound' ? 'API key connected.' : `API key: ${outcome}`); setRevision(v => v + 1); }).catch(failure => setError(errorText(failure))); }}>Select API key…</Button>}
     </article>)}</div>
     {info?.connections?.length === 0 && <Status>Add your first provider.</Status>}
     {info && !!info.connections?.length && !selected && <Status>Choose a primary provider.</Status>}
@@ -103,8 +101,8 @@ function App() {
         <p className="ai-help">{draftProbe.detail}{draftProbe.omitted ? ` ${draftProbe.omitted} more models omitted.` : ''}</p>
         {['Permission required', 'Key permission required'].includes(draftProbe.state) && <Button disabled={locked} onClick={() => void requestAccess(draftExpected, draft.config)}>Allow access…</Button>}
         <label htmlFor="ai-model">Model ID</label><Input id="ai-model" placeholder="Select above or enter a model ID" value={draft.config.model} disabled={locked} onChange={e => setDraft({ ...draft, config: { ...draft.config, model: e.target.value } })} />
-        <label htmlFor="ai-auth">Authentication</label><select id="ai-auth" value={draft.config.requiresApiKey ? 'bearer' : 'none'} disabled={locked} onChange={e => setDraft({ ...draft, config: { ...draft.config, requiresApiKey: e.target.value === 'bearer' } })}><option value="none">No API key (local Ollama)</option><option value="bearer">Bearer API key</option></select>
-        <p className="ai-help">{draft.config.requiresApiKey ? 'The server requires an API key sent as Bearer authentication. Save this provider, then use API key setup to store the key in system credentials. Each scope needs its own read permission.' : 'Requests are sent without an API key. Use this for a local server that does not require authentication.'}</p>
+        <label htmlFor="ai-auth">Authentication</label><select id="ai-auth" value={draft.config.requiresApiKey ? 'bearer' : 'none'} disabled={locked} onChange={e => setDraft({ ...draft, config: { ...draft.config, requiresApiKey: e.target.value === 'bearer' } })}><option value="none">No API key</option><option value="bearer">Bearer API key</option></select>
+        <p className="ai-help">{draft.config.requiresApiKey ? 'Save the provider, then select or create its API key. Each World approves its own connection.' : 'Requests are sent without an API key. Select this when your server does not require authentication.'}</p>
         <details><summary>Advanced</summary>{draft.template === 'ollama' && <><label htmlFor="ai-thinking">Thinking</label><select id="ai-thinking" value={draft.config.thinking ? 'default' : 'off'} onChange={event => setDraft({...draft,config:{...draft.config,thinking:event.target.value==='default'}})}><option value="off">Off</option><option value="default">Server default</option></select><p className="ai-help">Off requests a visible answer directly. Server default may spend the output limit on reasoning.</p></>}<label htmlFor="ai-output">Maximum output tokens</label><Input id="ai-output" type="number" min={1} max={4096} value={draft.config.maxOutputTokens} onChange={e => setDraft({ ...draft, config: { ...draft.config, maxOutputTokens: Number(e.target.value) } })} /><label htmlFor="ai-temperature">Temperature</label><Input id="ai-temperature" type="number" min={0} max={2} step={0.1} value={draft.config.temperature} onChange={e => setDraft({ ...draft, config: { ...draft.config, temperature: Number(e.target.value) } })} /></details>
         {!!draft.expected && <Status>Changing the URL or key requirement needs approval for the new destination or credential.</Status>}
         {writeDenied && <Button disabled={locked} onClick={() => void client.current?.request('ui.request-permissions',{componentId:'backend',runtime:['published-preference-read','published-preference-write'],httpOrigins:[],secretRead:[]}).catch(failure=>setError(errorText(failure)))}>Allow shared settings…</Button>}
@@ -112,7 +110,7 @@ function App() {
         <footer><Button disabled={busy} onClick={() => setDraft(null)}>Cancel</Button><Button className="primary" disabled={locked || !!info?.catalogError || !draft.label.trim() || !draft.config.baseUrl.trim() || !draft.config.model.trim()} onClick={() => void mutate(draft.expected ? 'edit-connection' : 'add-connection', { ...(draft.expected ? { expected: draft.expected } : {}), label: draft.label, template: draft.template, config: draft.config })}>Save provider</Button></footer>
       </div>}
     </Dialog>
-    <Dialog open={!!removing} title="Delete provider" onClose={() => { if (!busy) setRemoving(null); }}><p>Delete {removing?.label}? Its API key remains in system credentials until you explicitly remove it.</p><footer><Button disabled={busy} onClick={() => setRemoving(null)}>Cancel</Button><Button disabled={locked} onClick={() => removing && void mutate('delete-connection', { expected: removing })}>Delete provider</Button></footer></Dialog>
+    <Dialog open={!!removing} title="Delete provider" onClose={() => { if (!busy) setRemoving(null); }}><p>Delete {removing?.label}? Its shared API key remains available until you remove it in Secrets.</p><footer><Button disabled={busy} onClick={() => setRemoving(null)}>Cancel</Button><Button disabled={locked} onClick={() => removing && void mutate('delete-connection', { expected: removing })}>Delete provider</Button></footer></Dialog>
   </main>;
 }
 createRoot(document.getElementById('root')!).render(<App />);
