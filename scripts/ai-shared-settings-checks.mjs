@@ -1,0 +1,57 @@
+// Global edits remain extension-owned; only the declared value is shared.
+import assert from 'node:assert/strict';
+import {writeFile} from 'node:fs/promises';
+import {join} from 'node:path';
+import {eventually,pause} from './browser-driver.mjs';
+export async function sharedSettingsChecks({cdp,rpc,query,readQuery,panel,settings,create,upload,root,checks,a,card,origin,requests}) {
+ const point='rintawa/inference/v1';
+ const describe=async world=>(await readQuery(world,'Ai Provider',point,{method:'describe'})).value;
+ const change=(world,call)=>query(world,'Ai Provider',point,call); // Mutations are never retried.
+ const close=async()=>{await eventually(()=>cdp.evaluate('![...document.querySelectorAll("dialog:modal h2")].some(h=>h.textContent==="Allow access")'),'no pending access dialog');await cdp.click('Close dialog');await eventually(()=>cdp.evaluate('![...document.querySelectorAll("dialog:modal h2")].some(h=>h.textContent==="Settings")'),'settings closed');};
+ const choose=async(frame,label,action)=>eventually(()=>cdp.evaluate(`(()=>{const card=[...document.querySelectorAll('.ai-connection')].find(c=>c.querySelector('h3').textContent===${JSON.stringify(label)});if(!card)return false;const button=[...card.querySelectorAll('button')].find(b=>b.textContent===${JSON.stringify(action)});if(!button||button.disabled)return false;button.click();return true;})()`,frame,true),'enabled provider action '+action);
+ await cdp.call('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false});
+ await cdp.openWorld(a.title);let chat=await panel('.chat');await cdp.setInput('#message','Unsent global settings draft',chat);
+ let {ai}=await settings();const frame=await cdp.evaluate('location.href',ai),before=await describe(a.worldId),first=before.connections[0];
+ await cdp.click('Edit',ai);await cdp.setInput('#ai-model','updated-fixture',ai);await cdp.click('Save provider',ai);await cdp.waitText('Saved.',ai);
+ assert.equal((await describe(null)).connections[0].config.model,'updated-fixture');assert.equal(await cdp.evaluate('location.href',ai),frame);
+ assert.equal(await cdp.evaluate('document.querySelector("#message").value',chat),'Unsent global settings draft');await close();
+ checks.push('World has the same editor as Home; World edit changes the shared catalog without remounting or losing the composer draft');
+ const stale=await change(null,{method:'edit-connection',expected:first,label:first.label,template:first.template,config:{...first.config,model:'stale-overwrite'}});
+ assert.equal(stale.error.code,'configuration-changed');assert.equal((await describe(null)).connections[0].config.model,'updated-fixture');
+ const denied=await query(a.worldId,'Chat',point,{method:'set-default',expected:first,expectedDefault:first.id});assert.equal(denied.error.code,'access-denied');
+ checks.push('stale settings cannot overwrite a newer global edit; Chat cannot borrow the settings component authority');
+ const welcome=await create('Protocol B');const b=(await rpc('world-sessions.list-worlds')).find(w=>w.title==='Protocol B');await upload(card,welcome);chat=await panel('.chat');
+ await cdp.waitText('Welcome to the test library.',chat);await cdp.setInput('#message','Check inherited updated model',chat);await cdp.click('Send',chat);await cdp.waitText('Hello from the local library.',chat);
+ assert.equal(requests.at(-1).model,'updated-fixture');checks.push('a second fresh World generates with the current global primary without opening its AI settings');
+ ({ai}=await settings());await cdp.click('Add provider',ai);await cdp.click('Ollama',ai);await cdp.setInput('#ai-label','Shared second',ai);await cdp.setInput('#ai-url',origin+'/v1',ai);await cdp.setInput('#ai-model','second-fixture',ai);await cdp.click('Save provider',ai);await cdp.waitText('Saved.',ai);
+ let catalog=await describe(null);const second=catalog.connections.find(c=>c.label==='Shared second');assert.ok(second);assert.equal(catalog.defaultConnectionId,first.id);
+ await choose(ai,'Shared second','Make primary');await eventually(async()=>(await describe(null)).defaultConnectionId===second.id,'shared primary commit');await cdp.waitText('Saved.',ai);assert.equal((await describe(null)).defaultConnectionId,second.id);assert.equal((await describe(a.worldId)).defaultConnectionId,second.id);await close();
+ chat=await panel('.chat');await cdp.setInput('#message','Check switched primary',chat);await cdp.click('Send',chat);await eventually(()=>requests.at(-1)?.messages.at(-1)?.content==='Check switched primary','new primary request');await eventually(()=>cdp.evaluate('!document.querySelector("#message").disabled',chat),'generation completed');assert.equal(requests.at(-1).model,'second-fixture');
+ checks.push('adding and choosing a primary from World Settings updates Home and every World for subsequent generation');
+ ({ai}=await settings());await choose(ai,'Shared second','Delete');await cdp.click('Delete provider',ai);await cdp.waitText('Choose a primary provider.',ai);assert.equal((await describe(a.worldId)).defaultConnectionId,null);await close();
+ const count=requests.length;chat=await panel('.chat');await cdp.setInput('#message','No implicit fallback',chat);await cdp.click('Send',chat);await cdp.waitText('Choose a primary provider',chat);assert.equal(requests.length,count);checks.push('deleting the primary does not choose a remaining provider or silently send a fallback request');
+ ({ai}=await settings());await cdp.click('Make primary',ai);await eventually(async()=>(await describe(null)).defaultConnectionId===first.id,'restored primary commit');await cdp.waitText('Saved.',ai);await close();
+ await cdp.openWorld(a.title);({ai}=await settings());await cdp.click('Edit',ai);await cdp.setInput('#ai-label','Pending global edit',ai);const draftFrame=await cdp.evaluate('location.href',ai);
+ const view=(await rpc('ui.list')).find(v=>v.worldId===a.worldId&&v.title==='Ai Provider');
+ const policy=await rpc('runtime-policy.live-component',{scopeId:`world:${a.worldId}`,instanceId:view.restoreKey.instanceId,componentId:'backend'});
+ await rpc('runtime-policy.apply-live-change',{change:{target:policy.target,delta:{revokeRuntime:['published-preference-write']}}});
+ await cdp.click('Save provider',ai);await cdp.waitText('Allow shared settings…',ai);assert.equal((await describe(null)).connections[0].label,first.label);assert.equal(await cdp.evaluate('document.querySelector("#ai-label").value',ai),'Pending global edit');
+ const availableB=await describe(b.worldId);assert.equal((await change(b.worldId,{method:'set-default',expected:availableB.connections[0],expectedDefault:availableB.defaultConnectionId})).ok,true);
+ const commands=cdp.worldCommands.filter(c=>c.method==='world-sessions.set-active').length;
+ await cdp.click('Allow shared settings…',ai);await cdp.click('Allow selected');await eventually(()=>cdp.evaluate('![...document.querySelectorAll("dialog:modal h2")].some(h=>h.textContent==="Allow access")'),'shared write consent closed');
+ assert.equal(await cdp.evaluate('location.href',ai),draftFrame);assert.equal((await describe(null)).connections[0].label,first.label,'approval never replays the failed save');
+ await cdp.click('Save provider',ai);await cdp.waitText('Saved.',ai);assert.equal((await describe(null)).connections[0].label,'Pending global edit');assert.equal(cdp.worldCommands.filter(c=>c.method==='world-sessions.set-active').length,commands);
+ checks.push('revoking shared write denies only A; B can still edit; live approval preserves A draft and never replays the failed save');
+ const original=(await describe(null)).connections[0];await cdp.click('Edit',ai);await cdp.setInput('#ai-url',origin+'/v2',ai);await cdp.click('Save provider',ai);await cdp.waitText('Saved.',ai);
+ let rotated=(await describe(null)).connections[0];assert.notEqual(rotated.id,original.id);assert.equal((await describe(b.worldId)).defaultConnectionId,rotated.id);
+ const staleDefault=await change(b.worldId,{method:'set-default',expected:original,expectedDefault:original.id});assert.equal(staleDefault.error.code,'configuration-changed');
+ checks.push('changing the shared destination rotates its identity, updates the primary and rejects the old identity');
+ await cdp.click('Edit',ai);await cdp.evaluate('(()=>{const e=document.querySelector("#ai-auth");e.value="bearer";e.dispatchEvent(new Event("change",{bubbles:true}));})()',ai,true);await cdp.click('Save provider',ai);await cdp.waitText('Allow access');await cdp.click('Cancel');
+ const keyed=(await describe(null)).connections[0];assert.notEqual(keyed.id,rotated.id);const latest=await rpc('runtime-policy.live-component',{scopeId:`world:${a.worldId}`,instanceId:view.restoreKey.instanceId,componentId:'backend'});
+ assert.ok(!latest.secretRead.includes(`ai.connection_${keyed.id.replaceAll('-','')}.api_key`));await close();
+ chat=await panel('.chat');await cdp.setInput('#message','No implicit key permission',chat);const keyCount=requests.length;await cdp.click('Send',chat);await cdp.waitText('requires a local API key',chat);assert.equal(requests.length,keyCount);
+ checks.push('a changed key mode gets a new identity and no implicit credential grant or network request');
+ await writeFile(join(root,'shared-settings.json'),JSON.stringify({a:a.worldId,b:b.worldId,default:keyed.id,requests:requests.map(r=>({model:r.model,user:r.messages.at(-1)?.content}))},null,2));
+ await cdp.openWorld(b.title);await cdp.click('Stop World');await eventually(async()=>!(await rpc('world-sessions.list-worlds')).find(w=>w.worldId===b.worldId).active,'B stopped');
+ assert.equal((await describe(null)).defaultConnectionId,keyed.id);assert.equal((await rpc('world-sessions.list-worlds')).find(w=>w.worldId===a.worldId).active,true);checks.push('stopping a World does not reset the shared catalog or stop the other World');
+}

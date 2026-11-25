@@ -13,8 +13,8 @@ use rintawa_artifacts::{RtwArchive, RtwLimits, pack_directory};
 use sha2::{Digest, Sha256};
 
 use crate::model::{
-    LEGACY_RTWKIT_MANIFEST_SCHEMA, PackageManifest, PublishedArtifact, PublishedAsset,
-    PublishedPackage, PublishedSource, REGISTRY_SCHEMA, RTWKIT_MANIFEST_SCHEMA, ReleaseMetadata,
+    PackageManifest, PublishedArtifact, PublishedAsset, PublishedPackage, PublishedSource,
+    REGISTRY_SCHEMA, RTWKIT_MANIFEST_SCHEMA, ReleaseMetadata,
 };
 
 const PACKAGES_DIRECTORY: &str = "packages";
@@ -156,7 +156,6 @@ pub fn build_package(
             source_url: package.manifest.package.source_url.clone(),
             logo,
             readme,
-            replaces: package.manifest.package.replaces.clone(),
         },
         content,
         dependencies: package.manifest.package.dependencies.clone(),
@@ -299,19 +298,10 @@ fn run_build(package: &LoadedPackage) -> Result<()> {
 
 fn validate_manifest(manifest: &PackageManifest, slug: &str) -> Result<()> {
     ensure!(
-        matches!(
-            manifest.schema,
-            LEGACY_RTWKIT_MANIFEST_SCHEMA | RTWKIT_MANIFEST_SCHEMA
-        ),
+        manifest.schema == RTWKIT_MANIFEST_SCHEMA,
         "unsupported rtwkit.toml schema {}",
         manifest.schema
     );
-    if manifest.schema == LEGACY_RTWKIT_MANIFEST_SCHEMA {
-        ensure!(
-            manifest.package.replaces.is_empty(),
-            "rtwkit.toml schema 1 cannot declare package replacements"
-        );
-    }
     validate_package_id(&manifest.package.id)?;
     let mut dependencies = HashSet::new();
     for dependency in &manifest.package.dependencies {
@@ -324,22 +314,6 @@ fn validate_manifest(manifest: &PackageManifest, slug: &str) -> Result<()> {
             dependencies.insert(dependency.id.clone()),
             "duplicate dependency '{}'",
             dependency.id
-        );
-    }
-    let mut replacements = HashSet::new();
-    for replaced in &manifest.package.replaces {
-        validate_package_id(replaced)?;
-        ensure!(
-            replaced != &manifest.package.id,
-            "package cannot replace itself"
-        );
-        ensure!(
-            !dependencies.contains(replaced),
-            "package cannot both depend on and replace '{replaced}'"
-        );
-        ensure!(
-            replacements.insert(replaced.clone()),
-            "duplicate replacement '{replaced}'"
         );
     }
     ensure!(
@@ -481,7 +455,7 @@ mod tests {
         fs::write(
             package.join("rtwkit.toml"),
             concat!(
-                "schema = 1\n",
+                "schema = 2\n",
                 "[package]\n",
                 "id = \"rintawa.example\"\n",
                 "name = \"Example\"\n",
@@ -516,7 +490,7 @@ mod tests {
             metadata_path.file_name().and_then(|name| name.to_str()),
             Some("example.registry.json")
         );
-        let metadata: ReleaseMetadata = serde_json::from_slice(&fs::read(metadata_path)?)?;
+        let metadata: ReleaseMetadata = serde_json::from_slice(&fs::read(&metadata_path)?)?;
         assert_eq!(metadata.package.version, Version::parse("0.1.0")?);
         assert_eq!(metadata.content, "rintawa.extension@1");
         assert_eq!(metadata.artifact.file, "example.rtw");
@@ -526,6 +500,33 @@ mod tests {
             "https://github.com/martrtr/rtwKit/releases/download/pkg-example-v0.1.0/example.rtw"
         );
         assert!(metadata.artifact.sha256.starts_with("sha256:"));
+
+        // Feed actual writer output into the retained manager's parser and solver.
+        let releases = root.path().join("release-metadata");
+        fs::create_dir(&releases)?;
+        fs::copy(&metadata_path, releases.join("example.registry.json"))?;
+        let index = root.path().join("site/index.json");
+        crate::registry::build_index(&releases, &index)?;
+        use rintawa_package_manager::model::{merge_catalog, parse_registry, solve_install_plan};
+        let registry = parse_registry(&fs::read(index)?).map_err(anyhow::Error::msg)?;
+        let catalog = merge_catalog([("https://example.invalid/index.json".into(), registry)]);
+        let plan = solve_install_plan(&catalog, &Default::default(), "rintawa.example", None)
+            .map_err(anyhow::Error::msg)?;
+        assert!(catalog.warnings.is_empty());
+        assert_eq!(plan.selections.len(), 1);
+        assert_eq!(
+            plan.selections[0].version.artifact.sha256,
+            metadata.artifact.sha256
+        );
+        assert_eq!(plan.selections[0].version.source.commit, "abc123");
+
+        let manifest_path = package.join("rtwkit.toml");
+        let manifest = fs::read_to_string(&manifest_path)?;
+        fs::write(&manifest_path, manifest.replace("schema = 2", "schema = 1"))?;
+        let error = load_package(root.path(), "example")
+            .err()
+            .expect("retired schema must fail");
+        assert!(error.to_string().contains("unsupported rtwkit.toml schema"));
         Ok(())
     }
 }

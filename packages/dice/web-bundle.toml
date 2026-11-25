@@ -1,0 +1,6 @@
+entry = "web/index.html"
+title = "Dice"
+
+[[contributions]]
+point = "rintawa/chat/composer-actions/v1"
+payload = '{"id":"dice","label":"Dice","order":10}'

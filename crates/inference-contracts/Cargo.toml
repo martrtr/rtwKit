@@ -1,0 +1,13 @@
+[package]
+name = "rintawa-inference-contracts"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Neutral versioned text inference contract for ordinary Rintawa extensions"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2"

@@ -1,12 +1,16 @@
 # Registry output
 
-The public registry is generated from metadata attached to GitHub Releases.
-Generated `index.json` is deployed to GitHub Pages and is intentionally not
-committed to `main`.
+GitHub Pages serves a generated `index.json` assembled from current GitHub Release
+metadata. Generated catalogs and downloaded metadata are not committed to `main`.
 
-This keeps source history free of generated binary/catalog state while making
-published package versions immutable and independently downloadable.
+The current writer/reader accepts release/index schema 4 and package manifest
+schema 2. Earlier schemas and package-ID replacement aliases were retired with
+the old releases; no migration or replacement registry schema is introduced.
 
-A release contributes one `<slug>.registry.json` file. The registry
-tool combines all published metadata into a deterministic package index sorted
-by package id and semantic version.
+One release contributes `<slug>.registry.json`. The tool preserves per-version
+artifact digests, dependencies and source provenance, and sorts packages/versions
+deterministically. An empty release set produces an empty catalog with repository
+identity and its icon. The icon lives here, independently from any package.
+
+Release and Pages workflows remain in `.github/workflows/`. Rebuild Pages after
+removing releases: an already deployed index is not changed by local source edits.

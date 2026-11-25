@@ -1,0 +1,8 @@
+{
+  "name": "@rintawa/domain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": { "@rintawa/bridge": "0.1.0" }
+}

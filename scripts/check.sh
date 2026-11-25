@@ -15,16 +15,21 @@ bash scripts/scan-secrets.sh
 
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo clippy --locked --target wasm32-unknown-unknown -p rintawa-web-runtime -p rintawa-chat -p rintawa-character -p rintawa-narrator -p rintawa-inference-provider -- -D warnings
 cargo test --locked --workspace --all-features
-cargo doc --locked --workspace --all-features --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps
 cargo run --quiet --locked -p rtwkit-registry-tool -- validate-repository .
+npm run typecheck
+npm run test:bridge
+node scripts/story-commit-recovery-test.mjs
+npm run build:web
+node scripts/assemble-web-package.mjs web-ui
+node scripts/assemble-web-package.mjs settings-ui
+node scripts/assemble-web-package.mjs dice
 
-if [[ -d packages/web-ui/node_modules ]]; then
-    (
-        cd packages/web-ui
-        npm run typecheck
-        npm test
-    )
-else
-    echo "packages/web-ui/node_modules is absent; skipping local Web UI checks." >&2
-fi
+bash packages/chat/build.sh
+
+bash packages/character/build.sh
+
+bash packages/narrator/build.sh
+bash packages/ai-provider/build.sh

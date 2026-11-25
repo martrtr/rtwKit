@@ -1,0 +1,6 @@
+entry = "web/home.html"
+title = "Home"
+launchable = false
+[[provides]]
+id = "rintawa.ui.home.renderer"
+version = 1

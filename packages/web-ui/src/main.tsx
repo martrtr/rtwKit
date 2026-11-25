@@ -1,17 +1,10 @@
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
-
-import App from "./App";
-import "./theme.css";
-import "./styles.css";
-
-const root = document.getElementById("root");
-if (!root) {
-  throw new Error("missing #root element");
-}
-
-createRoot(root).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+import { createRoot } from 'react-dom/client';
+import { RootBridge, applyTheme } from '@rintawa/bridge';
+import { Button, Status } from '@rintawa/ui';
+import '@rintawa/ui/style.css';
+import 'dockview-react/dist/styles/dockview.css';
+import './style.css';
+import { App } from './App';
+applyTheme({ mode: 'dark' });
+const root = createRoot(document.getElementById('root')!);
+RootBridge.connect().then(bridge => root.render(<App bridge={bridge} />)).catch(() => root.render(<main className="connection-error"><h1>Rintawa</h1><Status error>Connection unavailable. Open the private launch URL printed by Host.</Status><Button onClick={() => location.reload()}>Reconnect</Button></main>));
