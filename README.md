@@ -8,14 +8,24 @@ released independently as an immutable `.rtw` artifact.
 
 | Directory | Package |
 | --- | --- |
-| [package-manager](packages/package-manager) | Discover, install and manage RTW packages |
-| [web-runtime](packages/web-runtime) | Execution runtime for packaged web components |
-| [web-ui](packages/web-ui) | Standard web interface and Portable UI renderer |
-| [world-manager](packages/world-manager) | Browse, create and open Worlds |
-| [character-library](packages/character-library) | Store and import character templates |
+| [web-runtime](packages/web-runtime) | Sandboxed runtime for packaged web components |
+| [web-ui](packages/web-ui) | React/Dockview application shell |
+| [settings-ui](packages/settings-ui) | Scoped settings and appearance panels |
+| [dice](packages/dice) | Independent Chat composer action/panel |
+| [character](packages/character) | Tavern V2/V3 character import and story onboarding |
 | [chat](packages/chat) | Persistent World conversations |
+| [narrator](packages/narrator) | World-scoped narrative coordination |
+| [ai-provider](packages/ai-provider) | Shared OpenAI-compatible provider settings and inference |
 
 See the individual package directories for implementation details and build commands.
+
+## Current status
+
+The old Portable UI/runtime and the former World/Package Manager packages are
+retired. The current browser foundation uses a sandboxed WASM web runtime, a
+React/Dockview shell and World-scoped Chat, Character, Narrator and AI packages.
+Chat data persists across Host restart; AI remains optional and requires explicit
+local capability and credential approval.
 
 ## Package distribution
 
@@ -30,11 +40,12 @@ by the Rintawa Host.
 
 ## Development
 
-The repository uses Rust 1.98.1, with additional tooling as required by individual
-packages. Use the package's own build instructions and run repository checks before
+The repository uses the Rust toolchain pinned in `rust-toolchain.toml` and Node.js
+26. Install the pinned browser dependencies, then run repository checks before
 submitting changes.
 
 ```sh
+npm ci --ignore-scripts --no-audit --no-fund
 bash scripts/check.sh
 ```
 

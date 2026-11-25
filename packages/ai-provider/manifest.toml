@@ -1,0 +1,21 @@
+id = "rintawa.rtwkit.ai-provider"
+name = "AI Provider"
+version = "0.1.0"
+sdk = "^0.0"
+[[components]]
+id = "backend"
+kind = "runtime"
+target = "rintawa.runtime.wasm-component@1"
+entry = "backend.wasm"
+published-preference = "rintawa.ai.connections.v1"
+[components.permissions]
+runtime = ["background-task", "http-request", "published-preference-read", "published-preference-write"]
+secret-read = ["ai.*"]
+
+[[components]]
+id = "settings"
+kind = "ui"
+target = "rintawa.runtime.web-bundle@2"
+entry = "web-bundle.toml"
+[components.permissions]
+runtime = ["background-task", "secret-prompt"]

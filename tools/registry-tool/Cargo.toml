@@ -17,3 +17,4 @@ rintawa-artifacts.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+rintawa-package-manager = { path = "../../crates/package-manager" }

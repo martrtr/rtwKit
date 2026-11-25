@@ -1,20 +1,6 @@
 [workspace]
 resolver = "3"
-members = [
-    "tools/registry-tool",
-    "tools/componentize",
-    "packages/web-runtime",
-    "crates/shell-contracts",
-    "crates/world-creator-contracts",
-    "packages/package-manager",
-    "packages/character-library",
-    "packages/character-library/content-handler",
-    "packages/character-library/runtime",
-    "packages/chat",
-    "packages/chat/runtime",
-    "packages/world-manager",
-    "packages/world-manager/runtime",
-]
+members = ["tools/*", "crates/*", "packages/web-runtime", "packages/chat", "packages/character", "packages/narrator", "packages/ai-provider"]
 
 [workspace.package]
 edition = "2024"
@@ -28,9 +14,20 @@ semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-rintawa-shell-contracts = { path = "crates/shell-contracts" }
-rintawa-world-creator-contracts = { path = "crates/world-creator-contracts" }
 toml = "0.9"
-rintawa-artifacts = { git = "https://github.com/martrtr/rintawa.git", rev = "8293141717be81d2eb47d262c27e30bb1af68659" }
-rintawa-sdk = { git = "https://github.com/martrtr/rintawa.git", rev = "8293141717be81d2eb47d262c27e30bb1af68659" }
-rintawa-ui-runtime = { git = "https://github.com/martrtr/rintawa.git", rev = "8293141717be81d2eb47d262c27e30bb1af68659" }
+rintawa-artifacts = { git = "https://github.com/martrtr/rintawa.git", rev = "b997e98e489cf6eee27e9a21a249a666d7a5df61" }
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

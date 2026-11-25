@@ -1,11 +1,11 @@
 # Web Runtime
 
-Web Runtime provides the `rintawa.runtime.web-bundle@1` execution target for
-packaged web components. It serves validated web assets over loopback HTTP,
-connects a WebSocket presentation bridge and works with the Portable UI layer.
+Web Runtime is the sandboxed execution target for packaged web components. It
+serves validated bundle assets over loopback HTTP and exposes the current browser
+bridge; it does not implement the retired Portable UI protocol.
 
 The provider is distributed as an RTW package containing a WebAssembly Component
-Model component. A web component declares its own capabilities and runtime
+Model component. Each web component declares its capabilities and runtime
 permissions in its descriptor.
 
 ## Build

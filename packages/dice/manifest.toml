@@ -1,0 +1,11 @@
+id = "rintawa.rtwkit.dice"
+name = "Dice"
+version = "0.1.0"
+sdk = "^0.0"
+[[components]]
+id = "dice"
+kind = "ui"
+target = "rintawa.runtime.web-bundle@2"
+entry = "web-bundle.toml"
+[components.permissions]
+runtime = ["background-task"]

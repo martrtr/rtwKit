@@ -1,0 +1,3 @@
+entry = "web/index.html"
+title = "Rintawa"
+host-shell = true

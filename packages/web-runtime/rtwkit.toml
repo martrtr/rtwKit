@@ -1,13 +1,11 @@
 schema = 2
-
 [package]
 id = "rintawa.rtwkit.web-runtime"
 name = "rtwKit Web Runtime"
-version = "0.0.4"
-replaces = ["rintawa.web-runtime"]
-description = "External Web bundle execution runtime for Rintawa"
+version = "0.1.0"
+description = "Loopback browser adapter for the scoped Rintawa transport"
 license = "GPL-3.0-only"
-
+authors = ["martrtr"]
 [build]
 artifact-root = "build/rtw"
 command = ["bash", "build.sh"]

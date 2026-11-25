@@ -1,0 +1,5 @@
+entry = "web/index.html"
+title = "Story"
+[[provides]]
+id = "rintawa.roleplay.workflow"
+version = 1

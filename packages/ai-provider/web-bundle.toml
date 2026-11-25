@@ -1,0 +1,6 @@
+entry = "web/index.html"
+title = "Ai Provider"
+launchable = false
+[[contributions]]
+point = "rintawa/ui/settings/sections/v1"
+payload = '{"id":"ai","title":"Ai Provider","order":20}'
