@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { BridgeError, handle, type RootBridge, type View } from '@rintawa/bridge';
 import { Button, Dialog, Icon, Status } from '@rintawa/ui';
-import { checkCancelled, closePackage, packageRead, pause, savePackage, waitPackage, type SavePicker } from './packages';
+import { checkCancelled, closePackage, packageRead, pause, savePackage, waitPackage, type SavePicker } from '@rintawa/ui/packages';
 type World = { worldId: string; title: string; active: boolean; pendingActive: boolean | null; lastError: string | null };
 type Export = { world: World; phase: 'review' | 'working' | 'ready' | 'saving'; handle?: string; size?: number };
 const message = (error: unknown) => error instanceof Error ? error.message : 'Operation unavailable';

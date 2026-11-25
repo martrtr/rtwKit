@@ -9,7 +9,7 @@ import { WorldActions } from './WorldActions';
 import { Surface, selectedView } from './Surface';
 import { creationAccess, type CreationPermission, type TemplateComponent } from './creation-access';
 import { Permissions } from './Permissions';
-import { uploadPackage } from './packages';
+import { uploadPackage } from '@rintawa/ui/packages';
 import { readLayout, type SavedPanel, type SavedLayout } from './layout';
 
 type Template = { digest: string; name: string; description: string; invalidReason: string | null };
@@ -59,6 +59,7 @@ export function App({ bridge }: { bridge: RootBridge }) {
   const fileInput = useRef<HTMLInputElement>(null); const uploadAbort = useRef<AbortController | null>(null);
   const [uploadBusy, setUploadBusy] = useState(false); const [uploadProgress, setUploadProgress] = useState('');
   useEffect(() => () => uploadAbort.current?.abort(), []);
+  const chooserPending = useRef(false);
   const [createOpen, setCreateOpen] = useState(false); const [worldName, setWorldName] = useState('');
   const [creationPermissions,setCreationPermissions]=useState<CreationPermission[]>([]);const [accessReady,setAccessReady]=useState(false);
   const [readError, setReadError] = useState('');
@@ -73,6 +74,8 @@ export function App({ bridge }: { bridge: RootBridge }) {
     consentPending.current = true; setPermissionRequest({ view, request }); return true;
   }), [bridge]);
   const [settings, setSettings] = useState<{ scope: string | null } | null>(null);
+  const [homeApp, setHomeApp] = useState<string | null>(null);
+  const homeAppRef=useRef(homeApp);homeAppRef.current=homeApp;
   const [notice, setNotice] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const dock = useRef<DockviewApi | null>(null);
   const activeByWorld = useRef(new Map<string, string>());
   const ready = useRef(false); const canSave = useRef(false); const timer = useRef<ReturnType<typeof setTimeout> | null>(null); const [loaded, setLoaded] = useState(false); const saved = useRef<SavedLayout | null>(null); const initialized=useRef(false);
@@ -205,7 +208,8 @@ export function App({ bridge }: { bridge: RootBridge }) {
     } catch (failure) { if (!abort.signal.aborted) setError(errorText(failure)); }
     finally { if (uploadAbort.current === abort) uploadAbort.current = null; setUploadBusy(false); setUploadProgress(''); }
   };
-  const closeCreate = () => { if (busy) return; uploadAbort.current?.abort(); setCreateOpen(false); };
+  const openCreate = () => { if(chooserPending.current)return;chooserPending.current=true;setApproved(false);setTemplateInfo(null);setAccessReady(false);setCreateOpen(true); };
+  const closeCreate = () => { if (busy) return; uploadAbort.current?.abort(); chooserPending.current=false;setCreateOpen(false); };
   const removeWorldPanels = async (id: string) => {
     const panels = dock.current?.panels.filter(panel => entriesRef.current.get(panel.id)?.restoreKey.worldId === id) ?? [];
     for (const panel of panels) dock.current?.removePanel(panel);
@@ -218,7 +222,7 @@ export function App({ bridge }: { bridge: RootBridge }) {
     if (!worldName.trim() || new TextEncoder().encode(worldName.trim()).length > 256) throw new Error('Enter a World name of up to 256 UTF-8 bytes.');
     if (!template || !templateInfo) throw new Error('Choose an installed template.');
     const world = await bridge.client.request('world-sessions.create-from-template-with-permissions', {request:{ digest: template, title: worldName.trim(), approveRuntimePermissions: approved, permissions:creationPermissions.map(({label:_,...permission})=>permission) }}) as World;
-    setWorlds(rows => [...rows, world]); selectWorld(world.worldId); setCreateOpen(false);
+    setWorlds(rows => [...rows, world]); selectWorld(world.worldId); chooserPending.current=false;setCreateOpen(false);
     await setWorldActive(world);
     setWorldName('');
   });
@@ -240,8 +244,23 @@ export function App({ bridge }: { bridge: RootBridge }) {
       if(!provides('rintawa.ui.appearance')||Object.keys(args).join(',')!=='theme'||!args.theme||typeof args.theme!=='object'||Object.keys(args.theme).join(',')!=='mode'||!['dark','light'].some(mode=>(args.theme as Theme).mode===mode))throw new BridgeError('invalid-request','not-started');
       setTheme({mode:(args.theme as Theme).mode});return null;
     }
+    if(method==='ui.create-world'){
+      const homeRenderer=provides('rintawa.ui.home.renderer');
+      const visibleTool=source.launchable&&homeAppRef.current===source.id&&selectedRef.current===null;
+      if(source.worldId!==null||(!homeRenderer&&!visibleTool)||Object.keys(args).some(key=>key!=='template')||(args.template!==undefined&&(typeof args.template!=='string'||!/^sha256:[0-9a-f]{64}$/.test(args.template))))throw new BridgeError('invalid-request','not-started');
+      if(chooserPending.current)throw new BridgeError('limit-exceeded','not-started');
+      chooserPending.current=true;
+      try{
+        if(typeof args.template==='string'){
+          const catalog=await readHost(bridge,'world-sessions.list-templates') as Template[];
+          if(!catalog.some(row=>row.digest===args.template&&!row.invalidReason))throw new BridgeError('invalid-request','not-started');
+          if(!homeRenderer&&(homeAppRef.current!==source.id||selectedRef.current!==null))throw new BridgeError('unavailable','not-started');
+          setTemplates(catalog);setTemplate(args.template);
+        }
+        setApproved(false);setTemplateInfo(null);setAccessReady(false);setCreateOpen(true);return null;
+      }catch(error){chooserPending.current=false;throw error;}
+    }
     if(source.worldId!==null||!provides('rintawa.ui.home.renderer'))throw new BridgeError('invalid-request','not-started');
-    if(method==='ui.create-world'&&!Object.keys(args).length){setCreateOpen(true);return null;}
     if(method==='ui.open-world'&&Object.keys(args).join(',')==='worldId'&&typeof args.worldId==='string'){
       const catalog=await readHost(bridge,'world-sessions.list-worlds') as World[];if(!catalog.some(w=>w.worldId===args.worldId))throw new BridgeError('invalid-request','not-started');
       await refresh();selectWorld(args.worldId);return null;
@@ -250,6 +269,8 @@ export function App({ bridge }: { bridge: RootBridge }) {
   }),[bridge,refresh]);
   const selected = worlds.find(world => world.worldId === selectedWorld); const available = views.filter(view => view.launchable && view.worldId === selectedWorld && selectedWorld !== null);
   const home = selectedWorld === null;
+  const homeApps = views.filter(view => view.worldId === null && view.launchable);
+  const activeHomeApp = homeApps.find(view => view.id === homeApp) ?? null;
   const initials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(word => Array.from(word)[0]).join('').toUpperCase();
   const worldPanels = [...entries.values()].filter(panel => panel.restoreKey.worldId === selectedWorld);
   // The template entry coordinates onboarding and redirects to the actual app.
@@ -273,12 +294,12 @@ export function App({ bridge }: { bridge: RootBridge }) {
       <button className={`home-button rail-button${home ? ' selected' : ''}`} aria-label="Home" title="Home" disabled={!loaded} onClick={() => { setSelectedWorld(null); }}><img src={logo} alt="Rintawa" /></button>
       <div className="rail-divider" />
       <div className="rail-worlds">{worlds.map(world => <button key={world.worldId} title={world.title} aria-label={`Open world ${world.title}`} aria-current={selectedWorld === world.worldId ? 'page' : undefined} disabled={!loaded} className={`world-button rail-button${selectedWorld === world.worldId ? ' selected' : ''}`} onClick={() => selectWorld(world.worldId)}><span>{initials(world.title) || <Icon name="world" />}</span>{world.active && <i className="active-dot" aria-label="Active" />}</button>)}</div>
-      <button className="rail-button add-world" title="New World" aria-label="New World" disabled={!loaded || busy} onClick={() => setCreateOpen(true)}><Icon name="plus" size={24} /></button>
+      <button className="rail-button add-world" title="New World" aria-label="New World" disabled={!loaded || busy} onClick={openCreate}><Icon name="plus" size={24} /></button>
       <div className="rail-bottom"><button className="rail-button utility" aria-label="Log out" title="Log out" onClick={() => void bridge.logout().then(() => location.reload())}><Icon name="logout" /></button></div>
     </nav>
     <section className="shell-body">
-      {home && <section className="home-page" aria-label="Home"><header className="home-topbar"><span>Home</span><div className="world-actions">{controls}</div></header>
-        <Surface bridge={bridge} view={selectedView(views,null,'rintawa.ui.home.renderer')} label="Home"/>
+      {home && <section className="home-page" aria-label="Home"><header className="home-topbar"><nav className="home-apps" aria-label="Home apps"><button aria-current={!activeHomeApp?'page':undefined} onClick={()=>setHomeApp(null)}>Worlds</button>{homeApps.map(view=><button key={view.id} aria-current={activeHomeApp?.id===view.id?'page':undefined} onClick={()=>setHomeApp(view.id)}>{view.title}</button>)}</nav><div className="world-actions">{controls}</div></header>
+        <Surface bridge={bridge} view={activeHomeApp ?? selectedView(views,null,'rintawa.ui.home.renderer')} label={activeHomeApp?.title ?? 'Home'}/>
       </section>}
       <section className={`world-workspace${home ? ' hidden-workspace' : ''}`} aria-hidden={home}>
         <header className="world-topbar"><div className="world-title"><Icon name="world" size={18} /><strong>{selected?.title ?? 'World unavailable'}</strong></div><nav className="world-apps" aria-label="World apps">{navigationViews.map(view => <button key={view.id} title={`Open ${view.title}`} onClick={() => open(view, false)}>{view.title}</button>)}</nav><div className="world-actions">{selected && <button className={`world-power${selected.active ? ' running' : ''}`} title={selected.active ? 'Stop World; unfinished work may be discarded' : 'Start World'} disabled={busy || selected.pendingActive !== null} onClick={() => void setWorldActive(selected)}><Icon name="power" size={15} />{selected.pendingActive !== null ? 'Working…' : selected.active ? 'Stop World' : 'Start World'}</button>}{!home && controls}</div></header>

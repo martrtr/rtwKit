@@ -104,3 +104,25 @@ test('sourced polling preserves native principal and never obtains identity from
   assert.deepEqual(calls.map(([method])=>method),['transport.begin-query','transport.poll-query-sourced']);
   client.dispose();
 });
+
+test('slot cleanup retries transient admission failure and shares concurrent closes', async () => {
+  const names = ['window', 'innerWidth', 'innerHeight', 'ResizeObserver'];
+  const previous = names.map(name => Object.getOwnPropertyDescriptor(globalThis, name));
+  let closes = 0, notifications = 0;
+  Object.assign(globalThis, { window: { addEventListener() {}, removeEventListener() {} }, innerWidth: 800, innerHeight: 600,
+    ResizeObserver: class { observe() {} disconnect() {} } });
+  const client = new Client(async method => {
+    if (method === 'ui.slot.close' && ++closes === 1) throw new BridgeError('limit-exceeded', 'not-started');
+    return null;
+  });
+  try {
+    const binding = await client.mountView({ restoreKey: { instanceId: 'fixture', componentId: 'view' }, activation: '1' },
+      { parentElement: null, getBoundingClientRect: () => ({ x: 0, y: 0, width: 100, height: 100 }) }, {}, () => { notifications++; });
+    await Promise.all([binding.close(), binding.close()]);
+    assert.equal(closes, 2, 'one failed attempt followed by one successful shared cleanup');
+    assert.equal(notifications, 1);
+  } finally {
+    client.dispose();
+    names.forEach((name, index) => { if (previous[index]) Object.defineProperty(globalThis, name, previous[index]); else delete globalThis[name]; });
+  }
+});

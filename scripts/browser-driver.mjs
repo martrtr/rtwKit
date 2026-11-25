@@ -50,9 +50,26 @@ export class CDP {
     await this.click('Home'); await this.openWorld(name); await this.waitText('Start World');
   }
   async openWorld(name) { await this.click(`Open world ${name}`); }
-  async selectConversation(title, context) { if (await this.evaluate('document.querySelector(".chat")?.classList.contains("navigation-closed")', context)) await this.click('Toggle conversations', context); await this.click(title, context); }
+  async selectConversation(title, context) {
+    await eventually(() => this.evaluate(`(() => { const toggle=document.querySelector('button[aria-label="Toggle conversations"]'); if(!toggle||toggle.disabled)return false; if(toggle.getAttribute('aria-expanded')!=='true'){toggle.click();return false;} const button=[...document.querySelectorAll('.channel-list button')].find(button=>button.textContent.trim()===${JSON.stringify(title)}&&!button.disabled&&button.getClientRects().length); if(!button)return false;button.click();return true; })()`,context,true), `conversation ${title}`,45000);
+  }
   async openConversationDialog(context) { if (await this.evaluate('document.querySelector(".chat")?.classList.contains("navigation-closed")', context)) await this.click('Toggle conversations', context); await this.click('New conversation', context); await eventually(() => this.evaluate('!!document.querySelector(\'dialog:modal #new-title\')', context), 'new conversation dialog'); }
 
   async waitText(text, context) { return eventually(async () => (await this.body(context)).includes(text), `text ${text}`); }
-  async panelContexts(selector = "canvas") { const result = []; for (const context of this.contexts.values()) if (context.auxData?.isDefault && context.auxData.frameId !== this.rootFrame) { try { if (await this.evaluate(`!!document.querySelector(${JSON.stringify(selector)})`, context)) result.push(context); } catch {} } return result; }
+  async panelContexts(selector = "canvas") {
+    const result = [];
+    for (const context of this.contexts.values()) if (context.auxData?.isDefault && context.auxData.frameId !== this.rootFrame) {
+      try {
+        if (!await this.evaluate(`!!document.querySelector(${JSON.stringify(selector)})`, context)) continue;
+        // Root owns these iframe elements even when Chromium puts their
+        // execution contexts in a separate target (OOPIF).
+        const owner = await this.call('DOM.getFrameOwner', { frameId: context.auxData.frameId });
+        let visible = false;
+        try { const box = await this.call('DOM.getBoxModel', { backendNodeId: owner.backendNodeId }); visible = box.model.width > 0 && box.model.height > 0; } catch {}
+        result.push({ context, visible });
+      } catch { /* Detached contexts are not current application panels. */ }
+    }
+    return result.sort((a,b)=>Number(b.visible)-Number(a.visible)).map(value=>value.context);
+  }
+
 }

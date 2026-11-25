@@ -92,3 +92,5 @@
 .permission-artifact { font-size: 11px; overflow-wrap: anywhere; color: var(--rtw-muted); }
 
 .selected-surface{position:relative;min-width:0;min-height:0;height:100%;flex:1}.surface-frame,.surface-frame iframe{height:100%;width:100%;border:0;display:block}.surface-placeholder{position:absolute;inset:24px}.home-page{display:flex;flex-direction:column}.home-topbar{flex-shrink:0}.settings-overlay .selected-surface{min-height:0}
+
+.home-apps{display:flex;align-self:stretch;gap:22px;min-width:0;overflow-x:auto}.home-apps button{position:relative;border:0;background:none;color:var(--rtw-muted);padding:0 2px;white-space:nowrap;cursor:pointer}.home-apps button:hover{color:var(--rtw-text)}.home-apps button[aria-current=page]{color:var(--rtw-text)}.home-apps button[aria-current=page]::after{content:"";position:absolute;bottom:0;left:0;right:0;height:2px;background:var(--rtw-accent)}

@@ -18,6 +18,7 @@ enum Step {
     Source,
     Generate,
     ProviderStatus,
+    ProviderCancel,
     ProviderRelease,
     Append,
     AppendStatus,
@@ -40,6 +41,7 @@ struct Work {
     text: Option<String>,
     terminal: Option<Outcome>,
     cleanup: bool,
+    stopped: bool,
     deadline: u64,
 }
 #[derive(Default)]
@@ -67,6 +69,9 @@ enum Call {
         entry_id: Uuid,
     },
     Status {
+        operation: String,
+    },
+    Stop {
         operation: String,
     },
     Release {
@@ -284,6 +289,30 @@ impl State {
                 ),
                 Some(v) => serde_json::to_value(v).map_err(|_| "unavailable"),
             },
+            Call::Stop { operation } => {
+                if let Some(result) = self
+                    .operations
+                    .status(&operation, &who)
+                    .map_err(|_| "invalid-operation")?
+                {
+                    return serde_json::to_value(result).map_err(|_| "unavailable");
+                }
+                let work = self
+                    .operations
+                    .work_mut(&operation)
+                    .ok_or("invalid-operation")?;
+                work.stopped = true;
+                // Stop is serialized with progress. Never consume an in-flight
+                // status after this point; text is frozen at the accepted prefix.
+                // A submitted begin/append must still be reconciled, not dropped.
+                if matches!(work.step, Step::ProviderStatus) && !work.cleanup {
+                    if let Some(query) = work.query.take() {
+                        let _ = transport::close_query(query);
+                    }
+                    work.step = Step::ProviderCancel;
+                }
+                Ok(json!({"status":"pending"}))
+            }
             Call::Release { operation } => {
                 self.operations
                     .release(&operation, &who)
@@ -346,6 +375,7 @@ impl State {
                             text: None,
                             terminal: None,
                             cleanup: false,
+                            stopped: false,
                             deadline,
                         },
                     )
@@ -362,6 +392,13 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
     };
     if now >= w.deadline {
         return Some(unknown(w));
+    }
+    if w.stopped
+        && !w.cleanup
+        && (matches!(w.step, Step::Recent | Step::Character | Step::Source)
+            || (matches!(w.step, Step::Generate) && w.query.is_none()))
+    {
+        return Some(failed("cancelled"));
     }
     if matches!(w.step, Step::Source) {
         if !source_allowed {
@@ -420,6 +457,7 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
                 json!({"method":"begin-generate","messages":w.prompt.as_ref().unwrap()}),
             ),
             Step::ProviderStatus => (INFERENCE, json!({"method":"status","operation":w.provider})),
+            Step::ProviderCancel => (INFERENCE, json!({"method":"cancel","operation":w.provider})),
             Step::ProviderRelease => (
                 INFERENCE,
                 json!({"method":"release","operation":w.provider}),
@@ -473,6 +511,7 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
                 Step::Recent
                     | Step::Character
                     | Step::ProviderStatus
+                    | Step::ProviderCancel
                     | Step::AppendStatus
                     | Step::ProviderRelease
                     | Step::AppendRelease
@@ -542,7 +581,22 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
             };
             w.provider = Some(token.into());
             w.prompt = None;
-            w.step = Step::ProviderStatus;
+            w.step = if w.stopped {
+                Step::ProviderCancel
+            } else {
+                Step::ProviderStatus
+            };
+        }
+        Step::ProviderCancel => {
+            // Cancellation acknowledges transport retirement, not a Chat commit.
+            // Do not ingest its text: the Narrator prefix was frozen at Stop.
+            if !matches!(value["status"].as_str(), Some("failed" | "completed")) {
+                return Some(unknown(w));
+            }
+            if w.text.as_deref().is_none_or(|text| text.trim().is_empty()) {
+                w.terminal = Some(failed("cancelled"));
+            }
+            w.step = Step::ProviderRelease;
         }
         Step::ProviderStatus => match value["status"].as_str() {
             Some("pending") => {

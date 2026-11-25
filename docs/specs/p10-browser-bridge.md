@@ -283,3 +283,50 @@ never triggers an automatic replay. This additive operation preserves ordinary
 queries and view contributions. Chat's separate message-action discovery point
 uses captured conversation/message/revision IDs and provider-owned authorization;
 it grants neither Chat writes nor a different caller's native channel.
+
+
+## Host tools and World chooser intent — owner-requested UI refinement
+
+Native-attested launchable Host views appear beside Worlds in the Home app bar.
+Root uses its existing isolated Surface mount, never a child URL/channel supplied
+by another extension. Selecting another app unmounts the previous view; unavailable
+apps return to the Home renderer. Settings remains a separate renderer.
+
+A live launchable Host view can request `ui.create-world {template?:digest}` to
+open the existing Root chooser. Root validates strict args and installed canonical
+template identity. Creation, permissions and actual mutation still require the
+existing Root UI submit and native checks. World views are denied. Existing Home
+renderer no-argument creation remains valid; direct `ui.open-world` stays restricted
+to the selected Home renderer. This is navigation, not delegation of Root rights.
+
+
+## Message views and internal scroll clipping (F3a, 2026-11-25)
+
+Chat discovers `rintawa/chat/message-views/v1` with `{"method":"describe"}`.
+An ordinary UI contribution replies `{id,label,order}` through the existing native
+sourced view mechanism. Chat resolves exactly the responder's admitted same-World
+view and activation; the descriptor supplies no executable URL or parent channel.
+Four explicitly expanded views may be open in visible rows. Discovery alone mounts
+nothing. Context/revision/selection change, offscreen rows and provider retirement
+release bindings; replacement does not reopen them automatically.
+
+The widget reads five strings from `client.initialState`: `conversationId`,
+`entryId`, `messageId`, `expectedRevision`, `conversationRevision`. These are inert
+captured context, not permissions or persisted preferences. A widget reads text
+explicitly under its own principal using Chat `get-message` with the first four
+fields. Chat proves membership via the exact entry relation. The existing
+`message-actions/v1` contract is unchanged and embedding grants no Chat write API.
+
+`Client.mountView` retains its public signature. It supplies the full intended
+rectangle plus optional `clip` on the Root-owned `ui.slot.mount/update` wire.
+Both rectangles use finite local `x,y,width,height` within the existing bounds;
+width/height are nonnegative. Clip is the intersection of viewport and clipping
+DOM ancestors. Root intersects it with its own trusted bounds. The outer box clips
+while the iframe keeps its intended dimensions and offset. Old callers omitting
+clip remain accepted; update Chat and web-ui together for the new SDK protocol.
+
+Ancestor sizing is observed so resizing one accessory also updates later ones.
+Geometry updates coalesce per frame with at most one request in flight per slot.
+Cleanup shares concurrent closes and retries only idempotent slot close on bounded
+transient unavailable/limit-exceeded responses, without raising RPC quotas or
+replaying any domain mutation. Late mount completion is released after close.

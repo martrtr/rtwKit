@@ -1,3 +1,4 @@
+import { MessageView, useMessageViews } from './MessageViews';
 import { useMessageActions } from './useMessageActions';
 import { ComposerActions } from './ComposerActions';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
@@ -12,6 +13,8 @@ type ReplyPreview = { conversationId: string; messageId: string; text: string; p
 type Conversation = { revision: string; title: string; characterId: string | null; lastEntryId: string | null };
 type ConversationRow = { id: string; conversation: Conversation };
 type Entry = { entryId: string; messageId: string; message: { role: string; text: string; revision: string } };
+type HistoryAction = 'fork' | 'edit' | 'delete' | 'truncate' | 'regenerate';
+type HistoryChoice = { action: HistoryAction; entry: Entry; sourceId: string; source: Conversation };
 type Recent = { conversation: Conversation; items: Entry[]; older: string | null; head: string | null };
 type Character = { id: string; card: { name: string; portrait: AssetRef | null } };
 type CharacterList = { items: Character[]; next: string | null };
@@ -46,6 +49,9 @@ function Chat() {
   const aiAbort = useRef<AbortController | null>(null);
   const [aiAvailable, setAiAvailable] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const stopRequested = useRef(false);
+  const [canStop, setCanStop] = useState(false);
   const [replyPreview, setReplyPreview] = useState<ReplyPreview | null>(null);
   const followingReply = useRef(false);
   const transcript = useRef<HTMLDivElement | null>(null);
@@ -100,7 +106,11 @@ function Chat() {
   const [portrait, setPortrait] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [text, setText] = useState('');
+  const [historyChoice, setHistoryChoice] = useState<HistoryChoice | null>(null);
+  const [replacementText, setReplacementText] = useState('');
+  const [queuedRegeneration, setQueuedRegeneration] = useState<{ conversationId: string; userMessageId: string } | null>(null);
   const messageActions = useMessageActions(bridge.current, selected);
+  const messageViews = useMessageViews(bridge.current, selected, pageConversation?.revision);
   const listWatch = useRef<Observation | null>(null), cardsWatch = useRef<Observation | null>(null), threadWatch = useRef<Observation | null>(null);
   const listPages = useRef(1), cardPages = useRef(1), threadPages = useRef(1);
   const selectedRef = useRef(selected); selectedRef.current = selected;
@@ -267,7 +277,7 @@ function Chat() {
       const result = await domain.current.wait(operation, controller.signal);
       active.current = null;
       if (result.status === 'unknown') { setUnknown(result.itemIds); setNotice('The outcome is unknown. Reread the World before trying again.'); }
-      if (result.status === 'failed') setError(result.reason.includes('stale-entry-id') ? 'A newer message was saved first. Press Send again to retry with new IDs.' : result.reason);
+      if (result.status === 'failed') setError(result.reason.includes('stale-entry-id') ? 'A newer message was saved first. Press Send again to retry with new IDs.' : result.reason.includes('stale-context') ? 'The conversation changed. Close this action and review the latest messages.' : result.reason.includes('history-too-large') ? 'This history exceeds the current atomic fork limit. The original chat is unchanged.' : result.reason);
       return result;
     } catch (failure) {
       if (mounted.current) {
@@ -296,6 +306,7 @@ function Chat() {
     const current = () => mounted.current && aiAbort.current === controller && !controller.signal.aborted && selectedRef.current === conversationId;
     let operation: Operation | null = null, knownIds: string[] = [], beginSent = false;
     const markPreview = (phase: ReplyPreview['phase']) => setReplyPreview(previous => previous?.conversationId === conversationId ? { ...previous, phase } : previous);
+    stopRequested.current = false; setStopping(false); setCanStop(false);
     setAiBusy(true); setReplyPreview(null); setError(''); setNotice('');
     try {
       const info = await new DomainClient(bridge.current, 'rintawa/inference/v1').request<{ ready: boolean; reason: string | null }>('describe', {}, controller.signal);
@@ -306,6 +317,7 @@ function Chat() {
       beginSent = true;
       operation = await owner.begin('begin-generate', { conversationId, userMessageId, messageId: knownIds[0], entryId: knownIds[1] });
       aiOperation.current = operation;
+      if (current()) setCanStop(true);
       if (!current()) return;
       followingReply.current = !transcript.current || transcript.current.scrollHeight - transcript.current.scrollTop - transcript.current.clientHeight < 64;
       setReplyPreview({ conversationId, messageId: knownIds[0], text: '', phase: 'streaming' });
@@ -319,7 +331,10 @@ function Chat() {
       if (result.status === 'committed') {
         markPreview('saved');
         await loadLatest(conversationId).catch(failure => readFailure('transcript', failure));
-      } else if (result.status === 'failed') { markPreview('interrupted'); setError(aiFailure(result.reason)); }
+      } else if (result.status === 'failed') {
+        if (result.reason === 'cancelled') setReplyPreview(null);
+        else { markPreview('interrupted'); setError(aiFailure(result.reason)); }
+      }
       else { markPreview('unknown'); setUnknown(result.itemIds); setNotice('Reply outcome unknown. Reread the World before trying again.'); }
     } catch (failure) {
       if (current()) {
@@ -332,7 +347,23 @@ function Chat() {
       if (operation) void owner.release(operation).catch(() => {});
       if (aiAbort.current === controller) {
         aiOperation.current = null; aiAbort.current = null;
-        if (mounted.current) setAiBusy(false);
+        if (mounted.current) { setAiBusy(false); setCanStop(false); setStopping(false); }
+      }
+    }
+  };
+  const stopReply = async () => {
+    const owner = narrator.current, operation = aiOperation.current, controller = aiAbort.current;
+    if (!owner || !operation || !controller || stopRequested.current) return;
+    stopRequested.current = true; setStopping(true);
+    try { await owner.request('stop', { operation: operation.operation }); }
+    catch (failure) {
+      // The polling path may already have observed and released a terminal result.
+      // Its result remains authoritative if a racing Stop finds no retained slot.
+      if (failure instanceof DomainError && failure.code === 'invalid-operation') return;
+      if (mounted.current && aiAbort.current === controller) {
+        // Stop is idempotent. Keep observing the original operation and allow an
+        // explicit retry if its acknowledgement was lost; never repeat generation.
+        stopRequested.current = false; setStopping(false); setError(message(failure));
       }
     }
   };
@@ -350,13 +381,54 @@ function Chat() {
     }
     if (mounted.current && available) await generate(id, result.itemIds[0]);
   };
+  const changeHistory = async (choice: HistoryChoice, action = choice.action) => {
+    if (busy || unknown || !domain.current) return;
+    const suffix = { fork: 'Branch', edit: 'Edited', delete: 'Deleted message', truncate: 'Until here', regenerate: 'Regenerated' }[action];
+    // Titles are labels; identity is always the allocated conversation UUID.
+    let branchTitle = choice.source.title;
+    while (new TextEncoder().encode(`${branchTitle} · ${suffix}`).length > 256) branchTitle = [...branchTitle].slice(0, -1).join('');
+    const result = await run('begin-fork', ids => ({
+      sourceConversationId: choice.sourceId, conversationId: ids[0], title: `${branchTitle} · ${suffix}`,
+      expectedConversationRevision: choice.source.revision, expectedLastEntryId: choice.source.lastEntryId,
+      targetEntryId: choice.entry.entryId, targetMessageId: choice.entry.messageId,
+      expectedMessageRevision: choice.entry.message.revision, action,
+      replacement: action === 'edit' ? { messageId: ids[1], text: replacementText } : null,
+    }), action === 'edit' ? 2 : 1);
+    if (result?.status !== 'committed' || !mounted.current) return;
+    setHistoryChoice(null); setText(''); setSearch('');
+    const conversationId = result.itemIds[0];
+    saveState({ conversationId }); setPageConversation(null); setEntries([]); setCursor(null); setSelected(conversationId);
+    await loadList().catch(failure => readFailure('conversations', failure));
+    if (action === 'regenerate') {
+      try {
+        const prefix = await domain.current.request<Recent>('recent', { conversationId });
+        const user = prefix.items.at(-1);
+        if (!user || user.message.role !== 'user') throw new Error('The new chat has no user message to regenerate from.');
+        if (mounted.current && selectedRef.current === conversationId) setQueuedRegeneration({ conversationId, userMessageId: user.messageId });
+      } catch (failure) { if (mounted.current) setError(message(failure)); }
+    }
+  };
+  useEffect(() => {
+    if (!queuedRegeneration) return;
+    if (selected !== queuedRegeneration.conversationId) { setQueuedRegeneration(null); return; }
+    if (!pageConversation) return;
+    const request = queuedRegeneration; setQueuedRegeneration(null);
+    void generate(request.conversationId, request.userMessageId);
+  }, [queuedRegeneration, selected, pageConversation]);
+  const chooseHistory = (action: HistoryAction, entry: Entry) => {
+    if (busy || unknown || !selected || !selectedConversation) return;
+    const choice = { action, entry, sourceId: selected, source: selectedConversation };
+    if (action === 'fork' || action === 'regenerate') void changeHistory(choice);
+    else { setReplacementText(entry.message.text); setHistoryChoice(choice); }
+  };
   const read = async (action: () => Promise<void>) => {
     setBusy(true); setError('');
     try { await action(); } catch (failure) { if (mounted.current) setError(message(failure)); }
     finally { if (mounted.current) setBusy(false); }
   };
-  const select = (id: string) => { saveState({ conversationId: id }); setSelected(id); setPageConversation(null); setEntries([]); setCursor(null); void read(() => loadLatest(id)); };
-  const shown = conversations.filter(row => row.conversation.title.toLowerCase().includes(search.toLowerCase()));
+  const select = (id: string) => { setQueuedRegeneration(null); saveState({ conversationId: id }); setSelected(id); setPageConversation(null); setEntries([]); setCursor(null); void read(() => loadLatest(id)); };
+  const listed = selected && pageConversation && !conversations.some(row => row.id === selected) ? [...conversations, { id: selected, conversation: pageConversation }] : conversations;
+  const shown = listed.filter(row => row.conversation.title.toLowerCase().includes(search.toLowerCase()));
   const newConversation = () => { setCreateOpen(true); void loadCards().catch(() => {}); };
   const preview = replyPreview?.conversationId === selected && !entries.some(entry => entry.messageId === replyPreview.messageId) ? replyPreview : null;
   return <><SplitPane className={`chat${navigationOpen ? '' : ' navigation-closed'}`} open={navigationOpen} ratio={navigationRatio} onResize={resizeNavigation} sidebarId="conversation-navigation" label="Conversation list width"
@@ -370,11 +442,17 @@ function Chat() {
     </aside>}>
     <section className="thread" aria-label="Conversation">
       <header className="thread-header"><div className="chat-heading">{portrait ? <img src={portrait} alt={linked?.card.name ?? ''} /> : <span className="header-hash"><Icon name="hash" size={24} /></span>}<div><h2>{selectedConversation?.title ?? 'Conversations'}</h2>{linked && <small>{linked.card.name}</small>}</div></div><div className="thread-actions"><button className="icon-button navigation-toggle" title={navigationOpen ? 'Hide conversations' : 'Show conversations'} aria-label="Toggle conversations" aria-controls="conversation-navigation" aria-expanded={navigationOpen} disabled={!ready} ref={navigationToggle} onClick={() => toggleNavigation(!navigationOpen)}><Icon name="split" size={18} /></button></div></header>
-      <div className="transcript" ref={transcript} aria-live="polite">{selected ? <div className="message-column">{cursor && <Button className="load-more" disabled={busy} onClick={() => void read(() => loadOlder(selected, cursor))}>Load older messages</Button>}<div className="conversation-start"><span className="conversation-start-icon"><Icon name="hash" size={31} /></span><h2>{selectedConversation?.title ?? 'Conversation'}</h2><p>{linked ? `A conversation with ${linked.card.name}.` : 'This is the beginning of your conversation.'}</p></div>{entries.map(entry => <article className="message" key={entry.entryId}><div className={`message-avatar ${entry.message.role}`}>{entry.message.role === 'assistant' && portrait ? <img src={portrait} alt="" /> : <Icon name="user" size={19} />}</div><div className="message-body"><strong>{entry.message.role === 'user' ? 'You' : linked?.card.name ?? 'Assistant'}</strong><p>{entry.message.text}</p>{!!messageActions.items.length && <div className="message-actions" aria-label="Message actions">{messageActions.items.map(action=><Button key={action.key} disabled={messageActions.busy} onClick={()=>void messageActions.invoke(action,{conversationId:selected!,messageId:entry.messageId,expectedRevision:entry.message.revision})}>{action.label}</Button>)}</div>}</div></article>)}{preview && (preview.text || preview.phase === 'streaming') && <article className={`message reply-preview ${preview.phase}`} data-message-id={preview.messageId} aria-label="Assistant reply preview" aria-busy={preview.phase === 'streaming'}><div className="message-avatar assistant">{portrait ? <img src={portrait} alt="" /> : <Icon name="user" size={19} />}</div><div className="message-body"><strong>{linked?.card.name ?? 'Assistant'}</strong>{preview.text ? <p>{preview.text}{preview.phase === 'streaming' && <span className="reply-cursor" aria-hidden="true" />}</p> : preview.phase === 'streaming' ? <span className="reply-typing" role="status" aria-label="Generating reply"><i /><i /><i /></span> : null}</div></article>}</div> : <div className="chat-empty"><div className="chat-empty-icon"><Icon name="chat" size={34} /></div><h2>A place for your next story.</h2><p>Choose a conversation to continue.</p><Button className="primary" disabled={!ready || busy} onClick={() => toggleNavigation(true)}>Conversations</Button></div>}</div>
-      <div className="thread-notices">{messageActions.error && <Status error>{messageActions.error}</Status>}{messageActions.notice && <Status>{messageActions.notice}</Status>}{Object.values(readErrors).some(Boolean) && <div><Status error>Saved data may be out of date. {Object.values(readErrors).filter(Boolean).join(' · ')}</Status><Button onClick={() => { void listWatch.current?.refresh().catch(() => {}); void cardsWatch.current?.refresh().catch(() => {}); void threadWatch.current?.refresh().catch(() => {}); }}>Retry reads</Button></div>}{!ready && !error && <Status>Connecting…</Status>}{error && !unknown && <div className="reply-error"><Status error>{error}</Status>{aiAvailable && !aiBusy && selected && entries.at(-1)?.message.role === 'user' && <Button disabled={busy} onClick={() => void generate(selected, entries.at(-1)!.messageId)}>Retry reply</Button>}</div>}{notice && <Status>{notice}</Status>}{unknown && <div className="unknown"><p>Known item IDs: {unknown.join(', ')}</p><Button disabled={busy} onClick={() => void read(async () => { await loadList(); if (selected) await loadLatest(selected); if (active.current) { void domain.current?.release(active.current).catch(() => {}); active.current = null; } setUnknown(null); setNotice('World data reread. An absent item does not prove rollback; retry only by an explicit decision.'); })}>Reread World</Button></div>}</div>
-      {selected && <div className="composer-area"><div className="composer" role="form" aria-label="Send a message"><textarea aria-label="Message" ref={composer} id="message" value={text} onChange={event => setText(event.target.value)} placeholder={busy ? '' : 'Message…'} disabled={busy} rows={1} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!busy && !unknown && text.trim()) void send(); } }} /><ComposerActions client={bridge.current}/><button className="send-button" type="button" onClick={() => { if (!busy && !unknown && text.trim()) void send(); }} title="Send" aria-label="Send" disabled={busy || !ready || !!unknown || !text.trim()}><Icon name="send" size={18} /><span className="sr-only">Send</span></button></div></div>}
+      <div className="transcript" ref={transcript} aria-live="polite">{selected ? <div className="message-column">{cursor && <Button className="load-more" disabled={busy} onClick={() => void read(() => loadOlder(selected, cursor))}>Load older messages</Button>}<div className="conversation-start"><span className="conversation-start-icon"><Icon name="hash" size={31} /></span><h2>{selectedConversation?.title ?? 'Conversation'}</h2><p>{linked ? `A conversation with ${linked.card.name}.` : 'This is the beginning of your conversation.'}</p></div>{entries.map((entry, index) => <article className="message" key={entry.entryId}><div className={`message-avatar ${entry.message.role}`}>{entry.message.role === 'assistant' && portrait ? <img src={portrait} alt="" /> : <Icon name="user" size={19} />}</div><div className="message-body"><strong>{entry.message.role === 'user' ? 'You' : linked?.card.name ?? 'Assistant'}</strong><p>{entry.message.text}</p>{!!messageViews.items.length && <div className="message-view-actions" aria-label="Message views">{messageViews.items.map(item => <Button key={item.id} onClick={() => messageViews.open(item, { conversationId: selected!, entryId: entry.entryId, messageId: entry.messageId, expectedRevision: entry.message.revision, conversationRevision: selectedConversation!.revision })}>{item.label}</Button>)}</div>}{bridge.current && messageViews.expanded.filter(value => value.context.entryId === entry.entryId).map(value => <MessageView key={value.key} client={bridge.current!} expansion={value} onClose={() => messageViews.close(value.key)} />)}<details className="history-menu"><summary aria-label={`Actions for message ${index + 1}`}>•••</summary><div role="group" aria-label="History actions"><Button disabled={busy || !!unknown} onClick={() => chooseHistory('edit', entry)}>Edit</Button><Button disabled={busy || !!unknown} onClick={() => chooseHistory('fork', entry)}>Fork here</Button>{entry.message.role === 'assistant' && (entries[index - 1]?.message.role === 'user' || (index === 0 && !!cursor)) && <Button disabled={busy || !!unknown || !aiAvailable} onClick={() => chooseHistory('regenerate', entry)}>Regenerate</Button>}{entry.message.role === 'user' && entry.entryId === selectedConversation?.lastEntryId && aiAvailable && <Button disabled={busy || !!unknown} onClick={() => void generate(selected!, entry.messageId)}>Generate reply</Button>}<Button disabled={busy || !!unknown} onClick={() => chooseHistory('delete', entry)}>Delete</Button></div></details>{!!messageActions.items.length && <div className="message-actions" aria-label="Message actions">{messageActions.items.map(action=><Button key={action.key} disabled={messageActions.busy} onClick={()=>void messageActions.invoke(action,{conversationId:selected!,messageId:entry.messageId,expectedRevision:entry.message.revision})}>{action.label}</Button>)}</div>}</div></article>)}{preview && (preview.text || preview.phase === 'streaming') && <article className={`message reply-preview ${preview.phase}`} data-message-id={preview.messageId} aria-label="Assistant reply preview" aria-busy={preview.phase === 'streaming'}><div className="message-avatar assistant">{portrait ? <img src={portrait} alt="" /> : <Icon name="user" size={19} />}</div><div className="message-body"><strong>{linked?.card.name ?? 'Assistant'}</strong>{preview.text ? <p>{preview.text}{preview.phase === 'streaming' && <span className="reply-cursor" aria-hidden="true" />}</p> : preview.phase === 'streaming' ? <span className="reply-typing" role="status" aria-label="Generating reply"><i /><i /><i /></span> : null}</div></article>}</div> : <div className="chat-empty"><div className="chat-empty-icon"><Icon name="chat" size={34} /></div><h2>A place for your next story.</h2><p>Choose a conversation to continue.</p><Button className="primary" disabled={!ready || busy} onClick={() => toggleNavigation(true)}>Conversations</Button></div>}</div>
+      <div className="thread-notices">{messageViews.error && <Status error>{messageViews.error}</Status>}{messageViews.notice && <Status>{messageViews.notice}</Status>}{messageActions.error && <Status error>{messageActions.error}</Status>}{messageActions.notice && <Status>{messageActions.notice}</Status>}{Object.values(readErrors).some(Boolean) && <div><Status error>Saved data may be out of date. {Object.values(readErrors).filter(Boolean).join(' · ')}</Status><Button onClick={() => { void listWatch.current?.refresh().catch(() => {}); void cardsWatch.current?.refresh().catch(() => {}); void threadWatch.current?.refresh().catch(() => {}); }}>Retry reads</Button></div>}{!ready && !error && <Status>Connecting…</Status>}{error && !unknown && <div className="reply-error"><Status error>{error}</Status>{aiAvailable && !aiBusy && selected && entries.at(-1)?.message.role === 'user' && <Button disabled={busy} onClick={() => void generate(selected, entries.at(-1)!.messageId)}>Retry reply</Button>}</div>}{notice && <Status>{notice}</Status>}{unknown && <div className="unknown"><p>Known item IDs: {unknown.join(', ')}</p><Button disabled={busy} onClick={() => void read(async () => { await loadList(); if (selected) await loadLatest(selected); if (active.current) { void domain.current?.release(active.current).catch(() => {}); active.current = null; } setUnknown(null); setNotice('World data reread. An absent item does not prove rollback; retry only by an explicit decision.'); })}>Reread World</Button></div>}</div>
+      {selected && <div className="composer-area"><div className="composer" role="form" aria-label="Send a message"><textarea aria-label="Message" ref={composer} id="message" value={text} onChange={event => setText(event.target.value)} placeholder={busy ? '' : 'Message…'} disabled={busy} rows={1} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!busy && !unknown && text.trim()) void send(); } }} /><ComposerActions client={bridge.current}/><button className="send-button" type="button" onClick={() => { if (aiBusy) void stopReply(); else if (!busy && !unknown && text.trim()) void send(); }} title={aiBusy ? (stopping ? 'Stopping…' : 'Stop') : 'Send'} aria-label={aiBusy ? (stopping ? 'Stopping…' : 'Stop') : 'Send'} disabled={aiBusy ? (!canStop || stopping) : (busy || !ready || !!unknown || !text.trim())}>{aiBusy ? <span aria-hidden="true">■</span> : <Icon name="send" size={18} />}<span className="sr-only">{aiBusy ? (stopping ? 'Stopping…' : 'Stop') : 'Send'}</span></button></div></div>}
     </section>
     </SplitPane>
+    <Dialog open={!!historyChoice} title={historyChoice?.action === 'edit' ? 'Edit message in a new chat' : 'Remove message in a new chat'} onClose={() => { if (!busy) setHistoryChoice(null); }}>
+      <p className="dialog-description">The original chat stays available in your chat list.</p>
+      {historyChoice?.action === 'edit' ? <><label htmlFor="replacement-message">Replacement message</label><textarea id="replacement-message" className="history-editor" rows={7} value={replacementText} disabled={busy} onChange={event => setReplacementText(event.target.value)} /><p className="dialog-description">The new chat ends with your replacement. Later replies stay in the original chat.</p></> : <><blockquote className="history-excerpt">{historyChoice?.entry.message.text}</blockquote><p className="dialog-description">Delete only this message to keep later replies, or end the new chat before this message.</p></>}
+      {error && <Status error>{error}</Status>}{unknown && <Status>The outcome is unknown. Close this dialog and reread the World before another action.</Status>}
+      <footer className="history-footer"><Button disabled={busy} onClick={() => setHistoryChoice(null)}>Cancel</Button>{historyChoice?.action === 'delete' && <Button disabled={busy || !!unknown} onClick={() => void changeHistory(historyChoice, 'truncate')}>Delete from here</Button>}<Button className="primary" disabled={busy || !!unknown || (historyChoice?.action === 'edit' && (!replacementText.trim() || new TextEncoder().encode(replacementText).length > 16 * 1024))} onClick={() => { if (historyChoice) void changeHistory(historyChoice); }}>{historyChoice?.action === 'edit' ? 'Save as new chat' : 'Delete only this message'}</Button></footer>
+    </Dialog>
     <Dialog open={createOpen} title="New conversation" onClose={() => { if (!busy) setCreateOpen(false); }}><p className="dialog-description">Give this conversation a name. Add a character if you like.</p><div className="dialog-form" role="form" aria-label="New conversation"><label htmlFor="new-title">CONVERSATION NAME</label><Input id="new-title" value={title} onChange={event => setTitle(event.target.value)} placeholder="A new beginning" disabled={busy} onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); if (!busy && !unknown && title.trim()) void create(); } }} /><label htmlFor="character">CHARACTER · OPTIONAL</label><div className="character-picker"><select id="character" value={characterId} disabled={busy} onChange={event => setCharacterId(event.target.value)}><option value="">No character</option>{cards.map(card => <option key={card.id} value={card.id}>{card.card.name}</option>)}</select></div>{cardCursor && <Button disabled={busy} onClick={() => void read(() => loadCards(cardCursor))}>More characters</Button>}{error && <Status error>{error}</Status>}{unknown && <Status>Outcome unknown. Close this dialog and reread the World before another mutation.</Status>}<footer><Button disabled={busy} onClick={() => setCreateOpen(false)}>Cancel</Button><Button className="primary" onClick={() => void create()} disabled={busy || !ready || !!unknown || !title.trim()}>Create</Button></footer></div></Dialog>
   </>;
 }

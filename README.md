@@ -11,6 +11,7 @@ released independently as an immutable `.rtw` artifact.
 | [web-runtime](packages/web-runtime) | Sandboxed runtime for packaged web components |
 | [web-ui](packages/web-ui) | React/Dockview application shell |
 | [settings-ui](packages/settings-ui) | Scoped settings and appearance panels |
+| [package-manager](packages/package-manager) | Local RTW library and scoped configuration |
 | [dice](packages/dice) | Independent Chat composer action/panel |
 | [character](packages/character) | Tavern V2/V3 character import and story onboarding |
 | [chat](packages/chat) | Persistent World conversations |

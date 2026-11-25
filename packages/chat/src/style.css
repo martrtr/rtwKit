@@ -43,3 +43,18 @@
 .reply-cursor { display: inline-block; height: .9em; margin-left: 3px; border-left: 2px solid var(--rtw-muted); animation: reply-pulse 1.2s ease-in-out infinite; }
 @keyframes reply-pulse { 50% { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) { .reply-typing i, .reply-cursor { animation: none; } }
+
+.history-menu { margin-top: 6px; color: var(--rtw-muted); }
+.history-menu summary { width: fit-content; cursor: pointer; padding: 2px 8px; border-radius: 4px; list-style: none; font-size: 14px; }
+.history-menu summary:hover, .history-menu summary:focus-visible { background: var(--rtw-hover); color: var(--rtw-text); }
+.history-menu > div { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+.history-menu .rtw-button { padding: 3px 8px; font-size: 11px; }
+.history-editor { box-sizing: border-box; width: 100%; resize: vertical; min-height: 120px; margin-top: 8px; padding: 10px; background: var(--rtw-input); color: var(--rtw-text); border: 1px solid var(--rtw-border); border-radius: 6px; font: inherit; }
+.history-excerpt { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0; padding-left: 12px; border-left: 2px solid var(--rtw-border); }
+.history-footer { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+.message-view-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.message-view-actions .rtw-button { font-size:11px; padding:3px 8px; }
+.message-view { margin-top:8px; border:1px solid var(--rtw-border); border-radius:6px; overflow:hidden; }
+.message-view > header { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 8px; }
+.message-view-slot { height:220px; min-height:96px; max-height:65vh; resize:vertical; overflow:hidden; }

@@ -1,0 +1,18 @@
+id = "rintawa.rtwkit.package-manager"
+name = "Packages"
+version = "0.1.0"
+sdk = "^0.0"
+[[components]]
+id = "backend"
+kind = "runtime"
+target = "rintawa.runtime.wasm-component@1"
+entry = "backend.wasm"
+[components.permissions]
+runtime = ["background-task", "composition-read", "composition-write", "runtime-policy-read", "world-session-read", "world-session-write"]
+[[components]]
+id = "ui"
+kind = "ui"
+target = "rintawa.runtime.web-bundle@2"
+entry = "web-bundle.toml"
+[components.permissions]
+runtime = ["background-task"]

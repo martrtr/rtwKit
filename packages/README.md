@@ -7,7 +7,8 @@ been removed. Their P10 replacements are real packages, with local browser/proto
 - `web-ui`: React/Dockview shell, explicit World lifecycle and saved layouts.
 - `dice`: independent Canvas/queryable panel demonstrating the browser SDK.
 - `character`: World-local Tavern V2/V3 import, source CAS and portrait preview.
-- `chat`: persistent conversations/messages with an ordinary WASM/System owner.
+- `chat`: persistent conversations, independent listed forks, edit/delete and regeneration,
+  with an ordinary WASM/System owner.
 - `narrator`: bounded Character/history prompts and stale-context guarded assistant replies.
 - `ai-provider`: non-secret World settings and bounded HTTP/SSE generation.
 
@@ -55,3 +56,30 @@ bounded nested mounting are specified in docs/specs/p10-browser-bridge.md. A
 JS-only contribution is published before its iframe opens; dynamic contributions
 may still use the existing polled transport. Renderer selection uses the same
 provided-contract mechanism as other extensions, without priority-based authority.
+
+
+The new [local package manager](package-manager/README.md) is a separate optional
+Host extension. It manages exact local archives and scoped selections using the
+current APIs; it does not restore the retired experimental package manager.
+
+Chat's message menu provides **Edit**, **Fork here**, **Regenerate** (after a user
+input), and **Delete**. Edit creates a separate chat ending at the replacement.
+A final user message offers **Generate reply**, including after editing or forking,
+without adding an extra user turn. The delete dialog distinguishes removing one entry while keeping later messages
+from discarding the continuation. Originals remain in the chat list. Regeneration
+publishes its new prefix first; failure leaves it available for an explicit retry.
+Stop saves validated received text into the selected generation's own chat.
+
+Forks share immutable message text and copy conversation-specific entry relations
+in one atomic transaction. Existing @1 data needs no migration. Large transforms
+can fail with `history-too-large`; no partial chat is published. These are transcript
+branches within one World, so they do not roll back simulation state or erase
+historical copies. Message contributions and player personas are separate increments.
+
+
+Chat also supports isolated message views via `rintawa/chat/message-views/v1`.
+They open explicitly beneath a message, with at most four visible expansions,
+and fetch their own data from captured entry IDs. Authors use `client.initialState`
+for the invocation context; their own preferences are separate. The shared web
+bridge clips panels inside the transcript and tracks resizing. Install the updated
+Chat and web-ui together; details are in `docs/specs/p10-browser-bridge.md`.

@@ -585,6 +585,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rintawa-package-manager-extension"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "rintawa-web-runtime"
 version = "0.1.0"
 dependencies = [

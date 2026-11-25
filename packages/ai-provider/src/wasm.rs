@@ -104,6 +104,9 @@ enum Call {
     Status {
         operation: String,
     },
+    Cancel {
+        operation: String,
+    },
     Release {
         operation: String,
     },
@@ -360,6 +363,30 @@ impl State {
                 }),
                 Some(v) => serde_json::to_value(v).map_err(|_| "unavailable"),
             },
+            Call::Cancel { operation } => {
+                if let Some(result) = self
+                    .operations
+                    .status(&operation, &who)
+                    .map_err(|_| "invalid-operation")?
+                {
+                    return serde_json::to_value(result).map_err(|_| "unavailable");
+                }
+                match self.operations.work_mut(&operation) {
+                    Some(Work::Http(work)) => {
+                        let _ = http_request::close(work.handle);
+                    }
+                    Some(Work::Models(work)) => {
+                        let _ = http_request::close(work.handle);
+                    }
+                    _ => {}
+                }
+                // The native worker retains its global permit until its blocking
+                // read retires. Releasing this observer cannot bypass that quota.
+                self.operations
+                    .finish(&operation, failed("cancelled"))
+                    .map_err(|_| "invalid-operation")?;
+                Ok(json!({"status":"failed","reason":"cancelled"}))
+            }
             Call::Release { operation } => {
                 // Diagnostics are read-only: explicit release can close them immediately.
                 // Generation retains the existing accepted-work semantics.

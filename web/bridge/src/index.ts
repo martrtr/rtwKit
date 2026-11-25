@@ -194,18 +194,54 @@ export class Client {
   async mountView(view: View, element: HTMLElement, state: ViewState = {}, onClosed: () => void = () => {}): Promise<{ close: () => Promise<void> }> {
     if (!viewState(state)) throw new BridgeError('invalid-request', 'not-started');
     const slot = [...crypto.getRandomValues(new Uint8Array(12))].map(v => v.toString(16).padStart(2, '0')).join('');
-    const rectangle = () => { const r = element.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; };
-    let closed = false, scheduled = false;
-    const update = () => { if (closed || scheduled) return; scheduled = true; requestAnimationFrame(() => { scheduled = false; if (!closed) void this.request('ui.slot.update', { slot, rect: rectangle() }).catch(() => { cleanup(); void this.request('ui.slot.close', { slot }).catch(() => {}); }); }); };
+    const ancestors: HTMLElement[] = [];
+    for (let parent = element.parentElement; parent; parent = parent.parentElement) ancestors.push(parent);
+    const geometry = () => {
+      const r = element.getBoundingClientRect();
+      let left = 0, top = 0, right = innerWidth, bottom = innerHeight;
+      for (const parent of ancestors) {
+        const style = getComputedStyle(parent), bounds = parent.getBoundingClientRect();
+        if (/^(hidden|clip|auto|scroll)$/.test(style.overflowX)) { left = Math.max(left, bounds.left + parent.clientLeft); right = Math.min(right, bounds.left + parent.clientLeft + parent.clientWidth); }
+        if (/^(hidden|clip|auto|scroll)$/.test(style.overflowY)) { top = Math.max(top, bounds.top + parent.clientTop); bottom = Math.min(bottom, bounds.top + parent.clientTop + parent.clientHeight); }
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') right = left;
+      }
+      return { rect: { x: r.x, y: r.y, width: r.width, height: r.height }, clip: { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) } };
+    };
+    let closed = false, scheduled = false, updating = false, dirty = false;
+    let closing: Promise<unknown> | undefined;
+    const closeSlot = () => closing ??= (async () => {
+      for (let attempt = 0; ; attempt++) {
+        try { return await this.request('ui.slot.close', { slot }); }
+        catch (error) {
+          if (this.#closed || (error instanceof BridgeError && error.code === 'channel-closed')) return;
+          if (!(error instanceof BridgeError) || !['limit-exceeded', 'unavailable'].includes(error.code) || attempt >= 40) throw error;
+          await delay(25);
+        }
+      }
+    })();
+    const update = () => {
+      if (closed) return;
+      dirty = true;
+      if (scheduled || updating) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        if (closed) return;
+        dirty = false; updating = true;
+        void this.request('ui.slot.update', { slot, ...geometry() }).catch(() => {
+          cleanup(); void closeSlot().catch(() => {});
+        }).finally(() => { updating = false; if (dirty && !closed) update(); });
+      });
+    };
     const observer = new ResizeObserver(update);
     const cleanup = () => { if (closed) return; closed = true; observer.disconnect(); window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update); this.#slots.delete(slot); onClosed(); };
     this.#slots.set(slot, cleanup);
     try {
-      await this.request('ui.slot.mount', { slot, reference: { instanceId: view.restoreKey.instanceId, componentId: view.restoreKey.componentId, activation: view.activation }, rect: rectangle(), state });
-      if (closed || this.#closed) { void this.request('ui.slot.close', { slot }).catch(() => {}); throw new BridgeError('channel-closed'); }
-      observer.observe(element); window.addEventListener('scroll', update, true); window.addEventListener('resize', update);
-      return { close: async () => { cleanup(); await this.request('ui.slot.close', { slot }); } };
-    } catch (error) { cleanup(); void this.request('ui.slot.close', { slot }).catch(() => {}); throw error; }
+      await this.request('ui.slot.mount', { slot, reference: { instanceId: view.restoreKey.instanceId, componentId: view.restoreKey.componentId, activation: view.activation }, ...geometry(), state });
+      if (closed || this.#closed) { void closeSlot().catch(() => {}); throw new BridgeError('channel-closed'); }
+      observer.observe(element); for (const parent of ancestors) observer.observe(parent); window.addEventListener('scroll', update, true); window.addEventListener('resize', update);
+      return { close: async () => { cleanup(); await closeSlot(); } };
+    } catch (error) { cleanup(); void closeSlot().catch(() => {}); throw error; }
   }
   async declarePolled(point: string): Promise<string> { return handle(await this.request('transport.declare-polled', { point })); }
   async nextQuery(queryable: string): Promise<InboundQuery | null> {
@@ -320,7 +356,7 @@ export async function connectPanel(onTheme: (theme: Theme, palette: Palette) => 
 }
 
 type Rectangle = { x: number; y: number; width: number; height: number };
-type Slot = { rect: Rectangle; box: HTMLDivElement; abort: AbortController; close?: () => Promise<void>; frame?: HTMLIFrameElement };
+type Slot = { rect: Rectangle; clip?: Rectangle; box: HTMLDivElement; abort: AbortController; close?: () => Promise<void>; frame?: HTMLIFrameElement };
 type FrameBinding = { view: View; state: ViewState; frame: HTMLIFrameElement; channel: string; nonce: string; parent?: FrameBinding; slots: Map<string, Slot>; bootstrap?: ReturnType<typeof setTimeout>; port?: MessagePort; loaded: boolean; used: boolean; closed: boolean; pending: Set<string>; visible?: boolean; visibilityEvents?: boolean; onClosed: () => void };
 export class RootBridge {
   #socket: WebSocket;
@@ -521,16 +557,16 @@ export class RootBridge {
   }
   async #slot(binding: FrameBinding, method: string, args: Record<string, unknown>, catalog: View[]): Promise<null> {
     if (method === 'ui.slot.clear' && !Object.keys(args).length) { await Promise.all([...binding.slots.keys()].map(id => this.#closeSlot(binding, id))); return null; }
-    const allowed = method === 'ui.slot.mount' ? ['slot', 'reference', 'rect', 'state'] : method === 'ui.slot.update' ? ['slot', 'rect'] : method === 'ui.slot.close' ? ['slot'] : [];
+    const allowed = method === 'ui.slot.mount' ? ['slot', 'reference', 'rect', 'clip', 'state'] : method === 'ui.slot.update' ? ['slot', 'rect', 'clip'] : method === 'ui.slot.close' ? ['slot'] : [];
     if (!allowed.length || Object.keys(args).some(key => !allowed.includes(key)) || !asciiId(args.slot)) throw new BridgeError('invalid-request', 'not-started');
     const id = args.slot;
     if (method === 'ui.slot.close') { await this.#closeSlot(binding, id); return null; }
-    const rect = args.rect;
-    if (!record(rect) || Object.keys(rect).sort().join(',') !== 'height,width,x,y' || !Object.values(rect).every(v => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 65536) || (rect.width as number) < 0 || (rect.height as number) < 0) throw new BridgeError('invalid-request', 'not-started');
-    const geometry = rect as Rectangle;
+    const validRectangle = (value: unknown): value is Rectangle => record(value) && Object.keys(value).sort().join(',') === 'height,width,x,y' && Object.values(value).every(v => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 65536) && (value.width as number) >= 0 && (value.height as number) >= 0;
+    if (!validRectangle(args.rect) || ('clip' in args && !validRectangle(args.clip))) throw new BridgeError('invalid-request', 'not-started');
+    const geometry = args.rect, innerClip = args.clip as Rectangle | undefined;
     if (method === 'ui.slot.update') {
       const slot = binding.slots.get(id); if (!slot) throw new BridgeError('invalid-request', 'not-started');
-      slot.rect = geometry; this.#positionSlot(binding, slot); return null;
+      slot.rect = geometry; slot.clip = innerClip; this.#positionSlot(binding, slot); return null;
     }
     if (binding.slots.has(id) || !record(args.reference) || Object.keys(args.reference).sort().join(',') !== 'activation,componentId,instanceId' || !viewState(args.state)) throw new BridgeError('invalid-request', 'not-started');
     const target = catalog.filter(v => v.worldId === binding.view.worldId && v.restoreKey.instanceId === (args.reference as Record<string, unknown>).instanceId && v.restoreKey.componentId === (args.reference as Record<string, unknown>).componentId && v.activation === (args.reference as Record<string, unknown>).activation);
@@ -540,7 +576,7 @@ export class RootBridge {
     // bootstrap nonce, native channel and MessagePort. Consent stays in its own
     // later top-layer dialog; the slot is clipped to its parent's viewport.
     (binding.frame.closest('dialog') ?? document.body).append(box);
-    const slot: Slot = { rect: geometry, box, abort: new AbortController() }; binding.slots.set(id, slot);
+    const slot: Slot = { rect: geometry, clip: innerClip, box, abort: new AbortController() }; binding.slots.set(id, slot);
     this.#scheduleReconcile();
     try {
       const mounted = await this.mount(target[0].id, box, () => { if (binding.slots.get(id) === slot) { binding.slots.delete(id); box.remove(); binding.port?.postMessage({ v: 1, type: 'slot-closed', slot: id }); } }, args.state, slot.abort.signal);
@@ -557,6 +593,10 @@ export class RootBridge {
     const clip = binding.parent ? binding.frame.parentElement!.getBoundingClientRect() : parent;
     let left = Math.max(0, parent.left, clip.left, intended.left), top = Math.max(0, parent.top, clip.top, intended.top);
     let right = Math.min(innerWidth, parent.right, clip.right, intended.left + rect.width), bottom = Math.min(innerHeight, parent.bottom, clip.bottom, intended.top + rect.height), visible = !!binding.frame.getClientRects().length;
+    if (slot.clip) {
+      left = Math.max(left, parent.left + slot.clip.x); top = Math.max(top, parent.top + slot.clip.y);
+      right = Math.min(right, parent.left + slot.clip.x + slot.clip.width); bottom = Math.min(bottom, parent.top + slot.clip.y + slot.clip.height);
+    }
     for (let element: HTMLElement | null = binding.frame; element; element = element.parentElement) {
       const style = getComputedStyle(element);
       if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') visible = false;

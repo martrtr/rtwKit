@@ -32,6 +32,8 @@
     "packages/ai-provider/**/*.ts",
     "packages/ai-provider/**/*.tsx",
     "packages/settings-ui/**/*.ts",
-    "packages/settings-ui/**/*.tsx"
+    "packages/settings-ui/**/*.tsx",
+    "packages/package-manager/**/*.ts",
+    "packages/package-manager/**/*.tsx"
   ]
 }

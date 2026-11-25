@@ -117,7 +117,8 @@ is caller-activation-owned. Released pending work retains its slot/work until te
 HTTP is async POST /chat/completions with SSE, max4*8 KiB events/op/task, wire<=256 KiB,
 answer<=16 KiB and encoded<=60 KiB. Require HTTP200, EOF/[DONE]/stop and nonempty
 text; reject tools, malformed/incomplete/oversized streams and upstream error bodies.
-Errors never commit partial assistant text. World stop retires only its resources;
+The accepted streaming amendment in companion Core `docs/specs/ai-multiple-providers-streaming.md`
+governs cumulative pending text and guarded interrupted-prefix retention. World stop retires only its resources;
 external cancellation is best effort and already sent work can still incur cost.
 
 Narrator asks Chat `begin-assistant-append` at the captured lastEntryId and user ID.
@@ -211,3 +212,46 @@ protocols are unchanged. The installed qwen3.5:4b-q4_K_M consumed 1024 tokens in
 reasoning for 96 seconds without visible text under its server default. A synthetic
 full real Chat/Narrator/Provider run with Off saved its answer in 10.8 seconds.
 These observations concern the installed local Ollama/model, not every server.
+
+
+## Explicit Chat Stop — requested 2026-11-25
+
+Chat displays Stop after Narrator admits a generation, including before the first
+character. Clicking it sends `stop {operation}` to the exact Narrator operation,
+then continues observing that operation until its real terminal result. The control
+shows Stopping while this is pending. Closing/unmounting the view still detaches
+observation/releases; it does not issue Stop or start a new retention command.
+
+Narrator checks the original caller instance/component/activation using existing
+operation ownership. Stop returns the existing terminal result if already finished;
+otherwise it freezes the last validated Narrator prefix and returns pending.
+Repeated Stop is idempotent while retained. No client-supplied text is accepted.
+An in-flight inference begin is reconciled to obtain its handle before cancellation;
+an admitted Chat append is reconciled rather than resubmitted or retracted.
+Unknown begin/write outcomes never cause automatic generation or append replay.
+
+AI Provider adds original-owner `cancel {operation}`. It closes the owned HTTP
+handle and retains terminal `{status:"failed",reason:"cancelled"}` until release.
+Cancelling terminal work returns its existing result. Provider owns no Chat write.
+Narrator does not ingest new text from cancellation/status after accepting Stop.
+It releases the provider observer and submits its frozen nonblank prefix through
+ordinary Chat assistant append, with the original future IDs and captured revisions.
+Only Chat COMMIT makes the saved message canonical. Stale context remains rejected;
+empty Stop creates no assistant and the UI shows no interruption error. Invalid
+snapshots and previously determined failures are not converted to success by Stop.
+
+The native HTTP worker may remain blocked on a silent read until data/timeout.
+The retained text can commit without waiting for that socket, and the native worker
+continues holding its global worker permit until it exits. Stop does not promise
+immediate upstream termination or cancelled billing. A stopped World/activation
+cannot initiate a retention write. Committed history survives restart with no
+replay of unfinished operations. No storage schema or Core API change is required.
+
+Ship Chat, Narrator and AI Provider artifacts together; baseline and World Provider
+must still use the same exact bytes for shared catalog admission. Existing exact
+Worlds keep their installed contract until explicitly switched.
+
+Acceptance extends `scripts/chat-streaming-smoke.mjs`: prefix retention before
+waking a silent upstream, ignored late bytes, empty Stop, foreign caller rejection,
+repeated Stop and stale Chat revision. The original stream/failure/restart checks
+remain part of that same real Chromium/WASM fixture.

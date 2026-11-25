@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { BridgeError } from '@rintawa/bridge';
-import { uploadPackage, savePackage, MAX_BLOB_BYTES } from '../src/packages.ts';
+import { uploadPackage, savePackage, MAX_BLOB_BYTES } from '../../../web/ui/src/packages.ts';
 
 test('package upload sends bounded chunks with exact offsets and never retries an unknown write', async () => {
   const calls=[];let offset=0;
