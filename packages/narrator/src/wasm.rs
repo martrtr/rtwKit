@@ -52,8 +52,38 @@ struct Work {
     stopped: bool,
     deadline: u64,
 }
+// Best-effort notification observers are independent of generation outcomes.
+struct Notification {
+    query: u64,
+    deadline: u64,
+}
+impl Drop for Notification {
+    fn drop(&mut self) {
+        let _ = transport::close_query(self.query);
+    }
+}
+impl Notification {
+    fn begin(w: &Work) -> Option<Self> {
+        let observer = w.recent.as_ref()?.conversation.character_id?;
+        let owner = selected("rintawa.memory")?;
+        let call = json!({"method":"after-response","observerId":observer,"conversationId":w.request.conversation_id,"entryId":w.request.entry_id});
+        let deadline = host::monotonic_millis().ok()?.saturating_add(5000);
+        let query = transport::begin_query_to(
+            "rintawa/memory/v1",
+            &serde_json::to_vec(&call).ok()?,
+            &owner,
+        )
+        .ok()?;
+        Some(Self { query, deadline })
+    }
+    fn finished(&mut self) -> bool {
+        host::monotonic_millis().unwrap_or(u64::MAX) >= self.deadline
+            || !matches!(transport::poll_query(self.query), Ok(None))
+    }
+}
 #[derive(Default)]
 struct State {
+    notifications: Vec<Notification>,
     task: Option<u64>,
     declaration: Option<u64>,
     operations: Operations<Work>,
@@ -196,6 +226,7 @@ impl exports::rintawa::engine::task_handler::Guest for Narrator {
             if s.task != Some(handle) {
                 return;
             }
+            s.notifications.retain_mut(|n| !n.finished());
             for id in s.operations.pending_ids() {
                 let work = s.operations.work_mut(&id).unwrap();
                 let allowed = s.source_owner.as_ref().is_none_or(|owner| *owner == id);
@@ -234,6 +265,12 @@ impl exports::rintawa::engine::task_handler::Guest for Narrator {
                             Step::AppendRelease
                         };
                     } else {
+                        if matches!(outcome, Outcome::Committed { .. })
+                            && s.notifications.len() < 16
+                            && let Some(n) = Notification::begin(work)
+                        {
+                            s.notifications.push(n);
+                        }
                         let _ = s.operations.finish(&id, outcome);
                     }
                     if s.source_owner.as_ref() == Some(&id) {

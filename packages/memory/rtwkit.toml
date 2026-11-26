@@ -1,9 +1,9 @@
 schema = 2
 [package]
 id = "rintawa.rtwkit.memory"
-name = "Memory"
+name = "Psychology"
 version = "0.1.0"
-description = "Explicit transcript observations and authored recollections"
+description = "Character recollections and fictional psychological state"
 license = "GPL-3.0-only"
 authors = ["martrtr"]
 [[package.dependencies]]

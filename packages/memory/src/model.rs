@@ -331,6 +331,25 @@ fn write_record(out: &mut Vec<Value>, g: &impl Graph, id: Uuid, r: Record) -> Re
     Ok(())
 }
 pub fn changes(g: &impl Graph, m: Mutation) -> Result<Value> {
+    if let Mutation::Process {
+        subscription_id, ..
+    } = &m
+        && crate::cycles::state(g, *subscription_id)?.is_some_and(|s| s.enabled)
+    {
+        return Err("cycle-analysis-required");
+    }
+    if let Mutation::Process {
+        subscription_id, ..
+    } = &m
+        && crate::extraction::state(g, *subscription_id)?
+            .settings
+            .enabled
+    {
+        return Err("extraction-required");
+    }
+    process_changes(g, m)
+}
+pub(crate) fn process_changes(g: &impl Graph, m: Mutation) -> Result<Value> {
     let mut tx = Vec::new();
     match m {
         Mutation::SetNarration {
@@ -508,7 +527,7 @@ pub fn record_schema() -> Value {
     };
     json!({"oneOf":[make("authored",json!({"type":"null"})),make("transcript-observation",evidence)]})
 }
-pub fn command_schema() -> Value {
+pub(crate) fn process_schema() -> Value {
     let state = obj(
         json!({"format":{"const":FORMAT},"conversationId":id_schema(),"headEntryId":optional_id()}),
     );
@@ -518,10 +537,15 @@ pub fn command_schema() -> Value {
     let window = obj(
         json!({"format":{"const":FORMAT},"conversationId":id_schema(),"headEntryId":optional_id(),"items":{"type":"array","maxItems":MAX_ROWS,"items":entry},"nextEntryId":optional_id(),"complete":{"type":"boolean"}}),
     );
+    obj(
+        json!({"method":{"const":"process"},"subscriptionId":id_schema(),"expected":subscription_schema(),"captured":state,"window":window,"recordIds":{"type":"array","maxItems":MAX_ROWS,"items":id_schema()}}),
+    )
+}
+pub fn command_schema() -> Value {
     json!({"oneOf":[
         obj(json!({"method":{"const":"create-subscription"},"subscriptionId":id_schema(),"observerId":id_schema(),"conversationId":id_schema()})),
         obj(json!({"method":{"const":"set-enabled"},"subscriptionId":id_schema(),"expectedRevision":rev_schema(),"enabled":{"type":"boolean"}})),
-        obj(json!({"method":{"const":"process"},"subscriptionId":id_schema(),"expected":subscription_schema(),"captured":state,"window":window,"recordIds":{"type":"array","maxItems":MAX_ROWS,"items":id_schema()}})),
+        process_schema(),
         obj(json!({"method":{"const":"create-authored"},"subscriptionId":id_schema(),"recordId":id_schema(),"body":body_schema()})),
         obj(json!({"method":{"const":"update-record"},"recordId":id_schema(),"expectedRevision":rev_schema(),"body":body_schema(),"status":status_schema()}))
     ]})

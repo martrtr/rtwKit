@@ -584,7 +584,9 @@ impl State {
             }
             Call::BeginGenerate { messages } => {
                 if context.world_id.is_none()
-                    || !selected("rintawa.narrator").is_some_and(|n| same(&n, p))
+                    || !["rintawa.narrator", "rintawa.memory"]
+                        .into_iter()
+                        .any(|contract| selected(contract).is_some_and(|n| same(&n, p)))
                 {
                     return Err("access-denied");
                 }

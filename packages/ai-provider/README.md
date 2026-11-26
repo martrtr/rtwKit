@@ -16,3 +16,9 @@ See [the inference contract](../../docs/specs/p10-narrator-ai.md) and the compan
 Core `docs/specs/extension-settings-and-ai-connections.md` for authority and export
 semantics. The same exact package must run in both scopes. Old exact RTWs retain
 their original contract; no implicit migration of existing Worlds.
+
+Psychology processing may use the existing text inference protocol: begin-generate
+admits the exact selected `rintawa.memory` backend as well as selected Narrator,
+within a World. Status/cancel/release remain bound to the initiating principal.
+Psychology owns disclosure consent, settings, prompt and interpretation; AI Provider
+has no psychological state or analysis-specific request fields.

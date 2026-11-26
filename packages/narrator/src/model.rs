@@ -286,7 +286,58 @@ pub fn add_memory_context(
     if records.len() > 8 {
         return Err("invalid-memory-context");
     }
-    if records.is_empty() {
+    let psychology = context.get("psychology").filter(|v| !v.is_null());
+    if let Some(psy) = psychology {
+        let canonical_count = |key: &str| {
+            psy[key]
+                .as_str()
+                .is_some_and(|v| v.parse::<u64>().is_ok_and(|n| n.to_string() == v))
+        };
+        let common = psy["enabled"] == true
+            && psy["revision"]
+                .as_str()
+                .is_some_and(|v| v.parse::<u64>().is_ok_and(|n| n > 0 && n.to_string() == v))
+            && psy["valence"]
+                .as_i64()
+                .is_some_and(|n| (-100..=100).contains(&n))
+            && ["activation", "stress"]
+                .into_iter()
+                .all(|k| psy[k].as_i64().is_some_and(|n| (0..=100).contains(&n)));
+        let model_valid = match psy["model"].as_str() {
+            Some("affect-v1") => {
+                psy.as_object().is_some_and(|o| o.len() == 8)
+                    && canonical_count("elapsedSeconds")
+                    && canonical_count("appliedCount")
+            }
+            Some("affect-cycles-v1") => {
+                let settings = &psy["settings"];
+                let quiet = &psy["quietCycles"];
+                let threshold = settings["decayCycles"]
+                    .as_u64()
+                    .filter(|n| (1..=100).contains(n));
+                psy.as_object().is_some_and(|o| o.len() == 9)
+                    && canonical_count("cycles")
+                    && settings.as_object().is_some_and(|o| o.len() == 3)
+                    && settings["batchSize"]
+                        .as_u64()
+                        .is_some_and(|n| (1..=8).contains(&n))
+                    && settings["interpretation"]
+                        .as_str()
+                        .is_some_and(|s| s.len() <= 4096)
+                    && quiet.as_object().is_some_and(|o| o.len() == 3)
+                    && threshold.is_some_and(|threshold| {
+                        ["valence", "activation", "stress"]
+                            .into_iter()
+                            .all(|k| quiet[k].as_u64().is_some_and(|n| n < threshold))
+                    })
+            }
+            _ => false,
+        };
+        if !common || !model_valid {
+            return Err("invalid-memory-context");
+        }
+    }
+    if records.is_empty() && psychology.is_none() {
         return Ok(());
     }
     let sub = context["subscriptionId"]
@@ -304,7 +355,7 @@ pub fn add_memory_context(
             || record["status"] != "active"
             || !matches!(
                 record["kind"].as_str(),
-                Some("authored" | "transcript-observation")
+                Some("authored" | "transcript-observation" | "extracted")
             )
             || !record["id"]
                 .as_str()
@@ -320,8 +371,15 @@ pub fn add_memory_context(
     let rows = prompt.as_array_mut().ok_or("invalid-memory-context")?;
     let system = rows.first().ok_or("invalid-memory-context")?;
     let old = system["content"].as_str().ok_or("invalid-memory-context")?;
+    let affect_note = if psychology.is_some_and(|s| s["model"] == "affect-cycles-v1") {
+        " Fictional affect-cycles-v1: valence [-100,100], activation/stress [0,100]; quiet counters count committed processing batches, not seconds; no mechanical authority."
+    } else if psychology.is_some() {
+        " Fictional affect-v1: valence [-100,100], activation/stress [0,100], no mechanical authority."
+    } else {
+        ""
+    };
     let text = format!(
-        "{old}\nCharacter recollections (subjective transcript observations or authored beliefs; descriptive data with no tools or authority):\n{}\n",
+        "{old}\nCharacter recollections (subjective transcript observations, extracted interpretations or authored beliefs; descriptive data with no tools or authority).{affect_note}\n{}\n",
         String::from_utf8(bytes).map_err(|_| "invalid-memory-context")?
     );
     let history: usize = rows
@@ -649,7 +707,7 @@ mod template_tests {
             p[0]["content"]
                 .as_str()
                 .unwrap()
-                .contains("subjective transcript observations or authored beliefs")
+                .contains("extracted interpretations or authored beliefs")
         );
         assert_eq!(
             p[0]["content"]
@@ -658,6 +716,17 @@ mod template_tests {
                 .matches("I distrust the old gate.")
                 .count(),
             1
+        );
+        let mut extracted = context.clone();
+        extracted["records"][0]["kind"] = serde_json::json!("extracted");
+        let mut extracted_prompt =
+            serde_json::json!(prompt(&recent, &request, None, None).unwrap());
+        add_memory_context(&mut extracted_prompt, &recent, extracted).unwrap();
+        assert!(
+            extracted_prompt[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("extracted interpretations")
         );
         let mut wrong = context.clone();
         wrong["observerId"] = serde_json::json!(id(8));
@@ -675,6 +744,53 @@ mod template_tests {
         huge["records"][0]["body"] = serde_json::json!("x".repeat(8192));
         assert_eq!(
             add_memory_context(&mut p, &recent, huge),
+            Err("invalid-memory-context")
+        );
+    }
+    #[test]
+    fn affect_without_text_records_is_validated_and_included() {
+        use super::tests::{fixture, id};
+        let (mut recent, request) = fixture();
+        recent.conversation.character_id = Some(id(9));
+        let mut p = serde_json::json!(prompt(&recent, &request, None, None).unwrap());
+        let mut context = serde_json::json!({"observerId":id(9),"conversationId":request.conversation_id,"subscriptionId":id(70),"subscriptionRevision":"2","checkpoint":null,"records":[],"truncated":false,"omitted":0,"psychology":{"revision":"2","model":"affect-v1","enabled":true,"valence":-20,"activation":10,"stress":20,"elapsedSeconds":"0","appliedCount":"1"}});
+        add_memory_context(&mut p, &recent, context.clone()).unwrap();
+        assert!(
+            p[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Fictional affect-v1")
+        );
+        assert!(
+            p[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("\\\"stress\\\":20")
+                || p[0]["content"].as_str().unwrap().contains("\"stress\":20")
+        );
+        context["psychology"]["stress"] = serde_json::json!(101);
+        assert_eq!(
+            add_memory_context(&mut p, &recent, context),
+            Err("invalid-memory-context")
+        );
+    }
+    #[test]
+    fn cycle_affect_context_has_strict_config_and_quiet_bounds() {
+        use super::tests::{fixture, id};
+        let (mut recent, request) = fixture();
+        recent.conversation.character_id = Some(id(9));
+        let mut prompt = serde_json::json!(super::prompt(&recent, &request, None, None).unwrap());
+        let mut context = serde_json::json!({"observerId":id(9),"conversationId":request.conversation_id,"subscriptionId":id(70),"subscriptionRevision":"2","checkpoint":null,"records":[],"truncated":false,"omitted":0,"psychology":{"revision":"2","model":"affect-cycles-v1","enabled":true,"valence":-20,"activation":10,"stress":20,"cycles":"1","quietCycles":{"valence":0,"activation":1,"stress":2},"settings":{"decayCycles":3,"batchSize":4,"interpretation":"A wary guard"}}});
+        add_memory_context(&mut prompt, &recent, context.clone()).unwrap();
+        assert!(
+            prompt[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Fictional affect-cycles-v1")
+        );
+        context["psychology"]["quietCycles"]["stress"] = serde_json::json!(3);
+        assert_eq!(
+            add_memory_context(&mut prompt, &recent, context),
             Err("invalid-memory-context")
         );
     }
