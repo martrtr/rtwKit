@@ -562,6 +562,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rintawa-memory"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "rintawa-domain-operations",
+ "serde",
+ "serde_json",
+ "uuid",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "rintawa-narrator"
 version = "0.1.0"
 dependencies = [
@@ -604,6 +616,18 @@ dependencies = [
  "serde_json",
  "sha1",
  "toml",
+ "uuid",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "rintawa-world-atlas"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "rintawa-domain-operations",
+ "serde",
+ "serde_json",
  "uuid",
  "wit-bindgen",
 ]
