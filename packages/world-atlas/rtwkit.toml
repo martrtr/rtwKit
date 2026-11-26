@@ -3,7 +3,7 @@ schema = 2
 id = "rintawa.rtwkit.world-atlas"
 name = "World Atlas"
 version = "0.1.0"
-description = "World locations and scenes"
+description = "World places, scenes and authored lorebook"
 license = "GPL-3.0-only"
 authors = ["martrtr"]
 [[package.dependencies]]

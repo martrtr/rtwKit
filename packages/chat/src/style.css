@@ -62,3 +62,10 @@
 .persona-selector,.greeting-navigation{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;padding:.5rem 1rem;font-size:.85rem;color:var(--text-muted,#a8a3b0)}
 .persona-selector select,.greeting-navigation select{min-width:9rem;max-width:16rem;background:var(--surface,#18151e);color:inherit;border:1px solid var(--border,#45404d);border-radius:.4rem;padding:.35rem}
 .greeting-navigation{justify-content:center}
+.participants-list{list-style:none;margin:1rem 0;padding:0;max-height:40vh;overflow:auto}
+.participants-list li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.5rem 0;border-bottom:1px solid var(--rtw-border)}
+.participants-list li span{overflow-wrap:anywhere;min-width:0}
+.participants-list li label{min-width:0;flex:1;color:var(--rtw-muted);font-size:.85rem}
+.participants-list input{width:100%;margin-top:.3rem;box-sizing:border-box}
+.participants-add{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.participants-add select{min-width:0;max-width:100%;flex:1;background:var(--rtw-surface);color:var(--rtw-text);border:1px solid var(--rtw-border);padding:.5rem;border-radius:.4rem}

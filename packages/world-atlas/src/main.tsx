@@ -5,6 +5,7 @@ import { DomainClient, DomainError, type Operation } from '@rintawa/domain';
 import { Button, Status } from '@rintawa/ui';
 import '@rintawa/ui/style.css';
 import './style.css';
+import { LoreWorkspace } from './LoreWorkspace';
 
 type Kind = 'location' | 'scene';
 type RecordData = { revision: string; name: string; description: string; archived: boolean };
@@ -22,6 +23,9 @@ function App() {
   const domain = useRef<DomainClient | null>(null);
   const alive = useRef(true); const active = useRef<Operation | null>(null);
   const controller = useRef<AbortController | null>(null);
+  const lorePending=useRef<Promise<void>|null>(null);
+  const [view,setView]=useState<'places'|'lore'>('places');
+  const [loreBusy,setLoreBusy]=useState(false);
   const [ready, setReady] = useState(false), [busy, setBusy] = useState(false);
   const [locations, setLocations] = useState<Summary[]>([]), [scenes, setScenes] = useState<Summary[]>([]);
   const [more, setMore] = useState<Record<Kind, string | null>>({location:null,scene:null});
@@ -62,7 +66,10 @@ function App() {
       // A pending begin owns its eventual operation cleanup; do not dispose its
       // transport before the reply can be released.
       if (op) void d?.release(op).catch(()=>{}).finally(()=>c?.dispose());
-      else if (!controller.current) c?.dispose();
+      else if (!controller.current) {
+        if(lorePending.current)void lorePending.current.finally(()=>c?.dispose());
+        else c?.dispose();
+      }
     };
   },[]);
   async function read(action:()=>Promise<void>) {
@@ -124,6 +131,9 @@ function App() {
   const visible=(items:Summary[])=>items.filter(i=>archived||!i.archived);
   const locationName=(id?:string)=>locations.find(l=>l.id===id)?.name ?? id ?? '';
   return <main className="world-atlas">
+    <div className="actions" role="group" aria-label="Atlas section"><Button aria-pressed={view==='places'} disabled={busy||loreBusy} onClick={()=>setView('places')}>Places and scenes</Button><Button aria-pressed={view==='lore'} disabled={busy||loreBusy||!ready} onClick={()=>setView('lore')}>Lorebook</Button></div>
+    {ready&&client.current&&<div hidden={view!=='lore'}><h1>World Atlas · Lorebook</h1><LoreWorkspace client={client.current} pending={lorePending} onBusy={setLoreBusy}/></div>}
+    <div hidden={view!=='places'}>
     <header><h1>World Atlas</h1><label><input type="checkbox" checked={archived} onChange={e=>setArchived(e.target.checked)}/> Show archived</label><Button disabled={busy||!domain.current} onClick={()=>void read(async()=>{await refresh();if(alive.current)setReady(true);})}>Refresh</Button></header>
     {!ready&&!error&&<Status>Connecting…</Status>}{busy&&<Status>Working…</Status>}{error&&<Status error>{error}</Status>}{notice&&<Status>{notice}</Status>}
     {unknown&&<section aria-label="Unknown outcome"><p>Known item: {unknown.id}{unknown.relationId&&<> · relation: {unknown.relationId}</>}</p><Button disabled={busy} onClick={()=>void read(async()=>{
@@ -151,6 +161,7 @@ function App() {
           {editor.kind==='scene'&&editor.item&&<Button disabled={blocked||editor.item.archived||!editor.locationId||editor.locationId===editor.item.locationId} onClick={()=>void submit(true)}>Move scene</Button>}<Button disabled={blocked} onClick={()=>setEditor(null)}>Close</Button></div>
         </>:<p>Select an item or create a location or scene.</p>}
       </section>
+    </div>
     </div>
   </main>;
 }

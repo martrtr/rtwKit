@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::model::{self, Append, AssistantAppend, Conversation, Create, Message};
-use crate::{history, source};
+use crate::{history, participants, source};
 wit_bindgen::generate!({ path: "../../wit", world: "domain-plugin" });
 use rintawa::engine::{
     host, registration, runtime_context, runtime_tasks, transport, world_data, world_registration,
@@ -55,6 +55,23 @@ struct Chat;
     deny_unknown_fields
 )]
 enum Call {
+    BeginSetParticipants {
+        conversation_id: Uuid,
+        #[serde(deserialize_with = "model::deserialize_revision")]
+        expected_conversation_revision: String,
+        expected_last_entry_id: Option<Uuid>,
+        items: Vec<participants::Participant>,
+    },
+    BeginAttributedAppend {
+        conversation_id: Uuid,
+        message_id: Uuid,
+        entry_id: Uuid,
+        #[serde(deserialize_with = "model::deserialize_revision")]
+        expected_conversation_revision: String,
+        expected_last_entry_id: Option<Uuid>,
+        text: String,
+        attribution: participants::Attribution,
+    },
     Describe,
     Allocate {
         count: u32,
@@ -509,7 +526,10 @@ impl exports::rintawa::engine::guest::Guest for Chat {
         registration::define_contract(CONTRACT, 1, registration::ResolutionPolicy::Single)
             .expect("Chat contract");
         registration::provide_contract(CONTRACT, 1, &[]).expect("Chat provider");
-        for (name, schema) in model::property_schemas() {
+        for (name, schema) in model::property_schemas()
+            .into_iter()
+            .chain(participants::property_schemas())
+        {
             world_registration::register_world_schema(
                 name,
                 1,
@@ -521,6 +541,7 @@ impl exports::rintawa::engine::guest::Guest for Chat {
         for (name, schema) in model::command_schemas()
             .into_iter()
             .chain(history::command_schemas())
+            .chain(participants::command_schemas())
         {
             world_registration::register_world_schema(
                 name,
@@ -754,6 +775,21 @@ impl State {
         }
         let value: Value = serde_json::from_slice(bytes).map_err(|_| "invalid-request")?;
         // Typed UUID parsing also accepts URN/braced/simple aliases; the wire does not.
+        let mut actor_ids = Vec::new();
+        if let Some(items) = value["items"].as_array() {
+            for item in items {
+                actor_ids.push(&item["actorId"]);
+            }
+        }
+        if !value["attribution"]["actorId"].is_null() {
+            actor_ids.push(&value["attribution"]["actorId"]);
+        }
+        for id in actor_ids {
+            let id = id.as_str().ok_or("invalid-request")?;
+            if !Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == id) {
+                return Err("invalid-request");
+            }
+        }
         for key in [
             "sourceConversationId",
             "targetEntryId",
@@ -788,6 +824,11 @@ impl State {
             }
         }
         match value["method"].as_str() {
+            Some("begin-set-participants" | "begin-attributed-append")
+                if value.get("expectedLastEntryId").is_none() =>
+            {
+                return Err("invalid-request");
+            }
             Some("source-window")
                 if value.get("headEntryId").is_none() || value.get("afterEntryId").is_none() =>
             {
@@ -815,6 +856,65 @@ impl State {
         let own_ui = principal.instance_id == context.principal.instance_id
             && principal.component_id == "ui";
         match call {
+            Call::BeginSetParticipants {
+                conversation_id,
+                expected_conversation_revision,
+                expected_last_entry_id,
+                items,
+            } => {
+                if !own_ui {
+                    return Err("access-denied");
+                }
+                let input = participants::SetParticipants {
+                    conversation_id,
+                    expected_conversation_revision,
+                    expected_last_entry_id,
+                    items,
+                };
+                participants::Participants {
+                    items: input.items.clone(),
+                }
+                .validate()?;
+                self.begin(
+                    who,
+                    conversation_id,
+                    "rintawa.chat.set-participants@1",
+                    json!(input),
+                    vec![conversation_id.to_string()],
+                )
+            }
+            Call::BeginAttributedAppend {
+                conversation_id,
+                message_id,
+                entry_id,
+                expected_conversation_revision,
+                expected_last_entry_id,
+                text,
+                attribution,
+            } => {
+                if !own_ui
+                    && (!narrator(principal) || attribution.kind == participants::Kind::Player)
+                {
+                    return Err("access-denied");
+                }
+                attribution.validate()?;
+                let input = participants::AttributedAppend {
+                    conversation_id,
+                    message_id,
+                    entry_id,
+                    expected_conversation_revision,
+                    expected_last_entry_id,
+                    text,
+                    attribution,
+                };
+                self.begin(
+                    who,
+                    conversation_id,
+                    "rintawa.chat.attributed-append@1",
+                    json!(input),
+                    vec![message_id.to_string(), entry_id.to_string()],
+                )
+            }
             Call::Describe => {
                 Ok(json!({"instanceId":context.principal.instance_id,"componentId":"ui"}))
             }
@@ -1023,6 +1123,9 @@ impl State {
                 if !own_ui {
                     return Err("access-denied");
                 }
+                if read_participants(source_conversation_id)?.is_some() {
+                    return Err("group-greeting-required");
+                }
                 let (conversation, context) = read_chat(source_conversation_id)?;
                 if conversation.revision != expected_conversation_revision
                     || conversation.last_entry_id != expected_last_entry_id
@@ -1111,6 +1214,9 @@ impl State {
             } => {
                 if !narrator(principal) {
                     return Err("access-denied");
+                }
+                if read_participants(conversation_id)?.is_some() {
+                    return Err("group-narration-required");
                 }
                 let input = AssistantAppend {
                     conversation_id,
@@ -1270,7 +1376,8 @@ fn list_conversations(after: Option<Uuid>) -> Result<Value, &'static str> {
 fn page(conversation: Uuid, cursor: Option<Uuid>, recent: bool) -> Result<Value, &'static str> {
     let id = conversation.to_string();
     let (metadata, context) = read_chat(conversation)?;
-    let metadata = json!(metadata);
+    let mut metadata = json!(metadata);
+    metadata["participants"] = json!(read_participants(conversation)?);
     let greeting_available = match context.as_ref().and_then(|c| c.greeting.as_ref()) {
         Some(g) => first_is_greeting(conversation, g, false)?,
         None => false,
@@ -1299,7 +1406,7 @@ fn page(conversation: Uuid, cursor: Option<Uuid>, recent: bool) -> Result<Value,
             .ok_or("invalid-stored-data")?;
         let message: Message =
             serde_json::from_value(property_data(message)?).map_err(|_| "invalid-stored-data")?;
-        let entry = json!({"entryId":relation["id"],"messageId":message_id,"message":message});
+        let entry = json!({"entryId":relation["id"],"messageId":message_id,"message":message,"attribution":read_attribution(Uuid::parse_str(message_id).map_err(|_| "invalid-stored-data")?)?});
         items.push(entry);
         // Reserve the full continuation cursor even if this is the last row.
         let candidate = page_value(
@@ -1338,6 +1445,9 @@ fn page(conversation: Uuid, cursor: Option<Uuid>, recent: bool) -> Result<Value,
 // Source reads intentionally ignore persona/greeting context; these values are
 // not history epochs and changing them doesn't invalidate message evidence.
 fn source_conversation(id: Uuid) -> Result<Conversation, &'static str> {
+    if read_participants(id)?.is_some() {
+        return Err("group-source-required");
+    }
     let raw = world_data::load_property(&id.to_string(), CONVERSATION)
         .map_err(world_error)?
         .ok_or("not-found")?;
@@ -1474,14 +1584,51 @@ fn get_message(
         serde_json::from_value(property_data(conversation)?).map_err(|_| "invalid-stored-data")?;
     let message: Message =
         serde_json::from_value(property_data(message)?).map_err(|_| "invalid-stored-data")?;
-    model::message_context(
+    let mut result = model::message_context(
         conversation_id,
         message_id,
         expected_revision,
         &conversation,
         &message,
         membership,
-    )
+    )?;
+    result["attribution"] = json!(read_attribution(message_id)?);
+    Ok(result)
+}
+
+fn read_participants(id: Uuid) -> Result<Option<participants::Participants>, &'static str> {
+    world_data::load_property(&id.to_string(), participants::PARTICIPANTS)
+        .map_err(world_error)?
+        .map(|raw| {
+            let data: participants::Participants =
+                serde_json::from_value(property_data(raw)?).map_err(|_| "invalid-stored-data")?;
+            data.validate().map_err(|_| "invalid-stored-data")?;
+            Ok(data)
+        })
+        .transpose()
+}
+fn read_attribution(id: Uuid) -> Result<Option<participants::Attribution>, &'static str> {
+    world_data::load_property(&id.to_string(), participants::ATTRIBUTION)
+        .map_err(world_error)?
+        .map(|raw| {
+            let data: participants::Attribution =
+                serde_json::from_value(property_data(raw)?).map_err(|_| "invalid-stored-data")?;
+            data.validate().map_err(|_| "invalid-stored-data")?;
+            Ok(data)
+        })
+        .transpose()
+}
+fn snapshot_participants(id: Uuid) -> Result<Option<participants::Participants>, String> {
+    world_system_snapshot::load_property(&id.to_string(), participants::PARTICIPANTS)
+        .map_err(|_| "snapshot-unavailable")?
+        .map(|raw| {
+            let data: participants::Participants =
+                serde_json::from_value(property_data(raw).map_err(str::to_owned)?)
+                    .map_err(|_| "invalid-stored-data")?;
+            data.validate()?;
+            Ok(data)
+        })
+        .transpose()
 }
 
 fn page_value(
@@ -1610,6 +1757,34 @@ fn evaluate_fork(payload: &Value) -> Result<Value, String> {
         }
     }
     let mut tx = history::changes(&command, &source, &target, &entries, false)?;
+    if let Some(roster) = snapshot_participants(input.source_conversation_id)? {
+        tx["changes"]
+            .as_array_mut()
+            .unwrap()
+            .push(participants::participants_change(
+                input.conversation_id,
+                &roster,
+            ));
+    }
+    if let Some(replacement) = &input.replacement
+        && let Some(raw) = world_system_snapshot::load_property(
+            &input.target_message_id.to_string(),
+            participants::ATTRIBUTION,
+        )
+        .map_err(|_| "snapshot-unavailable")?
+    {
+        let attribution: participants::Attribution =
+            serde_json::from_value(property_data(raw).map_err(str::to_owned)?)
+                .map_err(|_| "invalid-stored-data")?;
+        attribution.validate()?;
+        tx["changes"]
+            .as_array_mut()
+            .unwrap()
+            .push(participants::attribution_change(
+                replacement.message_id,
+                &attribution,
+            ));
+    }
     if let Some(context) = snapshot_context(input.source_conversation_id)? {
         tx["changes"]
             .as_array_mut()
@@ -1618,6 +1793,9 @@ fn evaluate_fork(payload: &Value) -> Result<Value, String> {
         if tx.to_string().len() > history::MAX_TRANSACTION_BYTES {
             return Err("history-too-large".into());
         }
+    }
+    if tx.to_string().len() > history::MAX_TRANSACTION_BYTES {
+        return Err("history-too-large".into());
     }
     Ok(tx)
 }
@@ -1628,6 +1806,43 @@ impl exports::rintawa::engine::world_system::Guest for Chat {
         let result = (|| -> Result<Value, String> {
             let envelope: Value = serde_json::from_str(&command).map_err(|_| "invalid-command")?;
             match envelope["schema"].as_str() {
+                Some("rintawa.chat.set-participants@1") => {
+                    let input: participants::SetParticipants =
+                        serde_json::from_value(envelope["payload"].clone())
+                            .map_err(|_| "invalid-command")?;
+                    let conversation = snapshot_conversation(input.conversation_id)?;
+                    participants::Participants {
+                        items: input.items.clone(),
+                    }
+                    .validate()?;
+                    for p in &input.items {
+                        if !system_item(p.actor_id)?.is_some_and(|item| item["kind"] == "object") {
+                            return Err("invalid-participant".into());
+                        }
+                    }
+                    participants::set_changes(&input, &conversation).map_err(str::to_owned)
+                }
+                Some("rintawa.chat.attributed-append@1") => {
+                    let input: participants::AttributedAppend =
+                        serde_json::from_value(envelope["payload"].clone())
+                            .map_err(|_| "invalid-command")?;
+                    let conversation = snapshot_conversation(input.conversation_id)?;
+                    let roster = snapshot_participants(input.conversation_id)?
+                        .ok_or("participants-required")?;
+                    if let Some(id) = input.attribution.actor_id
+                        && !system_item(id)?.is_some_and(|item| item["kind"] == "object")
+                    {
+                        return Err("invalid-participant".into());
+                    }
+                    participants::append_changes(
+                        &input,
+                        &conversation,
+                        &roster,
+                        system_item(input.message_id)?.is_some(),
+                        system_item(input.entry_id)?.is_some(),
+                    )
+                    .map_err(str::to_owned)
+                }
                 Some("rintawa.chat.fork@1") => evaluate_fork(&envelope["payload"]),
                 Some("rintawa.chat.select-persona@1") => {
                     let input: Select = serde_json::from_value(envelope["payload"].clone())
@@ -1644,6 +1859,9 @@ impl exports::rintawa::engine::world_system::Guest for Chat {
                     let input: ContextCreate = serde_json::from_value(envelope["payload"].clone())
                         .map_err(|_| "invalid-command")?;
                     if let Some(source) = &input.source {
+                        if snapshot_participants(source.conversation_id)?.is_some() {
+                            return Err("group-greeting-required".into());
+                        }
                         let conversation = snapshot_conversation(source.conversation_id)?;
                         if conversation.revision != source.expected_conversation_revision
                             || conversation.last_entry_id != source.expected_last_entry_id
@@ -1721,6 +1939,9 @@ impl exports::rintawa::engine::world_system::Guest for Chat {
                     let input: AssistantAppend =
                         serde_json::from_value(envelope["payload"].clone())
                             .map_err(|_| "invalid-command")?;
+                    if snapshot_participants(input.conversation_id)?.is_some() {
+                        return Err("group-narration-required".into());
+                    }
                     if !system_item(input.conversation_id)?.is_some_and(|v| v["kind"] == "object")
                         || !system_item(input.user_message_id)?
                             .is_some_and(|v| v["kind"] == "object")
@@ -1793,13 +2014,26 @@ impl exports::rintawa::engine::world_system::Guest for Chat {
                     let conversation: Conversation =
                         serde_json::from_value(property_data(value).map_err(str::to_owned)?)
                             .map_err(|_| "invalid-stored-data")?;
-                    model::append_changes(
+                    let mut tx = model::append_changes(
                         &input,
                         &conversation,
                         system_item(input.message_id)?.is_some(),
                         system_item(input.entry_id)?.is_some(),
                     )
-                    .map_err(str::to_owned)
+                    .map_err(str::to_owned)?;
+                    if snapshot_participants(input.conversation_id)?.is_some() {
+                        tx["changes"].as_array_mut().unwrap().push(
+                            participants::attribution_change(
+                                input.message_id,
+                                &participants::Attribution {
+                                    kind: participants::Kind::Player,
+                                    actor_id: None,
+                                    name: "You".into(),
+                                },
+                            ),
+                        );
+                    }
+                    Ok(tx)
                 }
                 _ => Err("invalid-command".into()),
             }

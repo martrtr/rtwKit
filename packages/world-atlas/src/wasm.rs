@@ -1,3 +1,4 @@
+use crate::lore;
 use crate::model::{self, AT, AUTHOR, Graph, LOCATION, Mutation, Result, SCENE};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rintawa_domain_operations::{Caller, Operations, Outcome};
@@ -51,6 +52,17 @@ enum Read {
     },
     GetScene {
         item_id: Uuid,
+    },
+    ListLore {
+        #[serde(default)]
+        after: Option<Uuid>,
+    },
+    GetLore {
+        item_id: Uuid,
+    },
+    SelectLore {
+        conversation_id: Uuid,
+        text: String,
     },
     Status {
         operation: String,
@@ -135,6 +147,57 @@ impl Graph for Live {
         .collect()
     }
 }
+fn lore_ids(mut read: impl FnMut(Option<String>) -> Result<Vec<String>>) -> Result<Vec<Uuid>> {
+    let mut ids = Vec::new();
+    let mut after = None;
+    loop {
+        let rows = read(after.map(|id: Uuid| id.to_string()))?;
+        let end = rows.len() < PAGE as usize;
+        for row in rows {
+            let row = parse(row)?;
+            let id: Uuid =
+                serde_json::from_value(row["item"].clone()).map_err(|_| "invalid-stored-data")?;
+            if after.is_some_and(|old| old >= id) {
+                return Err("invalid-stored-data");
+            }
+            ids.push(id);
+            after = Some(id);
+            if ids.len() > lore::MAX_ENTRIES {
+                return Ok(ids);
+            }
+        }
+        if end {
+            return Ok(ids);
+        }
+    }
+}
+impl lore::Graph for Live {
+    fn item(&self, id: Uuid) -> Result<Option<Value>> {
+        Graph::item(self, id)
+    }
+    fn property(&self, id: Uuid) -> Result<Option<Value>> {
+        Graph::property(self, id, lore::KEY)
+    }
+    fn ids(&self) -> Result<Vec<Uuid>> {
+        lore_ids(|after| {
+            world_data::find_properties(lore::KEY, after.as_deref(), PAGE).map_err(err)
+        })
+    }
+}
+impl lore::Graph for Snapshot {
+    fn item(&self, id: Uuid) -> Result<Option<Value>> {
+        Graph::item(self, id)
+    }
+    fn property(&self, id: Uuid) -> Result<Option<Value>> {
+        Graph::property(self, id, lore::KEY)
+    }
+    fn ids(&self) -> Result<Vec<Uuid>> {
+        lore_ids(|after| {
+            world_system_snapshot::find_properties(lore::KEY, after.as_deref(), PAGE)
+                .map_err(|_| "snapshot-unavailable")
+        })
+    }
+}
 fn list(key: &str, after: Option<Uuid>) -> Result<Value> {
     let rows = world_data::find_properties(key, after.map(|id| id.to_string()).as_deref(), PAGE)
         .map_err(err)?;
@@ -143,7 +206,11 @@ fn list(key: &str, after: Option<Uuid>) -> Result<Value> {
     for row in rows {
         let row = parse(row)?;
         let id = serde_json::from_value(row["item"].clone()).map_err(|_| "invalid-stored-data")?;
-        items.push(model::dto(&Live, id, key, true)?);
+        items.push(if key == lore::KEY {
+            lore::dto(&Live, id, true)?
+        } else {
+            model::dto(&Live, id, key, true)?
+        });
         next = json!(id);
     }
     if items.len() < PAGE as usize {
@@ -167,6 +234,16 @@ impl exports::rintawa::engine::guest::Guest for WorldAtlas {
             .expect("World Atlas contract");
         registration::provide_contract(CONTRACT, 1, &[]).expect("World Atlas provider");
         for (key, kind, schema) in [
+            (
+                lore::KEY,
+                world_registration::SchemaKind::Property,
+                lore::schema(),
+            ),
+            (
+                lore::AUTHOR,
+                world_registration::SchemaKind::Command,
+                lore::author_schema(),
+            ),
             (
                 LOCATION,
                 world_registration::SchemaKind::Property,
@@ -217,6 +294,11 @@ impl exports::rintawa::engine::world_system::Guest for WorldAtlas {
         use exports::rintawa::engine::world_system::Error;
         let result = (|| -> Result<Value> {
             let envelope = parse(command)?;
+            if envelope["schema"] == lore::AUTHOR {
+                let m = serde_json::from_value(envelope["payload"].clone())
+                    .map_err(|_| "invalid-command")?;
+                return lore::changes(&Snapshot, m);
+            }
             if envelope["schema"] != AUTHOR {
                 return Err("invalid-command");
             }
@@ -305,7 +387,13 @@ impl State {
             return Err("message-too-large");
         }
         let v: Value = serde_json::from_slice(bytes).map_err(|_| "invalid-request")?;
-        for key in ["itemId", "relationId", "locationId", "after"] {
+        for key in [
+            "itemId",
+            "relationId",
+            "locationId",
+            "after",
+            "conversationId",
+        ] {
             if let Some(Value::String(s)) = v.get(key)
                 && !Uuid::parse_str(s).is_ok_and(|id| id.to_string() == *s)
             {
@@ -326,13 +414,30 @@ impl State {
             if !own {
                 return Err("access-denied");
             }
-            let mutation: Mutation =
-                serde_json::from_slice(bytes).map_err(|_| "invalid-request")?;
-            let ids: Vec<_> = mutation
-                .item_ids()
-                .into_iter()
-                .map(|id| id.to_string())
-                .collect();
+            let (schema, payload, ids) = if matches!(
+                v["method"].as_str(),
+                Some("begin-create-lore" | "begin-update-lore")
+            ) {
+                let mutation: lore::Mutation =
+                    serde_json::from_slice(bytes).map_err(|_| "invalid-request")?;
+                (
+                    lore::AUTHOR,
+                    serde_json::to_string(&mutation).map_err(|_| "invalid-request")?,
+                    vec![mutation.id().to_string()],
+                )
+            } else {
+                let mutation: Mutation =
+                    serde_json::from_slice(bytes).map_err(|_| "invalid-request")?;
+                (
+                    AUTHOR,
+                    serde_json::to_string(&mutation).map_err(|_| "invalid-request")?,
+                    mutation
+                        .item_ids()
+                        .into_iter()
+                        .map(|id| id.to_string())
+                        .collect(),
+                )
+            };
             let token = URL_SAFE_NO_PAD.encode(host::random_bytes(32).map_err(|_| "unavailable")?);
             // Reserve quota before submission; a rejected submit never leaves a work slot.
             self.operations
@@ -345,10 +450,7 @@ impl State {
                     },
                 )
                 .map_err(|_| "limit-exceeded")?;
-            match world_data::submit(
-                AUTHOR,
-                &serde_json::to_string(&mutation).map_err(|_| "invalid-request")?,
-            ) {
+            match world_data::submit(schema, &payload) {
                 Ok(ticket) => self.operations.work_mut(&token).unwrap().ticket = ticket,
                 Err(e) => {
                     let _ = self.operations.release(&token, &who);
@@ -377,6 +479,34 @@ impl State {
                 Ok(json!(world_data::new_item_ids(count).map_err(err)?))
             }
             Read::ListLocations { after } => list(LOCATION, after),
+            Read::ListLore { after } => {
+                if !own {
+                    return Err("access-denied");
+                }
+                list(lore::KEY, after)
+            }
+            Read::GetLore { item_id } => {
+                if !own {
+                    return Err("access-denied");
+                }
+                lore::dto(&Live, item_id, false)
+            }
+            Read::SelectLore {
+                conversation_id,
+                text,
+            } => {
+                let narrator = runtime_context::selected_providers("rintawa.narrator", 1)
+                    .is_ok_and(|ps| {
+                        ps.len() == 1
+                            && ps[0].instance_id == principal.instance_id
+                            && ps[0].component_id == principal.component_id
+                            && ps[0].activation == principal.activation
+                    });
+                if !own && !narrator {
+                    return Err("access-denied");
+                }
+                lore::select(&Live, conversation_id, &text)
+            }
             Read::ListScenes { after } => list(SCENE, after),
             Read::GetLocation { item_id } => model::dto(&Live, item_id, LOCATION, false),
             Read::GetScene { item_id } => model::dto(&Live, item_id, SCENE, false),

@@ -14,3 +14,7 @@
 .world-atlas input,.world-atlas textarea,.world-atlas select{max-width:100%;font:inherit;color:inherit;background:transparent;border:1px solid currentColor;border-radius:4px;padding:6px}
 .world-atlas textarea{min-height:120px;resize:vertical}
 @media(max-width:550px){.world-atlas-body{grid-template-columns:1fr}}
+.atlas-lore{display:grid;gap:16px;padding-top:16px;align-content:start;min-width:0}
+.atlas-lore p{margin:0;line-height:1.6}.atlas-lore h2{margin-top:0}.atlas-lore .row{border-color:var(--rtw-border);background:var(--rtw-surface)}.atlas-lore .row.selected{outline-color:var(--rtw-accent)}
+.atlas-lore input,.atlas-lore textarea,.atlas-lore select{background:var(--rtw-background);border-color:var(--rtw-border);width:100%;min-width:0}.atlas-lore input[type=checkbox]{width:auto;accent-color:var(--rtw-accent)}
+.atlas-lore .editor{padding:16px;border:1px solid var(--rtw-border);border-radius:8px;background:var(--rtw-surface)}.lore-preview{border-top:1px solid var(--rtw-border);padding-top:12px}.lore-preview summary{cursor:pointer;margin-bottom:12px}.lore-body{white-space:pre-wrap;overflow-wrap:anywhere}

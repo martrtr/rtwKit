@@ -27,6 +27,8 @@ SOURCES = (
 DOMAIN = ("chat", "character", "narrator", "ai-provider")
 CONTRACTS = {"chat":"rintawa.chat", "character":"rintawa.character", "narrator":"rintawa.narrator", "ai-provider":"rintawa.inference.text"}
 POINTS = {"chat":"rintawa/chat/v1", "character":"rintawa/character/v1", "narrator":"rintawa/narrator/v1", "ai-provider":"rintawa/inference/v1"}
+CONTRACTS["world-atlas"] = "rintawa.world-atlas"
+POINTS["world-atlas"] = "rintawa/world-atlas/v1"
 
 
 def archive_entry(name: str, data: bytes) -> tuple[zipfile.ZipInfo, bytes]:
@@ -61,9 +63,11 @@ def component(manifest: dict, component_id: str) -> dict:
     return matches[0]
 
 
-def descriptor(artifacts: Path) -> tuple[dict, dict[str, bytes]]:
+def descriptor(artifacts: Path, world_atlas: bool = False) -> tuple[dict, dict[str, bytes]]:
     packages = {}
-    for slug, expected_id in SOURCES:
+    sources = SOURCES + ((("world-atlas", "rintawa.rtwkit.world-atlas"),) if world_atlas else ())
+    domains = DOMAIN + (("world-atlas",) if world_atlas else ())
+    for slug, expected_id in sources:
         packages[slug] = source(artifacts, slug, expected_id)
     web_runtime, web_manifest = packages["web-runtime"]
     runtime = component(web_manifest, "runtime")
@@ -74,11 +78,11 @@ def descriptor(artifacts: Path) -> tuple[dict, dict[str, bytes]]:
     grants = []
     embedded = []
     files = {}
-    for slug in (*DOMAIN, "settings-ui"):
+    for slug in (*domains, "settings-ui"):
         data, manifest = packages[slug]
         digest = "sha256:" + hashlib.sha256(data).hexdigest()
         parts = [("settings", "rintawa.runtime.web-bundle@2"), ("appearance", "rintawa.runtime.web-bundle@2")] if slug == "settings-ui" else [("backend", "rintawa.runtime.wasm-component@1")]
-        if slug in ("chat", "character"):
+        if slug in ("chat", "character", "world-atlas"):
             parts.append(("ui", "rintawa.runtime.web-bundle@2"))
         if slug == "ai-provider":
             parts.append(("settings", "rintawa.runtime.web-bundle@2"))
@@ -107,7 +111,7 @@ def descriptor(artifacts: Path) -> tuple[dict, dict[str, bytes]]:
         "preferredProviders": [
             {"contractId": CONTRACTS[slug], "contractVersion": 1,
              "provider": {"slot": slug, "componentId": "backend"}}
-            for slug in DOMAIN
+            for slug in domains
         ] + [{"contractId":"rintawa.roleplay.workflow","contractVersion":1,
               "provider":{"slot":"character","componentId":"story"}},
              {"contractId":"rintawa.ui.settings.renderer","contractVersion":1,"provider":{"slot":"settings-ui","componentId":"settings"}},
@@ -115,7 +119,7 @@ def descriptor(artifacts: Path) -> tuple[dict, dict[str, bytes]]:
         "authoritativeProviders": [
             {"point": POINTS[slug],
              "provider": {"slot": slug, "componentId": "backend"}}
-            for slug in DOMAIN
+            for slug in domains
         ],
         "requestedGrants": grants,
     }
@@ -135,10 +139,10 @@ def descriptor(artifacts: Path) -> tuple[dict, dict[str, bytes]]:
     return result, files
 
 
-def build(artifacts: Path, output: Path) -> None:
+def build(artifacts: Path, output: Path, world_atlas: bool = False) -> None:
     if output.exists():
         raise FileExistsError(f"refusing to replace {output}")
-    document, files = descriptor(artifacts)
+    document, files = descriptor(artifacts, world_atlas)
     manifest = b'format = 1\ncontent = "rintawa.world-template@1"\nentry = "template.json"\n'
     body = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(body) > 1024 * 1024:
@@ -173,8 +177,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts", type=Path, required=True, help="directory with exact local RTWs")
     parser.add_argument("--output", type=Path, required=True, help="new template RTW path; never overwritten")
+    parser.add_argument("--world-atlas", action="store_true", help="include optional World Atlas and its exact contract/transport provider pins")
     args = parser.parse_args()
-    build(args.artifacts, args.output)
+    build(args.artifacts, args.output, args.world_atlas)
 
 
 if __name__ == "__main__":

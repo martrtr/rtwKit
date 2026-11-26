@@ -1,4 +1,5 @@
 //! Cooperative orchestration. Every transport call yields back to the Host pump.
+use crate::groups;
 use crate::model::{self, Generate, Persona, Recent};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rintawa_domain_operations::{Caller, Operations, Outcome};
@@ -11,9 +12,11 @@ use rintawa::engine::{asset_store, host, registration, runtime_context, runtime_
 const POINT: &str = "rintawa/narrator/v1";
 const CHAT: &str = "rintawa/chat/v1";
 const INFERENCE: &str = "rintawa/inference/v1";
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Step {
+    Allocate,
     Recent,
+    Lore,
     MemoryBegin,
     MemoryStatus,
     MemoryRelease,
@@ -34,6 +37,8 @@ struct Source {
     bytes: Vec<u8>,
 }
 struct Work {
+    group_requested: bool,
+    group: Option<groups::Exchange>,
     request: Generate,
     step: Step,
     query: Option<u64>,
@@ -42,6 +47,8 @@ struct Work {
     memory_owner: Option<runtime_context::Principal>,
     memory_token: Option<String>,
     memory_context: Option<Value>,
+    lore_owner: Option<runtime_context::Principal>,
+    lore_context: Option<Value>,
     source: Option<Source>,
     prompt: Option<Value>,
     provider: Option<String>,
@@ -64,6 +71,9 @@ impl Drop for Notification {
 }
 impl Notification {
     fn begin(w: &Work) -> Option<Self> {
+        if w.group.is_some() {
+            return None;
+        }
         let observer = w.recent.as_ref()?.conversation.character_id?;
         let owner = selected("rintawa.memory")?;
         let call = json!({"method":"after-response","observerId":observer,"conversationId":w.request.conversation_id,"entryId":w.request.entry_id});
@@ -101,6 +111,12 @@ struct Narrator;
 enum Call {
     Describe,
     BeginGenerate {
+        conversation_id: Uuid,
+        user_message_id: Uuid,
+        message_id: Uuid,
+        entry_id: Uuid,
+    },
+    BeginGroupGenerate {
         conversation_id: Uuid,
         user_message_id: Uuid,
         message_id: Uuid,
@@ -152,7 +168,25 @@ fn failed(reason: &str) -> Outcome {
     }
 }
 fn unknown(w: &Work) -> Outcome {
-    Outcome::Unknown { item_ids: ids(w) }
+    host::log(
+        host::LogLevel::Warn,
+        &format!(
+            "Narrator outcome unknown at {:?} (stopped={}, cleanup={})",
+            w.step, w.stopped, w.cleanup
+        ),
+    );
+    Outcome::Unknown {
+        item_ids: if w.group_requested {
+            vec![w.request.conversation_id.to_string()]
+        } else {
+            ids(w)
+        },
+    }
+}
+fn group_done(w: &Work) -> Outcome {
+    Outcome::Committed {
+        item_ids: vec![w.request.conversation_id.to_string()],
+    }
 }
 fn answer(result: Result<Value, &str>) -> Vec<u8> {
     let value = match result {
@@ -329,11 +363,13 @@ impl State {
                 .map_err(|_| "invalid-operation")?
             {
                 None => Ok(
-                    match self
-                        .operations
-                        .work_mut(&operation)
-                        .and_then(|work| work.text.as_ref())
-                    {
+                    match self.operations.work_mut(&operation).and_then(|work| {
+                        if work.group.is_none() {
+                            work.text.as_ref()
+                        } else {
+                            None
+                        }
+                    }) {
                         Some(text) => json!({"status":"pending","text":text}),
                         None => json!({"status":"pending"}),
                     },
@@ -381,7 +417,14 @@ impl State {
                 user_message_id,
                 message_id,
                 entry_id,
+            }
+            | Call::BeginGroupGenerate {
+                conversation_id,
+                user_message_id,
+                message_id,
+                entry_id,
             } => {
+                let group_requested = value["method"] == "begin-group-generate";
                 if !chat_ui(p) {
                     return Err("access-denied");
                 }
@@ -411,7 +454,11 @@ impl State {
                     message_id,
                     entry_id,
                 };
-                let item_ids = vec![message_id.to_string(), entry_id.to_string()];
+                let item_ids = if group_requested {
+                    vec![conversation_id.to_string()]
+                } else {
+                    vec![message_id.to_string(), entry_id.to_string()]
+                };
                 let deadline = host::monotonic_millis()
                     .map_err(|_| "unavailable")?
                     .checked_add(120_000)
@@ -421,6 +468,8 @@ impl State {
                         token.clone(),
                         who,
                         Work {
+                            group_requested,
+                            group: None,
                             request,
                             step: Step::Recent,
                             query: None,
@@ -429,6 +478,8 @@ impl State {
                             memory_owner: None,
                             memory_token: None,
                             memory_context: None,
+                            lore_owner: None,
+                            lore_context: None,
                             source: None,
                             prompt: None,
                             provider: None,
@@ -446,8 +497,58 @@ impl State {
         }
     }
 }
+fn after_lore(w: &mut Work) -> Result<(), &'static str> {
+    if w.group.is_some() {
+        if w.recent.as_ref().unwrap().persona_id().is_some() {
+            w.step = Step::Persona;
+        } else {
+            prepare_character(w)?;
+        }
+        return Ok(());
+    }
+    w.memory_owner = selected("rintawa.memory");
+    if w.memory_owner.is_some()
+        && w.recent
+            .as_ref()
+            .unwrap()
+            .conversation
+            .character_id
+            .is_some()
+    {
+        w.step = Step::MemoryBegin;
+    } else if w.recent.as_ref().unwrap().persona_id().is_some() {
+        w.step = Step::Persona;
+    } else {
+        prepare_character(w)?;
+    }
+    Ok(())
+}
 fn prepare_character(w: &mut Work) -> Result<(), &'static str> {
     let recent = w.recent.as_ref().unwrap();
+    if let Some(g) = &w.group {
+        if !g.directing
+            && g.speaker.as_ref().is_some_and(|s| s.actor_id.is_some())
+            && selected("rintawa.character").is_some()
+        {
+            w.step = Step::Character;
+        } else {
+            let mut prompt = groups::prompt(
+                recent,
+                g.directing,
+                g.speaker.as_ref(),
+                None,
+                w.persona.as_ref(),
+            )?;
+            if (g.directing || g.speaker.as_ref().is_some_and(|s| s.kind == "narration"))
+                && let Some(context) = &w.lore_context
+            {
+                model::add_lore_context(&mut prompt, context.clone())?;
+            }
+            w.prompt = Some(prompt);
+            w.step = Step::Generate;
+        }
+        return Ok(());
+    }
     let prompt = model::prompt(recent, &w.request, None, w.persona.as_ref())?;
     if recent.conversation.character_id.is_some() {
         w.step = Step::Character;
@@ -470,10 +571,19 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
         && !w.cleanup
         && (matches!(
             w.step,
-            Step::Recent | Step::Persona | Step::Character | Step::Source
+            Step::Allocate
+                | Step::Recent
+                | Step::Lore
+                | Step::Persona
+                | Step::Character
+                | Step::Source
         ) || (matches!(w.step, Step::Generate | Step::MemoryBegin) && w.query.is_none()))
     {
-        return Some(failed("cancelled"));
+        return Some(if w.group.is_some() {
+            group_done(w)
+        } else {
+            failed("cancelled")
+        });
     }
     if matches!(w.step, Step::Source) {
         if !source_allowed {
@@ -500,16 +610,27 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
                     Ok(c) => c,
                     Err(_) => return Some(failed("invalid-character-source")),
                 };
-                let prompt = match model::prompt(
-                    w.recent.as_ref().unwrap(),
-                    &w.request,
-                    Some(&card),
-                    w.persona.as_ref(),
-                ) {
+                let prompt = match if let Some(g) = &w.group {
+                    groups::prompt(
+                        w.recent.as_ref().unwrap(),
+                        false,
+                        g.speaker.as_ref(),
+                        Some(&card),
+                        w.persona.as_ref(),
+                    )
+                } else {
+                    model::prompt(
+                        w.recent.as_ref().unwrap(),
+                        &w.request,
+                        Some(&card),
+                        w.persona.as_ref(),
+                    )
+                    .map(|p| json!(p))
+                } {
                     Ok(p) => p,
                     Err(e) => return Some(failed(e)),
                 };
-                w.prompt = Some(json!(prompt));
+                w.prompt = Some(prompt);
                 w.source = None;
                 w.step = Step::Generate;
                 return None;
@@ -522,6 +643,13 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
         return None;
     }
     if w.query.is_none() {
+        if w.group.is_none()
+            && matches!(w.step, Step::Generate)
+            && let Some(context) = w.lore_context.take()
+            && let Err(e) = model::add_lore_context(w.prompt.as_mut().unwrap(), context)
+        {
+            return Some(failed(e));
+        }
         if matches!(w.step, Step::Generate)
             && let Some(context) = w.memory_context.take()
         {
@@ -537,6 +665,11 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
             }
         }
         let (point, call) = match w.step {
+            Step::Allocate => (CHAT, json!({"method":"allocate","count":2})),
+            Step::Lore => (
+                "rintawa/world-atlas/v1",
+                json!({"method":"select-lore","conversationId":w.request.conversation_id,"text":model::lore_input(w.recent.as_ref().unwrap())}),
+            ),
             Step::MemoryBegin => (
                 "rintawa/memory/v1",
                 json!({"method":"narration-context","observerId":w.recent.as_ref().unwrap().conversation.character_id,"conversationId":w.request.conversation_id}),
@@ -559,7 +692,7 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
             ),
             Step::Character => (
                 "rintawa/character/v1",
-                json!({"method":"get","itemId":w.recent.as_ref().unwrap().conversation.character_id}),
+                json!({"method":"get","itemId":w.group.as_ref().and_then(|g|g.speaker.as_ref()).and_then(|s|s.actor_id).or(w.recent.as_ref().unwrap().conversation.character_id)}),
             ),
             Step::Generate => (
                 INFERENCE,
@@ -572,11 +705,22 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
                 json!({"method":"release","operation":w.provider}),
             ),
             Step::Append => {
-                let call = match model::append_request(
-                    w.recent.as_ref().unwrap(),
-                    &w.request,
-                    w.text.as_deref().unwrap(),
-                ) {
+                let call = match if let Some(g) = &w.group {
+                    Ok(groups::append(
+                        w.recent.as_ref().unwrap(),
+                        w.request.conversation_id,
+                        w.request.message_id,
+                        w.request.entry_id,
+                        g.speaker.as_ref().unwrap(),
+                        w.text.as_deref().unwrap(),
+                    ))
+                } else {
+                    model::append_request(
+                        w.recent.as_ref().unwrap(),
+                        &w.request,
+                        w.text.as_deref().unwrap(),
+                    )
+                } {
                     Ok(call) => call,
                     Err(reason) => return Some(failed(reason)),
                 };
@@ -586,7 +730,14 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
             Step::AppendRelease => (CHAT, json!({"method":"release","operation":w.append})),
             Step::Source => unreachable!(),
         };
-        let begun = if matches!(
+        let begun = if matches!(w.step, Step::Lore) {
+            transport::begin_query_to(
+                point,
+                &serde_json::to_vec(&call).unwrap(),
+                w.lore_owner.as_ref().unwrap(),
+            )
+            .map_err(|_| "lore-unavailable")
+        } else if matches!(
             w.step,
             Step::MemoryBegin | Step::MemoryStatus | Step::MemoryRelease
         ) {
@@ -602,6 +753,9 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
         match begun {
             Ok(h) => w.query = Some(h),
             Err(e) => {
+                if matches!(w.step, Step::Lore) {
+                    return Some(failed("lore-unavailable"));
+                }
                 if matches!(w.step, Step::MemoryBegin | Step::MemoryStatus) {
                     return Some(failed(if w.stopped {
                         "cancelled"
@@ -624,6 +778,9 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
         Ok(Some(v)) => v,
         Err(_) => {
             w.query = None;
+            if matches!(w.step, Step::Lore) {
+                return Some(failed("lore-unavailable"));
+            }
             if matches!(w.step, Step::MemoryBegin | Step::MemoryStatus) {
                 return Some(failed(if w.stopped {
                     "cancelled"
@@ -644,6 +801,25 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
     let value = match result {
         Ok(v) => v,
         Err(e) => {
+            if matches!(w.step, Step::Character)
+                && e == "not-found"
+                && let Some(g) = &w.group
+            {
+                match groups::prompt(
+                    w.recent.as_ref().unwrap(),
+                    false,
+                    g.speaker.as_ref(),
+                    None,
+                    w.persona.as_ref(),
+                ) {
+                    Ok(prompt) => {
+                        w.prompt = Some(prompt);
+                        w.step = Step::Generate;
+                        return None;
+                    }
+                    Err(reason) => return Some(failed(reason)),
+                }
+            }
             if matches!(w.step, Step::MemoryBegin | Step::MemoryStatus) {
                 return Some(failed(if w.stopped {
                     "cancelled"
@@ -662,7 +838,8 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
                 Value::Null
             } else if matches!(
                 w.step,
-                Step::Recent
+                Step::Allocate
+                    | Step::Recent
                     | Step::Character
                     | Step::ProviderStatus
                     | Step::ProviderCancel
@@ -679,6 +856,33 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
         }
     };
     match w.step {
+        Step::Allocate => {
+            let Some(rows) = value.as_array().filter(|a| a.len() == 2) else {
+                return Some(failed("invalid-item-ids"));
+            };
+            let parse = |v: &Value| {
+                v.as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok().filter(|id| id.to_string() == s))
+            };
+            let (Some(message), Some(entry)) = (parse(&rows[0]), parse(&rows[1])) else {
+                return Some(failed("invalid-item-ids"));
+            };
+            if message == entry
+                || message == w.request.conversation_id
+                || entry == w.request.conversation_id
+            {
+                return Some(failed("invalid-item-ids"));
+            }
+            w.request.message_id = message;
+            w.request.entry_id = entry;
+            w.step = Step::Recent;
+        }
+        Step::Lore => {
+            w.lore_context = Some(value);
+            if let Err(e) = after_lore(w) {
+                return Some(failed(e));
+            }
+        }
         Step::MemoryBegin => {
             let Some(token) = value["operation"].as_str().filter(|s| s.len() == 43) else {
                 return Some(failed("invalid-memory-context"));
@@ -726,20 +930,41 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
                 Ok(v) => v,
                 Err(_) => return Some(failed("invalid-history")),
             };
+            if recent.conversation.participants.is_some() != w.group_requested {
+                return Some(failed(if w.group_requested {
+                    "participants-required"
+                } else {
+                    "group-narration-required"
+                }));
+            }
+            if recent.conversation.participants.is_some() || w.group.is_some() {
+                if let Err(reason) = groups::validate(&recent) {
+                    return Some(failed(reason));
+                }
+                if let Some(g) = &w.group {
+                    if g.next_revision.as_deref() != Some(recent.conversation.revision.as_str())
+                        || g.next_head != recent.conversation.last_entry_id
+                    {
+                        return Some(failed("stale-context"));
+                    }
+                } else {
+                    if let Err(reason) = model::current_user(&recent, &w.request) {
+                        return Some(failed(reason));
+                    }
+                    w.group = Some(groups::Exchange::default());
+                }
+            }
             w.recent = Some(recent);
-            w.memory_owner = selected("rintawa.memory");
-            if w.memory_owner.is_some()
-                && w.recent
-                    .as_ref()
-                    .unwrap()
-                    .conversation
-                    .character_id
-                    .is_some()
-            {
-                w.step = Step::MemoryBegin;
-            } else if w.recent.as_ref().unwrap().persona_id().is_some() {
-                w.step = Step::Persona;
-            } else if let Err(e) = prepare_character(w) {
+            if w.group.as_ref().is_some_and(|g| g.beats > 0) {
+                if let Err(reason) = prepare_character(w) {
+                    return Some(failed(reason));
+                }
+                return None;
+            }
+            w.lore_owner = selected("rintawa.world-atlas");
+            if w.lore_owner.is_some() {
+                w.step = Step::Lore;
+            } else if let Err(e) = after_lore(w) {
                 return Some(failed(e));
             }
         }
@@ -754,6 +979,11 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
             }
         }
         Step::Character => {
+            if let Some(g) = &w.group
+                && value["id"] != json!(g.speaker.as_ref().unwrap().actor_id)
+            {
+                return Some(failed("invalid-character-source"));
+            }
             let source = &value["card"]["source"];
             let Some(size) = source["size"].as_str().and_then(|s| s.parse::<u64>().ok()) else {
                 return Some(failed("invalid-character-source"));
@@ -801,10 +1031,20 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
             // Cancellation acknowledges transport retirement, not a Chat commit.
             // Do not ingest its text: the Narrator prefix was frozen at Stop.
             if !matches!(value["status"].as_str(), Some("failed" | "completed")) {
+                host::log(
+                    host::LogLevel::Warn,
+                    "Narrator cancel returned a nonterminal provider response",
+                );
                 return Some(unknown(w));
             }
-            if w.text.as_deref().is_none_or(|text| text.trim().is_empty()) {
-                w.terminal = Some(failed("cancelled"));
+            if w.group.as_ref().is_some_and(|g| g.directing) {
+                w.terminal = Some(group_done(w));
+            } else if w.text.as_deref().is_none_or(|text| text.trim().is_empty()) {
+                w.terminal = Some(if w.group.is_some() {
+                    group_done(w)
+                } else {
+                    failed("cancelled")
+                });
             }
             w.step = Step::ProviderRelease;
         }
@@ -826,6 +1066,14 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
                 w.step = Step::ProviderRelease;
             }
             Some("failed") => {
+                if let Some(g) = &mut w.group {
+                    if g.directing {
+                        w.terminal = Some(failed("director-inference-failed"));
+                        w.step = Step::ProviderRelease;
+                        return None;
+                    }
+                    g.interrupted = true;
+                }
                 match model::interrupted_text(w.text.as_deref(), &value) {
                     Ok(Some(text)) => w.text = Some(text),
                     Ok(None) => {
@@ -848,6 +1096,27 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
             w.provider = None;
             if w.terminal.is_some() {
                 return w.terminal.take();
+            }
+            if w.group.as_ref().is_some_and(|g| g.directing) {
+                if w.stopped {
+                    return Some(group_done(w));
+                }
+                let speaker = match groups::decide(
+                    w.text.as_deref().unwrap_or_default(),
+                    w.recent.as_ref().unwrap(),
+                ) {
+                    Ok(Some(s)) => s,
+                    Ok(None) => return Some(group_done(w)),
+                    Err(reason) => return Some(failed(reason)),
+                };
+                let g = w.group.as_mut().unwrap();
+                g.speaker = Some(speaker);
+                g.directing = false;
+                w.text = None;
+                if let Err(reason) = prepare_character(w) {
+                    return Some(failed(reason));
+                }
+                return None;
             }
             w.step = Step::Append;
         }
@@ -886,6 +1155,37 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
         },
         Step::AppendRelease => {
             w.append = None;
+            if let Some(g) = w.group.as_mut()
+                && matches!(w.terminal, Some(Outcome::Committed { .. }))
+                && !w.cleanup
+            {
+                let Some(next) = w
+                    .recent
+                    .as_ref()
+                    .unwrap()
+                    .conversation
+                    .revision
+                    .parse::<u64>()
+                    .ok()
+                    .and_then(|v| v.checked_add(1))
+                else {
+                    return Some(failed("revision-exhausted"));
+                };
+                g.beats += 1;
+                g.next_revision = Some(next.to_string());
+                g.next_head = Some(w.request.entry_id);
+                if w.stopped || g.interrupted || g.beats >= 4 {
+                    w.terminal = None;
+                    return Some(group_done(w));
+                }
+                g.directing = true;
+                g.speaker = None;
+                w.terminal = None;
+                w.text = None;
+                w.prompt = None;
+                w.step = Step::Allocate;
+                return None;
+            }
             return w.terminal.take();
         }
         Step::Source => unreachable!(),
