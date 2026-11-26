@@ -105,6 +105,32 @@ pub struct TavernV2DecodedSource {
     portrait: Option<TavernV2Artwork>,
 }
 
+impl TavernV2DecodedSource {
+    /// Separates the raw alternate-greetings value from the remaining semantic
+    /// input. Cooperative consumers can validate each string and derive their
+    /// bounded index in separate callbacks, without first allocating a large
+    /// `Value` tree and then cloning its strings into a second vector.
+    /// The caller must validate the returned array before accepting the card.
+    /// Duplicate object fields retain the same last-value semantics as the
+    /// full JSON normalization path. Original transport bytes stay untouched.
+    pub fn take_alternate_greetings(&mut self) -> TavernV2Result<Vec<u8>> {
+        use serde_json::value::RawValue;
+        let mut root: BTreeMap<String, &RawValue> = serde_json::from_slice(&self.json)?;
+        let data = root.get("data").ok_or(TavernV2Error::InvalidFieldType {
+            field: "data",
+            expected: "an object",
+        })?;
+        let mut data: BTreeMap<String, &RawValue> = serde_json::from_str(data.get())?;
+        let alternatives = data
+            .remove("alternate_greetings")
+            .map_or_else(|| b"[]".to_vec(), |raw| raw.get().as_bytes().to_vec());
+        let data = RawValue::from_string(serde_json::to_string(&data)?)?;
+        root.insert("data".into(), &data);
+        self.json = serde_json::to_vec(&root)?;
+        Ok(alternatives)
+    }
+}
+
 /// Normalized Tavern import plus optional PNG artwork awaiting generic asset publication.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TavernV2Import {
@@ -807,4 +833,40 @@ fn btree_from_map(values: &Map<String, Value>) -> BTreeMap<String, Value> {
         .iter()
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod cooperative_alternates_tests {
+    use super::*;
+    #[test]
+    fn extraction_keeps_effective_duplicate_field_and_remaining_card_validation() {
+        let source=br#"{"spec":"chara_card_v2","spec_version":"2.0","data":{"name":"Original","alternate_greetings":["old"],"alternate_greetings":["new","new",""],"first_mes":"primary"}}"#;
+        let mut decoded = decode_tavern_v2_source(source).unwrap();
+        let raw = decoded.take_alternate_greetings().unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Vec<String>>(&raw).unwrap(),
+            ["new", "new", ""]
+        );
+        let result = normalize_tavern_v2_source(decoded).unwrap();
+        assert_eq!(result.template.name, "Original");
+        assert_eq!(result.template.session.greeting, "primary");
+        assert!(result.template.session.alternate_greetings.is_empty());
+        assert_eq!(
+            import_tavern_v2(source)
+                .unwrap()
+                .session
+                .alternate_greetings,
+            ["new", "new", ""]
+        );
+    }
+    #[test]
+    fn extraction_preserves_wrong_types_for_cooperative_validation() {
+        let source=br#"{"spec":"chara_card_v2","spec_version":"2.0","data":{"name":"Original","alternate_greetings":[true]}}"#;
+        let mut decoded = decode_tavern_v2_source(source).unwrap();
+        assert!(
+            serde_json::from_slice::<Vec<String>>(&decoded.take_alternate_greetings().unwrap())
+                .is_err()
+        );
+        assert!(import_tavern_v2(source).is_err());
+    }
 }

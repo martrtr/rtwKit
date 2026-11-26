@@ -61,6 +61,7 @@ try {
       async request(method) {
         if (method === 'list') return { items: this.point.includes('character') ? [card] : [], next: null };
         if (method === 'get') return card;
+        if (method === 'list-greetings') return { sourceDigest: 'sha256:' + '0'.repeat(64), items: [{id:'primary',status:'empty',preview:null}], next:null };
         if (method === 'recent' || method === 'describe') fail(method);
         if (method === 'recent') return { items: [] };
         if (method === 'describe') return { instanceId: 'chat-owner', componentId: 'ui' };
@@ -79,6 +80,7 @@ try {
       '@rintawa/bridge': { BridgeError },
       '@rintawa/domain': { DomainClient, DomainError, observeResource: options => ({ refresh: async () => { try { options.apply(await options.read(new AbortController().signal)); } catch (error) { options.failed(error); throw error; } }, close() {} }) },
       '@rintawa/ui': { Button: 'button', Icon: 'icon', Status: 'status' },
+      './PersonaEditor': { PersonaEditor: 'persona-editor' },
     };
     const context = vm.createContext({ AbortController, console });
     const module = new vm.SourceTextModule(source, { context });
@@ -94,11 +96,13 @@ try {
     render(); effects.forEach(effect => effect()); await flush();
     if (scenario !== 'restart') {
       const start = button(render(), 'Continue with Alice'); assert.ok(start); start.props.onClick(); await flush();
+      assert.equal(begins, 0, 'draft preview must not create a conversation'); assert.equal(allocations, 0);
+      const confirm = button(render(), 'Start without greeting'); assert.ok(confirm); confirm.props.onClick(); await flush();
       assert.equal(begins, 1); assert.equal(allocations, 1);
     }
     if (scenario === 'failed') {
       assert.equal(saved.phase, 'imported'); assert.equal(saved.conversationId, undefined);
-      assert.ok(button(render(), 'Continue to chat')); assert.equal(button(render(), 'Retry opening chat'), undefined);
+      assert.ok(button(render(), 'Start without greeting')); assert.equal(button(render(), 'Retry opening chat'), undefined);
     } else if (scenario === 'unknown') {
       assert.equal(saved.phase, 'creating'); assert.equal(saved.conversationId, id);
       const read = button(render(), 'Read World'); assert.ok(read); read.props.onClick(); await flush();
@@ -106,7 +110,7 @@ try {
     } else {
       assert.equal(saved.conversationId, id, `${scenario}: retain committed ID`);
       const tree = render(), retry = button(tree, 'Retry opening chat'); assert.ok(retry, `${scenario}: explicit same-ID retry`);
-      assert.equal(button(tree, 'Continue to chat'), undefined);
+      assert.equal(button(tree, 'Start without greeting'), undefined);
       assert.equal(button(tree, 'Continue with Alice'), undefined);
       assert.equal(find(tree, node => node.type === 'input' && node.props.type === 'file'), undefined);
       const before = { allocations, begins }; retry.props.onClick(); await flush();

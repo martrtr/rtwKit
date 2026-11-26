@@ -15,6 +15,8 @@ released independently as an immutable `.rtw` artifact.
 | [dice](packages/dice) | Independent Chat composer action/panel |
 | [character](packages/character) | Tavern V2/V3 character import and story onboarding |
 | [chat](packages/chat) | Persistent World conversations |
+| [world-atlas](packages/world-atlas) | Optional location and scene authoring |
+| [memory](packages/memory) | Explicit source-bound observations and authored recollections |
 | [narrator](packages/narrator) | World-scoped narrative coordination |
 | [ai-provider](packages/ai-provider) | Shared OpenAI-compatible provider settings and inference |
 

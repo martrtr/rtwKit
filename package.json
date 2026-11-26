@@ -10,7 +10,9 @@
     "packages/character",
     "packages/ai-provider",
     "packages/settings-ui",
-    "packages/package-manager"
+    "packages/package-manager",
+    "packages/world-atlas",
+    "packages/memory"
   ],
   "engines": {
     "node": ">=24"
@@ -19,7 +21,7 @@
     "test:bridge": "node --test --test-isolation=none web/bridge/tests/*.test.mjs packages/web-ui/tests/*.test.mjs web/domain/tests/*.test.mjs web/ui/tests/*.test.mjs",
     "build:bridge": "node scripts/build-browser-sdk.mjs",
     "typecheck": "tsc --noEmit",
-    "build:web": "npm run build --workspace @rintawa/web-ui && npm run build --workspace @rintawa/dice && npm run build --workspace @rintawa/chat && npm run build --workspace @rintawa/character && npm run build --workspace @rintawa/ai-provider && npm run build --workspace @rintawa/settings-ui && npm run build --workspace @rintawa/package-manager"
+    "build:web": "npm run build --workspace @rintawa/web-ui && npm run build --workspace @rintawa/dice && npm run build --workspace @rintawa/chat && npm run build --workspace @rintawa/character && npm run build --workspace @rintawa/ai-provider && npm run build --workspace @rintawa/settings-ui && npm run build --workspace @rintawa/package-manager && npm run build --workspace @rintawa/world-atlas && npm run build --workspace @rintawa/memory"
   },
   "devDependencies": {
     "typescript": "7.0.2",

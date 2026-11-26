@@ -68,6 +68,208 @@ pub struct Message {
     pub text: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Context {
+    pub persona_id: Option<Uuid>,
+    pub greeting: Option<Provenance>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Family {
+    pub group_id: Uuid,
+    pub card_id: Uuid,
+    pub source_digest: String,
+    pub candidate_id: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Provenance {
+    pub group_id: Uuid,
+    pub card_id: Uuid,
+    pub source_digest: String,
+    pub candidate_id: String,
+    pub persona_id: Option<Uuid>,
+    pub persona_revision: Option<String>,
+    pub persona_name: String,
+    pub message_id: Uuid,
+}
+impl Family {
+    pub fn valid(&self) -> bool {
+        self.source_digest
+            .strip_prefix("sha256:")
+            .is_some_and(|hex| {
+                hex.len() == 64
+                    && hex
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+            && (self.candidate_id == "primary"
+                || self
+                    .candidate_id
+                    .strip_prefix("alternate:")
+                    .is_some_and(|v| revision(v).is_ok()))
+    }
+}
+impl Context {
+    pub fn valid(&self) -> bool {
+        self.greeting.as_ref().is_none_or(|g| {
+            g.family().valid()
+                && !g.persona_name.trim().is_empty()
+                && g.persona_name.len() <= 512
+                && match (&g.persona_id, &g.persona_revision) {
+                    (Some(_), Some(r)) => revision(r).is_ok(),
+                    (None, None) => g.persona_name == "You",
+                    _ => false,
+                }
+        })
+    }
+}
+impl Provenance {
+    pub fn family(&self) -> Family {
+        Family {
+            group_id: self.group_id,
+            card_id: self.card_id,
+            source_digest: self.source_digest.clone(),
+            candidate_id: self.candidate_id.clone(),
+        }
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Select {
+    pub conversation_id: Uuid,
+    #[serde(deserialize_with = "deserialize_revision")]
+    pub expected_conversation_revision: String,
+    pub expected_last_entry_id: Option<Uuid>,
+    pub persona_id: Option<Uuid>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContextCreate {
+    pub input: Create,
+    pub context: Context,
+    pub source: Option<Select>,
+}
+pub fn context_change(item: Uuid, context: &Context) -> Value {
+    json!({"operation":"set-property","item":item,"key":key("rintawa.chat.context"),"data":context})
+}
+pub fn create_context_changes(
+    input: &ContextCreate,
+    exists: bool,
+    character: bool,
+    greeting_exists: bool,
+) -> Result<Value, &'static str> {
+    if !input.context.valid() {
+        return Err("invalid-context");
+    }
+    let mut changes = create_changes(&input.input, exists, character, greeting_exists)?;
+    let array = changes["changes"].as_array_mut().unwrap();
+    array.push(context_change(input.input.conversation_id, &input.context));
+    match (&input.context.greeting, &input.input.greeting) {
+        (Some(g), Some(message))
+            if Some(g.card_id) == input.input.character_id
+                && g.message_id == message.message_id =>
+        {
+            array.push(json!({"operation":"set-property","item":input.input.conversation_id,"key":key("rintawa.chat.family-target"),"data":g.family()}));
+        }
+        (None, None) => {}
+        _ => return Err("invalid-context"),
+    }
+    Ok(changes)
+}
+pub fn select_changes(
+    input: &Select,
+    conversation: &Conversation,
+    current: Option<Context>,
+) -> Result<Value, &'static str> {
+    if conversation.revision != input.expected_conversation_revision
+        || conversation.last_entry_id != input.expected_last_entry_id
+    {
+        return Err("stale-context");
+    }
+    let mut context = current.unwrap_or(Context {
+        persona_id: None,
+        greeting: None,
+    });
+    if context.persona_id == input.persona_id {
+        // Core requires at least one transaction change. Rewriting the same
+        // conversation value is an observable state no-op and still checks
+        // the source revision/head in the authoritative snapshot.
+        return Ok(
+            json!({"changes":[{"operation":"set-property","item":input.conversation_id,"key":key("rintawa.chat.conversation"),"data":conversation}]}),
+        );
+    }
+    context.persona_id = input.persona_id;
+    let mut updated = conversation.clone();
+    updated.revision = revision(&conversation.revision)?
+        .checked_add(1)
+        .ok_or("revision-exhausted")?
+        .to_string();
+    Ok(
+        json!({"changes":[context_change(input.conversation_id,&context),{"operation":"set-property","item":input.conversation_id,"key":key("rintawa.chat.conversation"),"data":updated}]}),
+    )
+}
+pub fn expand_greeting(text: &str, character: &str, user: &str) -> Result<String, &'static str> {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("{{") {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        if let Some(tail) = rest.strip_prefix("{{char}}") {
+            out.push_str(character);
+            rest = tail;
+        } else if let Some(tail) = rest.strip_prefix("{{user}}") {
+            out.push_str(user);
+            rest = tail;
+        } else {
+            out.push_str("{{");
+            rest = &rest[2..];
+        }
+        if out.len() > 16 * 1024 {
+            return Err("invalid-message");
+        }
+    }
+    out.push_str(rest);
+    if out.len() > 16 * 1024 || out.trim().is_empty() {
+        return Err("invalid-message");
+    }
+    Ok(out)
+}
+fn uuid_schema(nullable: bool) -> Value {
+    if nullable {
+        json!({"type":["string","null"],"format":"uuid"})
+    } else {
+        json!({"type":"string","format":"uuid"})
+    }
+}
+fn family_schema() -> Value {
+    json!({"type":"object","properties":{"groupId":uuid_schema(false),"cardId":uuid_schema(false),"sourceDigest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},"candidateId":{"type":"string","pattern":"^(primary|alternate:(0|[1-9][0-9]*))$"}},"required":["groupId","cardId","sourceDigest","candidateId"],"additionalProperties":false})
+}
+fn context_schema() -> Value {
+    let mut greeting = family_schema();
+    greeting["type"] = json!(["object", "null"]);
+    let fields = greeting["properties"].as_object_mut().unwrap();
+    fields.insert("personaId".into(), uuid_schema(true));
+    fields.insert(
+        "personaRevision".into(),
+        json!({"type":["string","null"],"pattern":"^(0|[1-9][0-9]*)$","maxLength":20}),
+    );
+    fields.insert(
+        "personaName".into(),
+        json!({"type":"string","minLength":1,"maxLength":512}),
+    );
+    fields.insert("messageId".into(), uuid_schema(false));
+    greeting["required"]
+        .as_array_mut()
+        .unwrap()
+        .extend(["personaId", "personaRevision", "personaName", "messageId"].map(|s| json!(s)));
+    json!({"type":"object","properties":{"personaId":uuid_schema(true),"greeting":greeting},"required":["personaId","greeting"],"additionalProperties":false})
+}
+fn select_schema() -> Value {
+    json!({"type":"object","properties":{"conversationId":uuid_schema(false),"expectedConversationRevision":{"type":"string","pattern":"^(0|[1-9][0-9]*)$","maxLength":20},"expectedLastEntryId":uuid_schema(true),"personaId":uuid_schema(true)},"required":["conversationId","expectedConversationRevision","expectedLastEntryId","personaId"],"additionalProperties":false})
+}
+
 fn initial_revision() -> String {
     "0".into()
 }
@@ -271,6 +473,8 @@ pub fn assistant_changes(
 
 pub fn property_schemas() -> Vec<(&'static str, Value)> {
     vec![
+        ("rintawa.chat.context", context_schema()),
+        ("rintawa.chat.family-target", family_schema()),
         (
             "rintawa.chat.conversation",
             json!({"type":"object","properties":{"revision":{"type":"string","pattern":"^(0|[1-9][0-9]*)$","maxLength":20},"title":{"type":"string","minLength":1,"maxLength":256},"characterId":{"type":["string","null"],"format":"uuid"},"lastEntryId":{"type":["string","null"],"format":"uuid"}},"required":["title","lastEntryId"],"additionalProperties":false}),
@@ -286,7 +490,7 @@ pub fn property_schemas() -> Vec<(&'static str, Value)> {
     ]
 }
 pub fn command_schemas() -> Vec<(&'static str, Value)> {
-    vec![
+    let mut schemas = vec![
         (
             "rintawa.chat.assistant-append",
             json!({"type":"object","properties":{"conversationId":{"type":"string","format":"uuid"},"messageId":{"type":"string","format":"uuid"},"entryId":{"type":"string","format":"uuid"},"userMessageId":{"type":"string","format":"uuid"},"expectedLastEntryId":{"type":"string","format":"uuid"},"expectedConversationRevision":{"type":"string","pattern":"^(0|[1-9][0-9]*)$","maxLength":20},"expectedUserRevision":{"type":"string","pattern":"^(0|[1-9][0-9]*)$","maxLength":20},"text":{"type":"string","minLength":1}},"required":["conversationId","messageId","entryId","userMessageId","expectedLastEntryId","expectedConversationRevision","expectedUserRevision","text"],"additionalProperties":false}),
@@ -299,7 +503,18 @@ pub fn command_schemas() -> Vec<(&'static str, Value)> {
             "rintawa.chat.append",
             json!({"type":"object","properties":{"conversationId":{"type":"string","format":"uuid"},"messageId":{"type":"string","format":"uuid"},"entryId":{"type":"string","format":"uuid"},"text":{"type":"string","minLength":1}},"required":["conversationId","messageId","entryId","text"],"additionalProperties":false}),
         ),
-    ]
+    ];
+    let create = schemas
+        .iter()
+        .find(|(name, _)| *name == "rintawa.chat.create")
+        .unwrap()
+        .1
+        .clone();
+    let mut source = select_schema();
+    source["type"] = json!(["object", "null"]);
+    schemas.push(("rintawa.chat.create-context", json!({"type":"object","properties":{"input":create,"context":context_schema(),"source":source},"required":["input","context","source"],"additionalProperties":false})));
+    schemas.push(("rintawa.chat.select-persona", select_schema()));
+    schemas
 }
 
 #[cfg(test)]
@@ -594,5 +809,97 @@ mod greeting_tests {
         let mut oversized = input;
         oversized.greeting.as_mut().unwrap().text = "x".repeat(16385);
         assert!(create_changes(&oversized, false, true, false).is_err());
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+    #[test]
+    fn macros_are_one_pass_bounded_and_literal() {
+        assert_eq!(
+            expand_greeting(
+                "{{char}} meets {{user}} {{unknown}}",
+                "{{user}}",
+                "{{char}}"
+            )
+            .unwrap(),
+            "{{user}} meets {{char}} {{unknown}}"
+        );
+        assert_eq!(
+            expand_greeting(&"{{user}}".repeat(100), "A", &"x".repeat(512)).unwrap_err(),
+            "invalid-message"
+        );
+    }
+    #[test]
+    fn selection_preserves_provenance_and_rejects_stale_append() {
+        let id = Uuid::from_u128(1);
+        let mut c = Conversation {
+            title: "A".into(),
+            character_id: None,
+            last_entry_id: None,
+            revision: "7".into(),
+        };
+        let mut req = Select {
+            conversation_id: id,
+            expected_conversation_revision: "7".into(),
+            expected_last_entry_id: None,
+            persona_id: Some(Uuid::from_u128(2)),
+        };
+        let tx = select_changes(&req, &c, None).unwrap();
+        assert_eq!(tx["changes"][1]["data"]["revision"], "8");
+        assert_eq!(tx["changes"][0]["data"]["personaId"], json!(req.persona_id));
+        c.revision = "8".into();
+        assert_eq!(select_changes(&req, &c, None).unwrap_err(), "stale-context");
+        req.expected_conversation_revision = "8".into();
+        let current = Context {
+            persona_id: req.persona_id,
+            greeting: None,
+        };
+        let tx = select_changes(&req, &c, Some(current)).unwrap();
+        assert_eq!(tx["changes"].as_array().unwrap().len(), 1);
+        assert_eq!(tx["changes"][0]["data"]["revision"], "8");
+    }
+    #[test]
+    fn create_context_persists_one_family_target_in_same_transaction() {
+        let convo = Uuid::from_u128(1);
+        let card = Uuid::from_u128(2);
+        let msg = Uuid::from_u128(3);
+        let entry = Uuid::from_u128(4);
+        let request = ContextCreate {
+            input: Create {
+                conversation_id: convo,
+                title: "A".into(),
+                character_id: Some(card),
+                greeting: Some(Greeting {
+                    message_id: msg,
+                    entry_id: entry,
+                    text: "Hi".into(),
+                }),
+            },
+            context: Context {
+                persona_id: None,
+                greeting: Some(Provenance {
+                    group_id: convo,
+                    card_id: card,
+                    source_digest: format!("sha256:{}", "a".repeat(64)),
+                    candidate_id: "alternate:0".into(),
+                    persona_id: None,
+                    persona_revision: None,
+                    persona_name: "You".into(),
+                    message_id: msg,
+                }),
+            },
+            source: None,
+        };
+        let tx = create_context_changes(&request, false, true, false).unwrap();
+        let changes = tx["changes"].as_array().unwrap();
+        assert_eq!(changes.len(), 9);
+        assert_eq!(changes[8]["key"]["id"], "rintawa.chat.family-target");
+        assert_eq!(changes[8]["data"]["candidateId"], "alternate:0");
+        assert_eq!(
+            create_context_changes(&request, false, true, true).unwrap_err(),
+            "item-exists"
+        );
     }
 }

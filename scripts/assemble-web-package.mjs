@@ -1,12 +1,12 @@
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 const slug = process.argv[2];
-if (!['web-ui', 'dice', 'chat', 'character', 'ai-provider', 'settings-ui', 'package-manager'].includes(slug)) throw new Error('Unknown web package');
+if (!['web-ui', 'dice', 'chat', 'character', 'ai-provider', 'settings-ui', 'package-manager', 'world-atlas', 'memory'].includes(slug)) throw new Error('Unknown web package');
 const root = resolve(import.meta.dirname, '..');
 const target = resolve(root, 'packages', slug, 'build/rtw');
 await rm(target, { recursive: true, force: true });
 await mkdir(target, { recursive: true });
-if (['chat', 'character', 'ai-provider', 'package-manager'].includes(slug)) {
+if (['chat', 'character', 'ai-provider', 'package-manager', 'world-atlas', 'memory'].includes(slug)) {
   if (!process.argv[3]) throw new Error('Domain assembly requires its built WASM backend');
   await cp(resolve(process.argv[3]), resolve(target, 'backend.wasm'));
   if (process.argv[4]) await cp(resolve(process.argv[4]), resolve(target, 'world-portability.json'));

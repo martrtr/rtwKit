@@ -34,6 +34,10 @@
     "packages/settings-ui/**/*.ts",
     "packages/settings-ui/**/*.tsx",
     "packages/package-manager/**/*.ts",
-    "packages/package-manager/**/*.tsx"
+    "packages/package-manager/**/*.tsx",
+    "packages/world-atlas/**/*.ts",
+    "packages/world-atlas/**/*.tsx",
+    "packages/memory/**/*.ts",
+    "packages/memory/**/*.tsx"
   ]
 }

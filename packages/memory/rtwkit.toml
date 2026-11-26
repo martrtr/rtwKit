@@ -1,0 +1,14 @@
+schema = 2
+[package]
+id = "rintawa.rtwkit.memory"
+name = "Memory"
+version = "0.1.0"
+description = "Explicit transcript observations and authored recollections"
+license = "GPL-3.0-only"
+authors = ["martrtr"]
+[[package.dependencies]]
+id = "rintawa.rtwkit.web-runtime"
+requirement = "^0.1.0"
+[build]
+artifact-root = "build/rtw"
+command = ["bash", "build.sh"]

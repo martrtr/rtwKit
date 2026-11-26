@@ -60,7 +60,7 @@ impl Greeting {
             }
         }
     }
-    fn valid(&self) -> bool {
+    pub fn valid(&self) -> bool {
         match (&self.text, &self.error) {
             (None, None) => true,
             (None, Some(e)) => e == "greeting-too-large",
@@ -73,7 +73,7 @@ pub fn greeting_schema() -> Value {
     json!({"type":"object","properties":{"text":{"type":["string","null"]},"error":{"enum":[null,"greeting-too-large"]}},"required":["text","error"],"additionalProperties":false})
 }
 
-fn valid_asset(asset: &Asset, portrait: bool) -> bool {
+pub fn valid_asset(asset: &Asset, portrait: bool) -> bool {
     let Some(hex) = asset.digest.strip_prefix("sha256:") else {
         return false;
     };
@@ -195,4 +195,322 @@ mod greeting_tests {
             .valid()
         );
     }
+}
+
+pub const PERSONA: &str = "rintawa.character.persona@1";
+pub const GREETINGS: &str = "rintawa.character.greetings@1";
+pub const AUTHOR_PERSONA: &str = "rintawa.character.author-persona@1";
+pub const IMPORT_INDEXED: &str = "rintawa.character.import-indexed@1";
+pub const EXTRACT: &str = "rintawa.character.extract-greetings@1";
+pub const MAX_INDEX: usize = 8 * 1024 * 1024;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Persona {
+    pub revision: String,
+    pub name: String,
+    pub description: String,
+    pub portrait: Option<Asset>,
+}
+impl Persona {
+    pub fn valid(&self) -> bool {
+        revision(&self.revision).is_some()
+            && !self.name.trim().is_empty()
+            && self.name.len() <= 512
+            && self.description.len() <= 8192
+            && self.portrait.as_ref().is_none_or(|p| valid_asset(p, true))
+            && serde_json::to_vec(self).is_ok_and(|v| v.len() < 64 * 1024 - 1024)
+    }
+}
+pub fn revision(s: &str) -> Option<u64> {
+    s.parse::<u64>().ok().filter(|n| n.to_string() == s)
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(
+    tag = "action",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum AuthorPersona {
+    Create {
+        item_id: Uuid,
+        persona: Persona,
+    },
+    Update {
+        item_id: Uuid,
+        expected_revision: String,
+        persona: Persona,
+    },
+    Duplicate {
+        item_id: Uuid,
+        source_item_id: Uuid,
+        expected_revision: String,
+    },
+    Delete {
+        item_id: Uuid,
+        expected_revision: String,
+    },
+}
+impl AuthorPersona {
+    pub fn item_id(&self) -> Uuid {
+        match self {
+            Self::Create { item_id, .. }
+            | Self::Update { item_id, .. }
+            | Self::Duplicate { item_id, .. }
+            | Self::Delete { item_id, .. } => *item_id,
+        }
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GreetingIndex {
+    pub source_digest: String,
+    pub candidates: Asset,
+}
+impl GreetingIndex {
+    pub fn valid(&self) -> bool {
+        let mut asset = self.candidates.clone();
+        asset.size = "1".into();
+        valid_asset(&asset, false)
+            && asset.media_type == "application/json"
+            && revision(&self.candidates.size).is_some_and(|n| n > 0 && n <= MAX_INDEX as u64)
+            && self.source_digest.strip_prefix("sha256:").is_some_and(|d| {
+                d.len() == 64
+                    && d.bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+    }
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IndexedImport {
+    pub import: Import,
+    pub index: GreetingIndex,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Extract {
+    pub item_id: Uuid,
+    pub index: GreetingIndex,
+}
+
+// A newline-delimited JSON array permits bounded sequential reads without materializing
+// the entire derived index. Each record is a complete validated Greeting.
+struct BoundedWriter<'a>(&'a mut Vec<u8>);
+impl std::io::Write for BoundedWriter<'_> {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        if self.0.len().saturating_add(b.len()) > MAX_INDEX {
+            return Err(std::io::Error::other("greeting-index-too-large"));
+        }
+        self.0.extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+pub fn append_candidate(
+    bytes: &mut Vec<u8>,
+    greeting: &Greeting,
+    first: bool,
+) -> Result<(), &'static str> {
+    use std::io::Write;
+    let mut w = BoundedWriter(bytes);
+    w.write_all(if first { b"[\n" } else { b",\n" })
+        .map_err(|_| "greeting-index-too-large")?;
+    serde_json::to_writer(&mut w, greeting).map_err(|_| "greeting-index-too-large")?;
+    Ok(())
+}
+pub fn finish_index(bytes: &mut Vec<u8>) -> Result<(), &'static str> {
+    use std::io::Write;
+    BoundedWriter(bytes)
+        .write_all(b"\n]\n")
+        .map_err(|_| "greeting-index-too-large")
+}
+pub fn candidate_id(ordinal: usize) -> String {
+    if ordinal == 0 {
+        "primary".into()
+    } else {
+        format!("alternate:{}", ordinal - 1)
+    }
+}
+pub fn candidate_ordinal(id: &str) -> Option<usize> {
+    if id == "primary" {
+        Some(0)
+    } else {
+        let n = id.strip_prefix("alternate:")?;
+        let i = n.parse::<usize>().ok()?;
+        if i.to_string() != n {
+            return None;
+        };
+        i.checked_add(1)
+    }
+}
+pub fn candidate_summary(ordinal: usize, g: &Greeting) -> Value {
+    let status = if g.text.is_some() {
+        "ready"
+    } else {
+        g.error.as_deref().unwrap_or("empty")
+    };
+    let preview = g
+        .text
+        .as_ref()
+        .map(|s| s.chars().take(128).collect::<String>());
+    json!({"id":candidate_id(ordinal),"status":status,"preview":preview})
+}
+pub fn persona_schema() -> Value {
+    let asset = asset_schema();
+    json!({"type":"object","properties":{"revision":{"type":"string","pattern":"^(0|[1-9][0-9]*)$"},"name":{"type":"string","minLength":1,"maxLength":512},"description":{"type":"string","maxLength":8192},"portrait":{"anyOf":[asset,{"type":"null"}]}},"required":["revision","name","description","portrait"],"additionalProperties":false})
+}
+fn asset_schema() -> Value {
+    json!({"type":"object","properties":{"digest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},"size":{"type":"string","pattern":"^[1-9][0-9]*$"},"mediaType":{"type":"string","enum":["image/png","application/json"]}},"required":["digest","size","mediaType"],"additionalProperties":false})
+}
+pub fn index_schema() -> Value {
+    json!({"type":"object","properties":{"sourceDigest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},"candidates":asset_schema()},"required":["sourceDigest","candidates"],"additionalProperties":false})
+}
+pub fn author_schema() -> Value {
+    let id = json!({"type":"string","format":"uuid"});
+    let rev = json!({"type":"string","pattern":"^(0|[1-9][0-9]*)$"});
+    let persona = persona_schema();
+    json!({"oneOf":[
+    {"type":"object","properties":{"action":{"const":"create"},"itemId":id,"persona":persona},"required":["action","itemId","persona"],"additionalProperties":false},
+    {"type":"object","properties":{"action":{"const":"update"},"itemId":id,"expectedRevision":rev,"persona":persona},"required":["action","itemId","expectedRevision","persona"],"additionalProperties":false},
+    {"type":"object","properties":{"action":{"const":"duplicate"},"itemId":id,"sourceItemId":id,"expectedRevision":rev},"required":["action","itemId","sourceItemId","expectedRevision"],"additionalProperties":false},
+    {"type":"object","properties":{"action":{"const":"delete"},"itemId":id,"expectedRevision":rev},"required":["action","itemId","expectedRevision"],"additionalProperties":false}
+    ]})
+}
+pub fn indexed_schema() -> Value {
+    json!({"type":"object","properties":{"import":schemas().1,"index":index_schema()},"required":["import","index"],"additionalProperties":false})
+}
+pub fn extract_schema() -> Value {
+    json!({"type":"object","properties":{"itemId":{"type":"string","format":"uuid"},"index":index_schema()},"required":["itemId","index"],"additionalProperties":false})
+}
+
+#[cfg(test)]
+mod f3b_tests {
+    use super::*;
+    #[test]
+    fn index_keeps_ordinals_and_validation() {
+        let entries = [
+            "one".to_string(),
+            "duplicate".into(),
+            "duplicate".into(),
+            " ".into(),
+            "\u{0}".repeat(9000),
+            "escaped\nline".into(),
+        ];
+        let mut bytes = Vec::new();
+        for (i, t) in entries.into_iter().enumerate() {
+            append_candidate(&mut bytes, &Greeting::from_source(t), i == 0).unwrap()
+        }
+        finish_index(&mut bytes).unwrap();
+        let gs: Vec<Greeting> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(gs.len(), 6);
+        assert_eq!(gs[1].text, gs[2].text);
+        assert_eq!(gs[3].text, None);
+        assert_eq!(gs[4].error.as_deref(), Some("greeting-too-large"));
+        assert_eq!(gs[5].text.as_deref(), Some("escaped\nline"));
+        for n in 0..6 {
+            assert_eq!(candidate_ordinal(&candidate_id(n)), Some(n));
+        }
+        assert_eq!(candidate_ordinal("alternate:01"), None);
+    }
+    #[test]
+    fn bounded_index_never_allocates_beyond_serialized_cap() {
+        let mut bytes = Vec::new();
+        let g = Greeting::from_source("".into());
+        append_candidate(&mut bytes, &g, true).unwrap();
+        let mut count = 1;
+        while append_candidate(&mut bytes, &g, false).is_ok() {
+            count += 1;
+        }
+        assert!(count > 100_000);
+        assert!(bytes.len() <= MAX_INDEX);
+        assert!(bytes.capacity() <= MAX_INDEX);
+        assert!(MAX_INDEX - bytes.len() < 128);
+    }
+    #[test]
+    fn persona_canonical_revision_utf8_and_encoded_bounds() {
+        let mut p = Persona {
+            revision: "0".into(),
+            name: "Алиса".into(),
+            description: "\u{0}".repeat(8192),
+            portrait: None,
+        };
+        assert!(p.valid());
+        p.description.push('x');
+        assert!(!p.valid());
+        p.description.clear();
+        p.name = "é".repeat(257);
+        assert!(!p.valid());
+        p.name = "x".into();
+        for bad in ["00", "-1", "18446744073709551616", "+1"] {
+            p.revision = bad.into();
+            assert!(!p.valid());
+        }
+    }
+}
+
+// RawValue has already validated the complete JSON syntax. Consume exactly one
+// array element at a time so huge counts never allocate a second Value tree.
+pub struct AlternateCursor {
+    bytes: Vec<u8>,
+    pub offset: usize,
+}
+impl AlternateCursor {
+    pub fn new(bytes: Vec<u8>) -> Result<Self, &'static str> {
+        if bytes.first() != Some(&b'[') {
+            return Err("invalid-card");
+        }
+        Ok(Self { bytes, offset: 1 })
+    }
+    fn whitespace(&mut self) {
+        while self
+            .bytes
+            .get(self.offset)
+            .is_some_and(|b| b.is_ascii_whitespace())
+        {
+            self.offset += 1;
+        }
+    }
+    pub fn next_text(&mut self) -> Result<Option<String>, &'static str> {
+        self.whitespace();
+        if self.bytes.get(self.offset) == Some(&b']') {
+            return Ok(None);
+        }
+        let mut stream =
+            serde_json::Deserializer::from_slice(&self.bytes[self.offset..]).into_iter::<String>();
+        let text = stream
+            .next()
+            .ok_or("invalid-card")?
+            .map_err(|_| "invalid-card")?;
+        self.offset += stream.byte_offset();
+        self.whitespace();
+        match self.bytes.get(self.offset) {
+            Some(b',') => self.offset += 1,
+            Some(b']') => {}
+            _ => return Err("invalid-card"),
+        }
+        Ok(Some(text))
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn cooperative_alternate_cursor_validates_each_original_string() {
+    let mut c =
+        AlternateCursor::new(br#"["first","escaped\nline", "first", ""]"#.to_vec()).unwrap();
+    assert_eq!(c.next_text().unwrap().as_deref(), Some("first"));
+    assert_eq!(c.next_text().unwrap().as_deref(), Some("escaped\nline"));
+    assert_eq!(c.next_text().unwrap().as_deref(), Some("first"));
+    assert_eq!(c.next_text().unwrap().as_deref(), Some(""));
+    assert_eq!(c.next_text().unwrap(), None);
+    assert!(AlternateCursor::new(b"null".to_vec()).is_err());
+    assert!(
+        AlternateCursor::new(b"[true]".to_vec())
+            .unwrap()
+            .next_text()
+            .is_err()
+    );
 }

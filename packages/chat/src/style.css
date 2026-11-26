@@ -58,3 +58,7 @@
 .message-view { margin-top:8px; border:1px solid var(--rtw-border); border-radius:6px; overflow:hidden; }
 .message-view > header { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 8px; }
 .message-view-slot { height:220px; min-height:96px; max-height:65vh; resize:vertical; overflow:hidden; }
+
+.persona-selector,.greeting-navigation{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;padding:.5rem 1rem;font-size:.85rem;color:var(--text-muted,#a8a3b0)}
+.persona-selector select,.greeting-navigation select{min-width:9rem;max-width:16rem;background:var(--surface,#18151e);color:inherit;border:1px solid var(--border,#45404d);border-radius:.4rem;padding:.35rem}
+.greeting-navigation{justify-content:center}

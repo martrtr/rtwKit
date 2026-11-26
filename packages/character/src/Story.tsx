@@ -2,9 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { BridgeError, type Client, type ResourceRef, type ViewState } from '@rintawa/bridge';
 import { DomainClient, DomainError, observeResource, type Observation, type Operation } from '@rintawa/domain';
 import { Button, Icon, Status } from '@rintawa/ui';
+import { PersonaEditor } from './PersonaEditor';
 
 type Card = { id: string; card: { name: string }; greeting: { text: string | null; error: string | null } };
 type Conversation = { id: string; conversation: { title: string; characterId: string | null } };
+type Candidate = { id: string; status: string; preview: string | null };
+type GreetingPage = Page<Candidate> & { sourceDigest: string };
 type Page<T> = { items: T[]; next: string | null };
 const uuid = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
 const text = (error: unknown) => error instanceof Error ? error.message : 'Request unavailable';
@@ -26,6 +29,12 @@ export function Story({ client }: { client: Client }) {
   const [cards, setCards] = useState<Card[]>([]); const [cardCursor, setCardCursor] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]); const [chatCursor, setChatCursor] = useState<string | null>(null);
   const [recovery, setRecovery] = useState<Card | null>(null);
+  const [personaId, setPersonaId] = useState<string | null>(null);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [candidateCursor, setCandidateCursor] = useState<string | null>(null);
+  const [candidateDigest, setCandidateDigest] = useState('');
+  const [candidateIndex, setCandidateIndex] = useState(0);
+  const [candidateText, setCandidateText] = useState('');
   const [uncertain, setUncertain] = useState(false);
   const [committedConversationId, setCommittedConversationId] = useState<string | null>(null);
   const save = async (state: ViewState) => { await client.setState(state); saved.current = state; };
@@ -55,6 +64,7 @@ export function Story({ client }: { client: Client }) {
         if (live.current) setRecovery(card);
         // A known import COMMIT can be followed by an explicit continuation.
         setUncertain(state.phase === 'creating');
+        if (state.phase !== 'creating') await loadGreetings(card);
       } catch (failure) {
         if (!(failure instanceof DomainError) || failure.code !== 'not-found') throw failure;
         setUncertain(true); setNotice('Import outcome unknown. Read the World again before starting another import.');
@@ -115,22 +125,35 @@ export function Story({ client }: { client: Client }) {
     const result = await domain.wait(operation, abort.current.signal); active.current = null;
     return result;
   };
+  const loadGreetings = async (card: Card, after?: string) => {
+    const page = await character.current.request<GreetingPage>('list-greetings', { itemId: card.id, ...(after ? { after, sourceDigest: candidateDigest } : {}) });
+    setCandidates(previous => after ? [...previous, ...page.items] : page.items);
+    setCandidateCursor(page.next); setCandidateDigest(page.sourceDigest);
+    if (!after) { setCandidateIndex(0); await previewCandidate(card, page.items[0], page.sourceDigest); }
+  };
+  const previewCandidate = async (card: Card, candidate: Candidate | undefined, digest: string) => {
+    setCandidateText('');
+    if (candidate?.status === 'ready') {
+      const result = await character.current.request<{ text: string }>('get-greeting', { itemId: card.id, sourceDigest: digest, candidateId: candidate.id });
+      setCandidateText(result.text);
+    }
+  };
+  const chooseCard = async (card: Card) => { setRecovery(card); await save({ characterId: card.id, phase: 'imported' }); await loadGreetings(card); };
   const createChat = async (card: Card, knownId?: string, skipGreeting = false) => {
     if (committedConversationId) { await open(committedConversationId); return; }
     const [conversationId] = knownId ? [knownId] : await chat.current.allocate(1);
-    const current = await character.current.request<Card>('get', { itemId: card.id });
-    if (current.greeting.error && !skipGreeting) throw new Error('Character imported, but its greeting exceeds the message limit. No Chat was created.');
-    let greeting: { messageId: string; entryId: string; text: string } | undefined;
-    if (current.greeting.text && !skipGreeting) {
-      const text = current.greeting.text.replace(/\{\{(char|user)\}\}/g, (_, key) => key === 'char' ? current.card.name : 'You');
+    let greeting: { messageId: string; entryId: string; candidateId: string; sourceDigest: string } | null = null;
+    if (!skipGreeting) {
+      const candidate = candidates[candidateIndex];
+      if (!candidate || candidate.status !== 'ready' || !candidateDigest) throw new Error('Choose an available greeting or start without one.');
       const [messageId, entryId] = await chat.current.allocate(2);
-      greeting = { messageId, entryId, text };
+      greeting = { messageId, entryId, candidateId: candidate.id, sourceDigest: candidateDigest };
     }
     await save({ characterId: card.id, conversationId, phase: 'creating' });
     let sent = false; let terminal = false; let committed = false;
     try {
       sent = true;
-      const operation = await chat.current.begin('begin-create', { conversationId, characterId: card.id, title: card.card.name, ...(greeting ? { greeting } : {}) });
+      const operation = await chat.current.begin('begin-create-context', { conversationId, characterId: card.id, title: card.card.name, personaId, greeting });
       const result = await wait(chat.current, operation);
       terminal = result.status !== 'unknown';
       if (result.status === 'failed') {
@@ -169,8 +192,8 @@ export function Story({ client }: { client: Client }) {
       imported = true;
       const card = await character.current.request<Card>('get', { itemId: characterId });
       void cardObservation.current?.refresh().catch(() => {});
-      await save({ characterId, phase: 'imported' }); setRecovery(card); setNotice('Opening chat…');
-      await createChat(card, conversationId);
+      await save({ characterId, phase: 'imported' }); setRecovery(card); setNotice('Character imported. Choose a greeting.');
+      await loadGreetings(card);
     } catch (failure) {
       if (!imported && sent && !notStarted(failure) && saved.current.phase === 'importing') setUncertain(true);
       else if (!imported && notStarted(failure)) await save({});
@@ -187,10 +210,16 @@ export function Story({ client }: { client: Client }) {
     {cardError && <><Status error>{cardError}</Status><Button disabled={busy} onClick={() => void cardObservation.current?.refresh().catch(() => {})}>Retry characters</Button></>}
     {chatError && <><Status error>{chatError}</Status><Button disabled={busy} onClick={() => void chatObservation.current?.refresh().catch(() => {})}>Retry chats</Button></>}
     {committedConversationId && <Button className="primary" disabled={busy || !ready} onClick={() => void perform(() => open(committedConversationId))}>Retry opening chat</Button>}
-    {recovery && !committedConversationId && <Button className="primary" disabled={busy || !ready || uncertain} onClick={() => void perform(() => createChat(recovery, undefined, !!recovery.greeting.error))}>{recovery.greeting.error ? 'Start without greeting' : 'Continue to chat'}</Button>}
+    <PersonaEditor client={client} selection={personaId} onSelection={setPersonaId} busy={busy || uncertain} />
+    {recovery && !committedConversationId && <section className="greeting-draft">
+      <div className="persona-actions"><Button disabled={busy || candidateIndex === 0} onClick={() => void perform(async () => { const index = candidateIndex - 1; setCandidateIndex(index); await previewCandidate(recovery, candidates[index], candidateDigest); })}>Previous</Button><span>{candidates[candidateIndex]?.id ?? 'Greeting unavailable'}</span><Button disabled={busy || candidateIndex + 1 >= candidates.length && !candidateCursor} onClick={() => void perform(async () => { const index = candidateIndex + 1; if (index >= candidates.length && candidateCursor) { const page = await character.current.request<GreetingPage>('list-greetings', { itemId: recovery.id, after: candidateCursor, sourceDigest: candidateDigest }); setCandidates([...candidates, ...page.items]); setCandidateCursor(page.next); if (page.items[0]) { setCandidateIndex(index); await previewCandidate(recovery, page.items[0], candidateDigest); } } else { setCandidateIndex(index); await previewCandidate(recovery, candidates[index], candidateDigest); } })}>Next</Button></div>
+      {!candidateDigest && <Button disabled={busy || uncertain} onClick={() => void perform(() => loadGreetings(recovery))}>Read greetings</Button>}
+      <p className="greeting-preview">{candidateText || candidates[candidateIndex]?.status || 'Loading…'}</p>
+      <div className="persona-actions"><Button className="primary" disabled={busy || !ready || uncertain || candidates[candidateIndex]?.status !== 'ready'} onClick={() => void perform(() => createChat(recovery))}>Start chat</Button><Button disabled={busy || !ready || uncertain} onClick={() => void perform(() => createChat(recovery, undefined, true))}>Start without greeting</Button></div>
+    </section>}
     {uncertain && <Button disabled={busy} onClick={() => void perform(async () => { await refresh(); if (live.current) await restore(); })}>Read World</Button>}
     {!!conversations.length && <div className="story-choices">{conversations.map(row => <Button key={row.id} disabled={busy} onClick={() => void perform(() => open(row.id))}><Icon name="chat" size={16} />{row.conversation.title}</Button>)}</div>}
-    {!recovery && !committedConversationId && cards.filter(card => !conversations.some(row => row.conversation.characterId === card.id)).map(card => <Button key={card.id} disabled={busy || uncertain} onClick={() => void perform(() => createChat(card))}>Continue with {card.card.name}</Button>)}
+    {!recovery && !committedConversationId && cards.filter(card => !conversations.some(row => row.conversation.characterId === card.id)).map(card => <Button key={card.id} disabled={busy || uncertain} onClick={() => void perform(() => chooseCard(card))}>Continue with {card.card.name}</Button>)}
     {!uncertain && !recovery && !committedConversationId && <><label htmlFor="story-character-file" className={`import-button${!ready || busy ? ' disabled' : ''}`} aria-disabled={!ready || busy}>Import character</label><input id="story-character-file" className="file-input" type="file" accept=".png,.json" disabled={!ready || busy} onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) void perform(() => importCard(file)); }} /></>}
     {(cardCursor || chatCursor) && <Button disabled={busy || !!cardError || !!chatError} onClick={() => void perform(async () => {
       const reads: Promise<void>[] = [];

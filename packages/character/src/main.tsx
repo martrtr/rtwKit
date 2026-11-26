@@ -6,6 +6,7 @@ import { Button, Status } from '@rintawa/ui';
 import '@rintawa/ui/style.css';
 import './style.css';
 import { Story } from './Story';
+import { PersonaEditor } from './PersonaEditor';
 
 type Character = { id: string; card: { name: string; source: AssetRef; portrait: AssetRef | null } };
 type List = { items: Character[]; next: string | null };
@@ -157,9 +158,15 @@ function App() {
         <svg viewBox="0 0 64 64" fill="none" aria-hidden="true"><rect x="10" y="8" width="44" height="48" rx="6" /><circle cx="32" cy="26" r="7" /><path d="M20 47c1.8-6.2 6-9 12-9s10.2 2.8 12 9" /></svg>
         <h2>No characters yet</h2><p>Import a character card to add it to this World.</p><label htmlFor="character-file" className={`import-button${importDisabled ? ' disabled' : ''}`} aria-disabled={importDisabled}>Import character</label>
       </div>}
+      {ready && bridge.current && <PersonaEditor client={bridge.current} busy={busy} />}
       <div className="character-content">
         {!!items.length && <><div className="collection-label">YOUR CHARACTERS <span>{items.length}{cursor ? '+' : ''}</span></div><nav className="character-grid" aria-label="Characters">{items.map(item => <button className={selected?.id === item.id ? 'character-card selected' : 'character-card'} key={item.id} disabled={busy} onClick={() => setSelected(item)}><Portrait client={bridge.current} item={item} /><span className="character-card-text"><strong>{item.card.name}</strong></span><span className="character-arrow" aria-hidden="true" /></button>)}</nav>{cursor && <Button disabled={busy || !!catalogError} onClick={() => void read(async () => { pages.current++; await observation.current?.refresh().catch(() => {}); })}>More characters</Button>}</>}
-        <section className={selected ? 'character-detail' : 'character-detail empty'} aria-label="Character details">{selected && <><Portrait client={bridge.current} item={selected} large /><div className="character-detail-copy"><span className="detail-label">CHARACTER</span><h2>{selected.card.name}</h2><p>{sourceFormat(selected.card.source)} · {sourceSize(selected.card.source.size)}</p></div><button className="close-detail" aria-label="Close character details" onClick={() => setSelected(null)}>×</button></>}</section>
+        <section className={selected ? 'character-detail' : 'character-detail empty'} aria-label="Character details">{selected && <><Portrait client={bridge.current} item={selected} large /><div className="character-detail-copy"><span className="detail-label">CHARACTER</span><h2>{selected.card.name}</h2><p>{sourceFormat(selected.card.source)} · {sourceSize(selected.card.source.size)}</p></div><Button disabled={busy} onClick={() => void read(async () => {
+          const operation = await domain.current!.begin('begin-extract-greetings', { itemId: selected.id });
+          active.current = operation; const result = await domain.current!.wait(operation); active.current = null;
+          if (result.status === 'failed') throw new Error(result.reason); if (result.status === 'unknown') throw new Error('Outcome unknown; reread the greeting list before retrying.');
+          setNotice('Greeting choices indexed.');
+        })}>Index alternate greetings</Button><button className="close-detail" aria-label="Close character details" onClick={() => setSelected(null)}>×</button></>}</section>
       </div>
     </div>
   </main>;

@@ -1,0 +1,16 @@
+.world-atlas{padding:16px;display:grid;gap:12px;height:100%;overflow:auto}
+.world-atlas header,.world-atlas h2,.world-atlas .actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.world-atlas h1{margin:0 auto 0 0;font-size:1.3rem}
+.world-atlas h2{font-size:1rem;justify-content:space-between}
+.world-atlas-body{display:grid;grid-template-columns:minmax(150px,1fr) minmax(220px,2fr);gap:16px;align-items:start}
+.world-atlas nav,.world-atlas .editor{min-width:0}
+.world-atlas nav section{display:grid;gap:5px;margin-bottom:12px}
+.world-atlas .row{display:grid;gap:3px;text-align:left;color:inherit;background:transparent;border:1px solid currentColor;border-radius:6px;padding:8px;cursor:pointer;overflow-wrap:anywhere}
+.world-atlas .row.selected{outline:2px solid currentColor}
+.world-atlas small{opacity:.75;overflow-wrap:anywhere}
+.world-atlas .editor{display:grid;gap:12px}
+.world-atlas .editor label{display:grid;gap:4px}
+.world-atlas .editor label:has(input[type=checkbox]){display:flex;align-items:center}
+.world-atlas input,.world-atlas textarea,.world-atlas select{max-width:100%;font:inherit;color:inherit;background:transparent;border:1px solid currentColor;border-radius:4px;padding:6px}
+.world-atlas textarea{min-height:120px;resize:vertical}
+@media(max-width:550px){.world-atlas-body{grid-template-columns:1fr}}

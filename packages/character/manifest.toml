@@ -8,7 +8,7 @@ kind = "runtime"
 target = "rintawa.runtime.wasm-component@1"
 entry = "backend.wasm"
 [components.permissions]
-runtime = ["background-task", "user-resource-read", "asset-import"]
+runtime = ["background-task", "user-resource-read", "asset-import", "asset-read"]
 [[components]]
 id = "ui"
 kind = "ui"

@@ -1,0 +1,9 @@
+.memory{padding:16px;display:grid;gap:12px;height:100%;overflow:auto;align-content:start}
+.memory header,.memory h2,.memory .actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.memory h1{margin:0 auto 0 0;font-size:1.3rem}.memory h2{font-size:1rem;margin:0;justify-content:space-between}
+.memory-intro{color:var(--rtw-muted);margin:0}.memory-layout{display:grid;grid-template-columns:minmax(170px,1fr) minmax(220px,2fr);gap:16px;align-items:start}
+.memory aside,.memory-detail{min-width:0;display:grid;gap:12px;align-content:start}.memory section{display:grid;gap:8px;padding:12px;border:1px solid var(--rtw-border);border-radius:8px;background:var(--rtw-surface);overflow-wrap:anywhere}
+.memory label{display:grid;gap:4px}.memory select,.memory textarea{max-width:100%;min-width:0;font:inherit;color:var(--rtw-text);background:var(--rtw-background);border:1px solid var(--rtw-border);border-radius:6px;padding:8px}.memory textarea{min-height:120px;resize:vertical;white-space:pre-wrap}
+.memory .memory-row{display:grid;gap:3px;text-align:left;color:inherit;background:var(--rtw-raised);border:1px solid var(--rtw-border);border-radius:6px;padding:8px;cursor:pointer;overflow-wrap:anywhere}.memory .memory-row.selected{border-color:var(--rtw-accent)}.memory .memory-row:hover:not(:disabled){background:var(--rtw-hover)}
+.memory small,.memory dl{color:var(--rtw-muted);overflow-wrap:anywhere}.memory dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 12px;margin:0}.memory dd{margin:0}.memory-unknown{border-color:var(--rtw-accent)!important}
+@media(max-width:550px){.memory-layout{grid-template-columns:1fr}}

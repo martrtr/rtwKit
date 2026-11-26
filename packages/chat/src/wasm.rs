@@ -1,14 +1,15 @@
 //! Scoped Chat service: short polled requests, retained command outcomes and pure Systems.
 use std::cell::RefCell;
 
+use crate::model::{Context, ContextCreate, Family, Provenance, Select};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rintawa_domain_operations::{Caller, Operations, Outcome};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::history;
 use crate::model::{self, Append, AssistantAppend, Conversation, Create, Message};
+use crate::{history, source};
 wit_bindgen::generate!({ path: "../../wit", world: "domain-plugin" });
 use rintawa::engine::{
     host, registration, runtime_context, runtime_tasks, transport, world_data, world_registration,
@@ -20,12 +21,15 @@ const CONTRACT: &str = "rintawa.chat";
 const CONVERSATION: &str = "rintawa.chat.conversation@1";
 const MESSAGE: &str = "rintawa.chat.message@1";
 const ENTRY: &str = "rintawa.chat.entry@1";
-const MAX_REPLY: usize = 64 * 1024;
+const CONTEXT: &str = "rintawa.chat.context@1";
+const FAMILY: &str = "rintawa.chat.family-target@1";
+const MAX_REPLY: usize = source::MAX_REPLY;
 struct Pending {
     ticket: Option<u64>,
     conversation_id: Uuid,
     item_ids: Vec<String>,
     preparation: Option<Preparation>,
+    context_work: Option<ContextWork>,
 }
 struct Preparation {
     input: history::Fork,
@@ -62,6 +66,36 @@ enum Call {
         character_id: Option<Uuid>,
         #[serde(default)]
         greeting: Option<model::Greeting>,
+    },
+    BeginCreateContext {
+        conversation_id: Uuid,
+        title: String,
+        character_id: Option<Uuid>,
+        persona_id: Option<Uuid>,
+        greeting: Option<Candidate>,
+    },
+    BeginSelectPersona {
+        conversation_id: Uuid,
+        #[serde(deserialize_with = "model::deserialize_revision")]
+        expected_conversation_revision: String,
+        expected_last_entry_id: Option<Uuid>,
+        persona_id: Option<Uuid>,
+    },
+    BeginChooseGreeting {
+        source_conversation_id: Uuid,
+        #[serde(deserialize_with = "model::deserialize_revision")]
+        expected_conversation_revision: String,
+        expected_last_entry_id: Option<Uuid>,
+        candidate_id: String,
+        source_digest: String,
+        conversation_id: Uuid,
+        message_id: Uuid,
+        entry_id: Uuid,
+    },
+    FindGreetingFamily {
+        conversation_id: Uuid,
+        candidate_id: String,
+        source_digest: String,
     },
     BeginSend {
         conversation_id: Uuid,
@@ -110,6 +144,15 @@ enum Call {
         #[serde(default)]
         after: Option<Uuid>,
     },
+    SourceState {
+        conversation_id: Uuid,
+    },
+    SourceWindow {
+        conversation_id: Uuid,
+        format: String,
+        head_entry_id: Option<Uuid>,
+        after_entry_id: Option<Uuid>,
+    },
     GetMessage {
         conversation_id: Uuid,
         #[serde(default)]
@@ -123,6 +166,287 @@ enum Call {
         #[serde(default)]
         before: Option<Uuid>,
     },
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Candidate {
+    message_id: Uuid,
+    entry_id: Uuid,
+    source_digest: String,
+    candidate_id: String,
+}
+struct ContextWork {
+    select: Option<Select>,
+    create: Option<ContextCreate>,
+    candidate: Option<Candidate>,
+    persona: Option<(String, String)>,
+    char_name: Option<String>,
+    raw: Option<String>,
+    query: Option<u64>,
+    stage: u8,
+}
+impl ContextWork {
+    fn persona_id(&self) -> Option<Uuid> {
+        self.select
+            .as_ref()
+            .and_then(|s| s.persona_id)
+            .or_else(|| self.create.as_ref().and_then(|s| s.context.persona_id))
+    }
+    fn advance(&mut self) -> Result<Option<(&'static str, Value)>, &'static str> {
+        let card = self.create.as_ref().and_then(|c| c.input.character_id);
+        let request = match self.stage {
+            0 if self.persona_id().is_some()
+                && self.create.as_ref().is_none_or(|c| c.source.is_none()) =>
+            {
+                Some(json!({"method":"get-persona","itemId":self.persona_id()}))
+            }
+            1 if self.candidate.is_some() => Some(json!({"method":"get","itemId":card})),
+            2 if self.candidate.is_some() => {
+                let candidate = self.candidate.as_ref().unwrap();
+                Some(
+                    json!({"method":"get-greeting","itemId":card,"sourceDigest":candidate.source_digest,"candidateId":candidate.candidate_id}),
+                )
+            }
+            0..=2 => {
+                self.stage += 1;
+                return Ok(None);
+            }
+            _ => {
+                if let Some(select) = &self.select {
+                    return Ok(Some(("rintawa.chat.select-persona@1", json!(select))));
+                }
+                let create = self.create.as_mut().ok_or("invalid-request")?;
+                if let Some(candidate) = &self.candidate {
+                    let provenance = if let Some(previous) = &create.context.greeting {
+                        let mut p = previous.clone();
+                        p.candidate_id = candidate.candidate_id.clone();
+                        p.message_id = candidate.message_id;
+                        p
+                    } else {
+                        let (rev, name) = self
+                            .persona
+                            .clone()
+                            .map(|(r, n)| (Some(r), n))
+                            .unwrap_or((None, "You".into()));
+                        Provenance {
+                            group_id: create.input.conversation_id,
+                            card_id: card.ok_or("invalid-character")?,
+                            source_digest: candidate.source_digest.clone(),
+                            candidate_id: candidate.candidate_id.clone(),
+                            persona_id: create.context.persona_id,
+                            persona_revision: rev,
+                            persona_name: name,
+                            message_id: candidate.message_id,
+                        }
+                    };
+                    let text = model::expand_greeting(
+                        self.raw.as_deref().ok_or("invalid-response")?,
+                        self.char_name.as_deref().ok_or("invalid-response")?,
+                        &provenance.persona_name,
+                    )?;
+                    create.input.greeting = Some(model::Greeting {
+                        message_id: candidate.message_id,
+                        entry_id: candidate.entry_id,
+                        text,
+                    });
+                    create.context.greeting = Some(provenance);
+                }
+                model::create_context_changes(create, false, true, false)?;
+                return Ok(Some(("rintawa.chat.create-context@1", json!(create))));
+            }
+        };
+        if self.query.is_none() {
+            let providers = runtime_context::selected_providers("rintawa.character", 1)
+                .map_err(|_| "character-unavailable")?;
+            if providers.len() != 1 {
+                return Err("character-unavailable");
+            }
+            self.query = Some(
+                transport::begin_query_to(
+                    "rintawa/character/v1",
+                    &serde_json::to_vec(&request.unwrap()).map_err(|_| "invalid-request")?,
+                    &providers[0],
+                )
+                .map_err(|_| "character-unavailable")?,
+            );
+            return Ok(None);
+        }
+        let handle = self.query.unwrap();
+        let result = match transport::poll_query(handle) {
+            Ok(None) => return Ok(None),
+            other => other,
+        };
+        let _ = transport::close_query(handle);
+        self.query = None;
+        let rows = result
+            .map_err(|_| "character-unavailable")?
+            .ok_or("character-unavailable")?;
+        if rows.len() != 1 {
+            return Err("character-unavailable");
+        }
+        let reply: Value = serde_json::from_slice(&rows[0]).map_err(|_| "invalid-response")?;
+        if reply["ok"] != true {
+            return Err(if self.stage == 0 {
+                "persona-unavailable"
+            } else {
+                "greeting-unavailable"
+            });
+        }
+        let v = &reply["value"];
+        match self.stage {
+            0 => {
+                if v["id"] != json!(self.persona_id()) {
+                    return Err("invalid-response");
+                }
+                let rev = v["persona"]["revision"]
+                    .as_str()
+                    .ok_or("invalid-response")?;
+                model::revision(rev)?;
+                let name = v["persona"]["name"].as_str().ok_or("invalid-response")?;
+                if name.trim().is_empty() || name.len() > 512 {
+                    return Err("invalid-response");
+                }
+                self.persona = Some((rev.into(), name.into()));
+            }
+            1 => {
+                if v["id"] != json!(card)
+                    || v["card"]["source"]["digest"]
+                        != self.candidate.as_ref().unwrap().source_digest
+                {
+                    return Err("stale-context");
+                }
+                self.char_name = Some(v["card"]["name"].as_str().ok_or("invalid-response")?.into());
+            }
+            2 => {
+                let c = self.candidate.as_ref().unwrap();
+                if v["id"] != json!(card)
+                    || v["sourceDigest"] != c.source_digest
+                    || v["candidateId"] != c.candidate_id
+                {
+                    return Err("invalid-response");
+                }
+                self.raw = Some(v["text"].as_str().ok_or("invalid-response")?.into());
+            }
+            _ => unreachable!(),
+        }
+        self.stage += 1;
+        Ok(None)
+    }
+}
+fn decode_context(raw: Option<String>) -> Result<Option<Context>, &'static str> {
+    let value = raw.map(property_data).transpose()?;
+    if value.as_ref().is_some_and(|v| {
+        v.get("personaId").is_none()
+            || v.get("greeting").is_none()
+            || v.get("greeting").is_some_and(|g| {
+                !g.is_null() && (g.get("personaId").is_none() || g.get("personaRevision").is_none())
+            })
+    }) {
+        return Err("invalid-stored-data");
+    }
+    let context: Option<Context> = value
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| "invalid-stored-data")?;
+    if context.as_ref().is_some_and(|c| !c.valid()) {
+        return Err("invalid-stored-data");
+    }
+    Ok(context)
+}
+fn read_context(id: Uuid) -> Result<Option<Context>, &'static str> {
+    decode_context(world_data::load_property(&id.to_string(), CONTEXT).map_err(world_error)?)
+}
+fn snapshot_context(id: Uuid) -> Result<Option<Context>, String> {
+    decode_context(
+        world_system_snapshot::load_property(&id.to_string(), CONTEXT)
+            .map_err(|_| "snapshot-unavailable")?,
+    )
+    .map_err(str::to_owned)
+}
+fn first_is_greeting(id: Uuid, g: &Provenance, snapshot: bool) -> Result<bool, &'static str> {
+    let rows = if snapshot {
+        world_system_snapshot::find_relations(
+            &[id.to_string()],
+            world_system_snapshot::Direction::Outgoing,
+            Some(ENTRY),
+            None,
+            1,
+        )
+        .map_err(|_| "snapshot-unavailable")?
+    } else {
+        world_data::find_relations(
+            &[id.to_string()],
+            world_system_snapshot::Direction::Outgoing,
+            Some(ENTRY),
+            None,
+            1,
+        )
+        .map_err(world_error)?
+    };
+    rows.first()
+        .map(|r| parse_entry(r, id).map(|e| e.message_id == g.message_id))
+        .transpose()
+        .map(|r| r.unwrap_or(false))
+}
+fn find_family(family: &Family, snapshot: bool) -> Result<Option<Uuid>, &'static str> {
+    if !family.valid() {
+        return Err("invalid-request");
+    }
+    let mut after = None;
+    let mut result = None;
+    loop {
+        let rows = if snapshot {
+            world_system_snapshot::find_properties(FAMILY, after.as_deref(), 32)
+                .map_err(|_| "snapshot-unavailable")?
+        } else {
+            world_data::find_properties(FAMILY, after.as_deref(), 32).map_err(world_error)?
+        };
+        for row in &rows {
+            let record: Value = serde_json::from_str(row).map_err(|_| "invalid-stored-data")?;
+            let item = record["item"].as_str().ok_or("invalid-stored-data")?;
+            after = Some(item.to_owned());
+            let key: Family = serde_json::from_value(record["data"].clone())
+                .map_err(|_| "invalid-stored-data")?;
+            if !key.valid() {
+                return Err("invalid-stored-data");
+            }
+            if key == *family {
+                let id = Uuid::parse_str(item).map_err(|_| "invalid-stored-data")?;
+                if result.replace(id).is_some() {
+                    return Err("ambiguous-variant");
+                }
+            }
+        }
+        if rows.len() < 32 {
+            break;
+        }
+    }
+    Ok(result)
+}
+fn read_chat(id: Uuid) -> Result<(Conversation, Option<Context>), &'static str> {
+    let raw = world_data::read(&[id.to_string()], &[CONVERSATION.into(), CONTEXT.into()])
+        .map_err(world_error)?;
+    let data: Value = serde_json::from_str(&raw).map_err(|_| "invalid-stored-data")?;
+    let props = data["properties"].as_array().ok_or("invalid-stored-data")?;
+    let conversation = props
+        .iter()
+        .find(|p| p["key"]["id"] == "rintawa.chat.conversation")
+        .ok_or("not-found")?;
+    let conversation: Conversation =
+        serde_json::from_value(conversation["data"].clone()).map_err(|_| "invalid-stored-data")?;
+    let context = decode_context(
+        props
+            .iter()
+            .find(|p| p["key"]["id"] == "rintawa.chat.context")
+            .map(Value::to_string),
+    )?;
+    Ok((conversation, context))
+}
+fn snapshot_conversation(id: Uuid) -> Result<Conversation, String> {
+    let raw = world_system_snapshot::load_property(&id.to_string(), CONVERSATION)
+        .map_err(|_| "snapshot-unavailable")?
+        .ok_or("not-found")?;
+    serde_json::from_value(property_data(raw)?).map_err(|_| "invalid-stored-data".into())
 }
 fn caller(value: &runtime_context::Principal) -> Caller {
     Caller {
@@ -261,6 +585,37 @@ impl State {
     fn poll_operations(&mut self) {
         for token in self.operations.pending_ids() {
             let work = self.operations.work_mut(&token).unwrap();
+            if let Some(context) = &mut work.context_work {
+                match context.advance() {
+                    Ok(None) => continue,
+                    Ok(Some((schema, payload))) => {
+                        match world_data::submit(schema, &payload.to_string()) {
+                            Ok(ticket) => {
+                                work.ticket = Some(ticket);
+                                work.context_work = None;
+                            }
+                            Err(error) => {
+                                let _ = self.operations.finish(
+                                    &token,
+                                    Outcome::Failed {
+                                        reason: world_error(error).into(),
+                                    },
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                    Err(reason) => {
+                        let _ = self.operations.finish(
+                            &token,
+                            Outcome::Failed {
+                                reason: reason.into(),
+                            },
+                        );
+                        continue;
+                    }
+                }
+            }
             if let Some(preparation) = &mut work.preparation {
                 match prepare_fork(preparation) {
                     Ok(None) => continue,
@@ -339,6 +694,7 @@ impl State {
                     conversation_id,
                     item_ids: item_ids.clone(),
                     preparation: None,
+                    context_work: None,
                 },
             )
             .map_err(|_| "limit-exceeded")?;
@@ -355,6 +711,36 @@ impl State {
                 return Err(world_error(error));
             }
         }
+        Ok(json!({"status":"pending","operation":token,"itemIds":item_ids}))
+    }
+    fn begin_context(
+        &mut self,
+        who: Caller,
+        id: Uuid,
+        work: ContextWork,
+    ) -> Result<Value, &'static str> {
+        if self.operations.len() >= 16 {
+            return Err("limit-exceeded");
+        }
+        let token = URL_SAFE_NO_PAD.encode(host::random_bytes(32).map_err(|_| "unavailable")?);
+        let mut item_ids = vec![id.to_string()];
+        if let Some(c) = &work.candidate {
+            item_ids.push(c.message_id.to_string());
+            item_ids.push(c.entry_id.to_string());
+        }
+        self.operations
+            .admit(
+                token.clone(),
+                who,
+                Pending {
+                    ticket: None,
+                    conversation_id: id,
+                    item_ids: item_ids.clone(),
+                    preparation: None,
+                    context_work: Some(work),
+                },
+            )
+            .map_err(|_| "limit-exceeded")?;
         Ok(json!({"status":"pending","operation":token,"itemIds":item_ids}))
     }
     fn dispatch(
@@ -376,9 +762,12 @@ impl State {
             "messageId",
             "entryId",
             "characterId",
+            "personaId",
             "userMessageId",
             "expectedLastEntryId",
             "after",
+            "headEntryId",
+            "afterEntryId",
             "before",
         ] {
             if let Some(Value::String(id)) = value.get(key)
@@ -398,6 +787,28 @@ impl State {
                 }
             }
         }
+        match value["method"].as_str() {
+            Some("source-window")
+                if value.get("headEntryId").is_none() || value.get("afterEntryId").is_none() =>
+            {
+                return Err("invalid-request");
+            }
+            Some("begin-create-context")
+                if value.get("personaId").is_none() || value.get("greeting").is_none() =>
+            {
+                return Err("invalid-request");
+            }
+            Some("begin-select-persona")
+                if value.get("personaId").is_none()
+                    || value.get("expectedLastEntryId").is_none() =>
+            {
+                return Err("invalid-request");
+            }
+            Some("begin-choose-greeting") if value.get("expectedLastEntryId").is_none() => {
+                return Err("invalid-request");
+            }
+            _ => {}
+        }
         // Parse the original bytes so duplicate fields remain errors.
         let call: Call = serde_json::from_slice(bytes).map_err(|_| "invalid-request")?;
         let who = caller(principal);
@@ -408,6 +819,17 @@ impl State {
                 Ok(json!({"instanceId":context.principal.instance_id,"componentId":"ui"}))
             }
             Call::List { after } => list_conversations(after),
+            Call::SourceState { conversation_id } => {
+                let conversation = source_conversation(conversation_id)?;
+                Ok(source::state(conversation_id, conversation.last_entry_id))
+            }
+            Call::SourceWindow {
+                conversation_id,
+                format,
+                head_entry_id,
+                after_entry_id,
+            } => source_window(conversation_id, &format, head_entry_id, after_entry_id),
+
             Call::GetMessage {
                 conversation_id,
                 message_id,
@@ -489,6 +911,7 @@ impl State {
                             ticket: None,
                             conversation_id: input.conversation_id,
                             item_ids: item_ids.clone(),
+                            context_work: None,
                             preparation: Some(Preparation {
                                 input,
                                 after: None,
@@ -500,6 +923,157 @@ impl State {
                     )
                     .map_err(|_| "limit-exceeded")?;
                 Ok(json!({"status":"pending","operation":token,"itemIds":item_ids}))
+            }
+            Call::BeginCreateContext {
+                conversation_id,
+                title,
+                character_id,
+                persona_id,
+                greeting,
+            } => {
+                if !own_ui && !workflow(principal) {
+                    return Err("access-denied");
+                }
+                if greeting.is_some() && character_id.is_none() {
+                    return Err("invalid-character");
+                }
+                self.begin_context(
+                    who,
+                    conversation_id,
+                    ContextWork {
+                        select: None,
+                        create: Some(ContextCreate {
+                            input: Create {
+                                conversation_id,
+                                title,
+                                character_id,
+                                greeting: None,
+                            },
+                            context: Context {
+                                persona_id,
+                                greeting: None,
+                            },
+                            source: None,
+                        }),
+                        candidate: greeting,
+                        persona: None,
+                        char_name: None,
+                        raw: None,
+                        query: None,
+                        stage: 0,
+                    },
+                )
+            }
+            Call::BeginSelectPersona {
+                conversation_id,
+                expected_conversation_revision,
+                expected_last_entry_id,
+                persona_id,
+            } => {
+                if !own_ui {
+                    return Err("access-denied");
+                }
+                self.begin_context(
+                    who,
+                    conversation_id,
+                    ContextWork {
+                        select: Some(Select {
+                            conversation_id,
+                            expected_conversation_revision,
+                            expected_last_entry_id,
+                            persona_id,
+                        }),
+                        create: None,
+                        candidate: None,
+                        persona: None,
+                        char_name: None,
+                        raw: None,
+                        query: None,
+                        stage: 0,
+                    },
+                )
+            }
+            Call::FindGreetingFamily {
+                conversation_id,
+                candidate_id,
+                source_digest,
+            } => {
+                let g = read_context(conversation_id)?
+                    .and_then(|c| c.greeting)
+                    .ok_or("greeting-unavailable")?;
+                if g.source_digest != source_digest
+                    || !first_is_greeting(conversation_id, &g, false)?
+                {
+                    return Err("greeting-unavailable");
+                }
+                let mut family = g.family();
+                family.candidate_id = candidate_id;
+                Ok(json!({"conversationId":find_family(&family,false)?}))
+            }
+            Call::BeginChooseGreeting {
+                source_conversation_id,
+                expected_conversation_revision,
+                expected_last_entry_id,
+                candidate_id,
+                source_digest,
+                conversation_id,
+                message_id,
+                entry_id,
+            } => {
+                if !own_ui {
+                    return Err("access-denied");
+                }
+                let (conversation, context) = read_chat(source_conversation_id)?;
+                if conversation.revision != expected_conversation_revision
+                    || conversation.last_entry_id != expected_last_entry_id
+                {
+                    return Err("stale-context");
+                }
+                let context = context.ok_or("greeting-unavailable")?;
+                let g = context.greeting.as_ref().ok_or("greeting-unavailable")?;
+                if g.source_digest != source_digest
+                    || !first_is_greeting(source_conversation_id, g, false)?
+                {
+                    return Err("greeting-unavailable");
+                }
+                let mut family = g.family();
+                family.candidate_id = candidate_id.clone();
+                if let Some(id) = find_family(&family, false)? {
+                    return Ok(json!({"status":"existing","conversationId":id}));
+                }
+                self.begin_context(
+                    who,
+                    conversation_id,
+                    ContextWork {
+                        select: None,
+                        create: Some(ContextCreate {
+                            input: Create {
+                                conversation_id,
+                                title: conversation.title,
+                                character_id: conversation.character_id,
+                                greeting: None,
+                            },
+                            source: Some(Select {
+                                conversation_id: source_conversation_id,
+                                expected_conversation_revision,
+                                expected_last_entry_id,
+                                persona_id: context.persona_id,
+                            }),
+                            context,
+                        }),
+                        candidate: Some(Candidate {
+                            message_id,
+                            entry_id,
+                            source_digest,
+                            candidate_id,
+                        }),
+                        persona: None,
+                        char_name: None,
+                        raw: None,
+                        query: None,
+                        stage: 0,
+                    },
+                )
             }
             Call::BeginCreate {
                 conversation_id,
@@ -666,29 +1240,41 @@ fn list_conversations(after: Option<Uuid>) -> Result<Value, &'static str> {
     let rows =
         world_data::find_properties(CONVERSATION, cursor.as_deref(), 32).map_err(world_error)?;
     let mut items = Vec::new();
-    for row in &rows {
+    let mut next = None;
+    for (index, row) in rows.iter().enumerate() {
         let record: Value = serde_json::from_str(row).map_err(|_| "invalid-stored-data")?;
-        let conversation: Conversation =
-            serde_json::from_value(record["data"].clone()).map_err(|_| "invalid-stored-data")?;
-        items.push(json!({"id":record["item"],"conversation":conversation}));
+        let id = Uuid::parse_str(record["item"].as_str().ok_or("invalid-stored-data")?)
+            .map_err(|_| "invalid-stored-data")?;
+        let (conversation, context) = read_chat(id)?;
+        items.push(json!({"id":id,"conversation":conversation,"context":context}));
+        if json!({"ok":true,"value":{"items":items,"next":id}})
+            .to_string()
+            .len()
+            > MAX_REPLY
+        {
+            items.pop();
+            if items.is_empty() {
+                return Err("message-too-large");
+            }
+            next = items.last().map(|row| row["id"].clone());
+            break;
+        }
+        if index == 31 {
+            next = Some(json!(id));
+        }
     }
-    let next = if rows.len() == 32 {
-        items.last().map(|row| row["id"].clone())
-    } else {
-        None
-    };
     Ok(json!({"items":items,"next":next}))
 }
 // Query in storage order; recent pages are returned in transcript order. A head
 // is derived from returned rows, never from separately read conversation metadata.
 fn page(conversation: Uuid, cursor: Option<Uuid>, recent: bool) -> Result<Value, &'static str> {
     let id = conversation.to_string();
-    let metadata = world_data::load_property(&id, CONVERSATION)
-        .map_err(world_error)?
-        .ok_or("not-found")?;
-    let metadata: Conversation =
-        serde_json::from_value(property_data(metadata)?).map_err(|_| "invalid-stored-data")?;
+    let (metadata, context) = read_chat(conversation)?;
     let metadata = json!(metadata);
+    let greeting_available = match context.as_ref().and_then(|c| c.greeting.as_ref()) {
+        Some(g) => first_is_greeting(conversation, g, false)?,
+        None => false,
+    };
     let cursor = cursor.map(|id| id.to_string());
     let query = if recent {
         world_data::find_relations_before
@@ -716,7 +1302,14 @@ fn page(conversation: Uuid, cursor: Option<Uuid>, recent: bool) -> Result<Value,
         let entry = json!({"entryId":relation["id"],"messageId":message_id,"message":message});
         items.push(entry);
         // Reserve the full continuation cursor even if this is the last row.
-        let candidate = page_value(&metadata, &items, Some(relation["id"].clone()), recent);
+        let candidate = page_value(
+            &metadata,
+            &items,
+            Some(relation["id"].clone()),
+            recent,
+            &context,
+            greeting_available,
+        );
         if serde_json::to_vec(&json!({"ok":true,"value":candidate}))
             .map_err(|_| "unavailable")?
             .len()
@@ -733,8 +1326,92 @@ fn page(conversation: Uuid, cursor: Option<Uuid>, recent: bool) -> Result<Value,
             next = Some(relation["id"].clone());
         }
     }
-    Ok(page_value(&metadata, &items, next, recent))
+    Ok(page_value(
+        &metadata,
+        &items,
+        next,
+        recent,
+        &context,
+        greeting_available,
+    ))
 }
+// Source reads intentionally ignore persona/greeting context; these values are
+// not history epochs and changing them doesn't invalidate message evidence.
+fn source_conversation(id: Uuid) -> Result<Conversation, &'static str> {
+    let raw = world_data::load_property(&id.to_string(), CONVERSATION)
+        .map_err(world_error)?
+        .ok_or("not-found")?;
+    serde_json::from_value(property_data(raw)?).map_err(|_| "invalid-stored-data")
+}
+
+fn source_membership(conversation: Uuid, entry: Uuid) -> Result<(), &'static str> {
+    let raw = world_data::load_item(&entry.to_string())
+        .map_err(world_error)?
+        .ok_or("invalid-source-boundary")?;
+    let row: Value = serde_json::from_str(&raw).map_err(|_| "invalid-stored-data")?;
+    if row["kind"] != "relation" || row["subject"] != conversation.to_string() {
+        return Err("invalid-source-boundary");
+    }
+    if parse_entry(&raw, conversation)?.entry_id != entry {
+        return Err("invalid-stored-data");
+    }
+    let tag = world_data::load_property(&entry.to_string(), ENTRY)
+        .map_err(world_error)?
+        .ok_or("invalid-source-boundary")?;
+    if property_data(tag)? != json!({}) {
+        return Err("invalid-stored-data");
+    }
+    Ok(())
+}
+
+fn source_window(
+    conversation: Uuid,
+    format: &str,
+    head: Option<Uuid>,
+    after: Option<Uuid>,
+) -> Result<Value, &'static str> {
+    if format != source::FORMAT {
+        return Err("unsupported-source-format");
+    }
+    source_conversation(conversation)?;
+    source::validate_boundary(head, after)?;
+    if let Some(id) = head {
+        source_membership(conversation, id)?;
+    }
+    if let Some(id) = after
+        && after != head
+    {
+        source_membership(conversation, id)?;
+    }
+    let mut entries = Vec::new();
+    if head != after {
+        let cursor = after.map(|id| id.to_string());
+        // The query itself guarantees the exact ENTRY property filter and
+        // outgoing source endpoint. parse_entry checks the returned facts.
+        let rows = world_data::find_relations(
+            &[conversation.to_string()],
+            world_system_snapshot::Direction::Outgoing,
+            Some(ENTRY),
+            cursor.as_deref(),
+            source::MAX_ROWS as u32,
+        )
+        .map_err(world_error)?;
+        for row in &rows {
+            let entry = parse_entry(row, conversation)?;
+            entries.push(entry);
+            if Some(entry.entry_id) >= head {
+                break;
+            }
+        }
+    }
+    source::window(conversation, head, after, &entries, |id| {
+        let raw = world_data::load_property(&id.to_string(), MESSAGE)
+            .map_err(world_error)?
+            .ok_or("invalid-stored-data")?;
+        serde_json::from_value(property_data(raw)?).map_err(|_| "invalid-stored-data")
+    })
+}
+
 fn get_message(
     conversation_id: Uuid,
     message_id: Uuid,
@@ -807,16 +1484,23 @@ fn get_message(
     )
 }
 
-fn page_value(metadata: &Value, items: &[Value], next: Option<Value>, recent: bool) -> Value {
+fn page_value(
+    metadata: &Value,
+    items: &[Value],
+    next: Option<Value>,
+    recent: bool,
+    context: &Option<Context>,
+    greeting_available: bool,
+) -> Value {
     if recent {
         json!({
-            "conversation":metadata,
+            "conversation":metadata,"context":context,"greetingAvailable":greeting_available,
             "items":items.iter().rev().collect::<Vec<_>>(),
             "older":next,
             "head":items.first().map(|row| &row["entryId"]),
         })
     } else {
-        json!({"conversation":metadata,"items":items,"next":next})
+        json!({"conversation":metadata,"context":context,"greetingAvailable":greeting_available,"items":items,"next":next})
     }
 }
 
@@ -925,7 +1609,17 @@ fn evaluate_fork(payload: &Value) -> Result<Value, String> {
             return Err("item-exists".into());
         }
     }
-    history::changes(&command, &source, &target, &entries, false).map_err(str::to_owned)
+    let mut tx = history::changes(&command, &source, &target, &entries, false)?;
+    if let Some(context) = snapshot_context(input.source_conversation_id)? {
+        tx["changes"]
+            .as_array_mut()
+            .unwrap()
+            .push(model::context_change(input.conversation_id, &context));
+        if tx.to_string().len() > history::MAX_TRANSACTION_BYTES {
+            return Err("history-too-large".into());
+        }
+    }
+    Ok(tx)
 }
 
 impl exports::rintawa::engine::world_system::Guest for Chat {
@@ -935,6 +1629,76 @@ impl exports::rintawa::engine::world_system::Guest for Chat {
             let envelope: Value = serde_json::from_str(&command).map_err(|_| "invalid-command")?;
             match envelope["schema"].as_str() {
                 Some("rintawa.chat.fork@1") => evaluate_fork(&envelope["payload"]),
+                Some("rintawa.chat.select-persona@1") => {
+                    let input: Select = serde_json::from_value(envelope["payload"].clone())
+                        .map_err(|_| "invalid-command")?;
+                    let conversation = snapshot_conversation(input.conversation_id)?;
+                    model::select_changes(
+                        &input,
+                        &conversation,
+                        snapshot_context(input.conversation_id)?,
+                    )
+                    .map_err(str::to_owned)
+                }
+                Some("rintawa.chat.create-context@1") => {
+                    let input: ContextCreate = serde_json::from_value(envelope["payload"].clone())
+                        .map_err(|_| "invalid-command")?;
+                    if let Some(source) = &input.source {
+                        let conversation = snapshot_conversation(source.conversation_id)?;
+                        if conversation.revision != source.expected_conversation_revision
+                            || conversation.last_entry_id != source.expected_last_entry_id
+                        {
+                            return Err("stale-context".into());
+                        }
+                        let current = snapshot_context(source.conversation_id)?
+                            .ok_or("greeting-unavailable")?;
+                        let old = current.greeting.as_ref().ok_or("greeting-unavailable")?;
+                        let new = input.context.greeting.as_ref().ok_or("invalid-context")?;
+                        if !first_is_greeting(source.conversation_id, old, true)?
+                            || current.persona_id != input.context.persona_id
+                            || current.persona_id != source.persona_id
+                            || old.group_id != new.group_id
+                            || old.card_id != new.card_id
+                            || old.source_digest != new.source_digest
+                            || old.persona_id != new.persona_id
+                            || old.persona_revision != new.persona_revision
+                            || old.persona_name != new.persona_name
+                            || conversation.character_id != input.input.character_id
+                        {
+                            return Err("stale-context".into());
+                        }
+                        if find_family(&new.family(), true)?.is_some() {
+                            return Err("variant-exists".into());
+                        }
+                    } else if let Some(g) = &input.context.greeting {
+                        if g.group_id != input.input.conversation_id
+                            || g.persona_id != input.context.persona_id
+                        {
+                            return Err("invalid-context".into());
+                        }
+                        if find_family(&g.family(), true)?.is_some() {
+                            return Err("variant-exists".into());
+                        }
+                    }
+                    let exists = system_item(input.input.conversation_id)?.is_some();
+                    let character = match input.input.character_id {
+                        None => true,
+                        Some(id) => system_item(id)?.is_some_and(|v| v["kind"] == "object"),
+                    };
+                    let greeting_exists = match &input.input.greeting {
+                        None => false,
+                        Some(g) => {
+                            system_item(g.message_id)?.is_some()
+                                || system_item(g.entry_id)?.is_some()
+                        }
+                    };
+                    let tx =
+                        model::create_context_changes(&input, exists, character, greeting_exists)?;
+                    if tx.to_string().len() > history::MAX_TRANSACTION_BYTES {
+                        return Err("message-too-large".into());
+                    }
+                    Ok(tx)
+                }
                 Some("rintawa.chat.create@1") => {
                     let input: Create = serde_json::from_value(envelope["payload"].clone())
                         .map_err(|_| "invalid-command")?;
