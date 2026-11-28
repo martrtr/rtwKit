@@ -7,7 +7,7 @@ use uuid::Uuid;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Generate {
     pub conversation_id: Uuid,
-    pub user_message_id: Uuid,
+    pub user_message_id: Option<Uuid>,
     pub message_id: Uuid,
     pub entry_id: Uuid,
 }
@@ -80,7 +80,7 @@ pub fn captured_persona(value: Value, expected_id: Uuid) -> Result<Persona, &'st
     }
     Ok(response.persona)
 }
-fn deserialize_revision<'de, D: serde::Deserializer<'de>>(
+pub(crate) fn deserialize_revision<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<String, D::Error> {
     let value = String::deserialize(deserializer)?;
@@ -98,7 +98,7 @@ pub(crate) fn current_user<'a>(
     request: &Generate,
 ) -> Result<&'a Entry, &'static str> {
     let last = recent.items.last().ok_or("stale-context")?;
-    if last.message_id != request.user_message_id
+    if Some(last.message_id) != request.user_message_id
         || last.message.role != "user"
         || recent.conversation.last_entry_id != Some(last.entry_id)
     {
@@ -578,11 +578,21 @@ mod tests {
             },
             Generate {
                 conversation_id: id(1),
-                user_message_id: id(5),
+                user_message_id: Some(id(5)),
                 message_id: id(6),
                 entry_id: id(60),
             },
         )
+    }
+    #[test]
+    fn user_trigger_helpers_never_accept_continuation_as_a_user_message() {
+        let (recent, mut request) = fixture();
+        request.user_message_id = None;
+        assert_eq!(prompt(&recent, &request, None, None), Err("stale-context"));
+        assert_eq!(
+            append_request(&recent, &request, "reply"),
+            Err("stale-context")
+        );
     }
     #[test]
     fn interrupted_reply_keeps_authoritative_text_and_original_write_expectations() {

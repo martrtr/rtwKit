@@ -607,6 +607,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rintawa-scenes"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "rintawa-domain-operations",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "rintawa-web-runtime"
 version = "0.1.0"
 dependencies = [

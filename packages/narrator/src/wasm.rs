@@ -37,6 +37,7 @@ struct Source {
     bytes: Vec<u8>,
 }
 struct Work {
+    basis: Option<groups::Basis>,
     group_requested: bool,
     group: Option<groups::Exchange>,
     request: Generate,
@@ -121,6 +122,14 @@ enum Call {
         user_message_id: Uuid,
         message_id: Uuid,
         entry_id: Uuid,
+    },
+    BeginGroupContinue {
+        conversation_id: Uuid,
+        message_id: Uuid,
+        entry_id: Uuid,
+        #[serde(deserialize_with = "model::deserialize_revision")]
+        expected_conversation_revision: String,
+        expected_last_entry_id: Option<Uuid>,
     },
     Status {
         operation: String,
@@ -346,7 +355,16 @@ impl State {
             return Err("message-too-large");
         }
         let value: Value = serde_json::from_slice(bytes).map_err(|_| "invalid-request")?;
-        for key in ["conversationId", "userMessageId", "messageId", "entryId"] {
+        if value["method"] == "begin-group-continue" && value.get("expectedLastEntryId").is_none() {
+            return Err("invalid-request");
+        }
+        for key in [
+            "conversationId",
+            "userMessageId",
+            "messageId",
+            "entryId",
+            "expectedLastEntryId",
+        ] {
             if let Some(Value::String(id)) = value.get(key)
                 && !Uuid::parse_str(id).is_ok_and(|p| p.to_string() == *id)
             {
@@ -424,77 +442,121 @@ impl State {
                 message_id,
                 entry_id,
             } => {
-                let group_requested = value["method"] == "begin-group-generate";
                 if !chat_ui(p) {
                     return Err("access-denied");
                 }
-                if selected("rintawa.inference.text").is_none() {
-                    return Err("provider-unavailable");
+                self.begin_generation(
+                    who,
+                    Generate {
+                        conversation_id,
+                        user_message_id: Some(user_message_id),
+                        message_id,
+                        entry_id,
+                    },
+                    value["method"] == "begin-group-generate",
+                    None,
+                )
+            }
+            Call::BeginGroupContinue {
+                conversation_id,
+                message_id,
+                entry_id,
+                expected_conversation_revision,
+                expected_last_entry_id,
+            } => {
+                if !chat_ui(p) {
+                    return Err("access-denied");
                 }
-                if self.operations.pending_ids().iter().any(|id| {
-                    self.operations
-                        .work_mut(id)
-                        .is_some_and(|w| w.request.conversation_id == conversation_id)
-                }) {
-                    return Err("generation-busy");
-                }
-                if [conversation_id, user_message_id, message_id, entry_id]
-                    .iter()
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .len()
-                    != 4
-                {
-                    return Err("invalid-request");
-                }
-                let token =
-                    URL_SAFE_NO_PAD.encode(host::random_bytes(32).map_err(|_| "unavailable")?);
-                let request = Generate {
-                    conversation_id,
-                    user_message_id,
-                    message_id,
-                    entry_id,
-                };
-                let item_ids = if group_requested {
-                    vec![conversation_id.to_string()]
-                } else {
-                    vec![message_id.to_string(), entry_id.to_string()]
-                };
-                let deadline = host::monotonic_millis()
-                    .map_err(|_| "unavailable")?
-                    .checked_add(120_000)
-                    .ok_or("unavailable")?;
-                self.operations
-                    .admit(
-                        token.clone(),
-                        who,
-                        Work {
-                            group_requested,
-                            group: None,
-                            request,
-                            step: Step::Recent,
-                            query: None,
-                            recent: None,
-                            persona: None,
-                            memory_owner: None,
-                            memory_token: None,
-                            memory_context: None,
-                            lore_owner: None,
-                            lore_context: None,
-                            source: None,
-                            prompt: None,
-                            provider: None,
-                            append: None,
-                            text: None,
-                            terminal: None,
-                            cleanup: false,
-                            stopped: false,
-                            deadline,
-                        },
-                    )
-                    .map_err(|_| "limit-exceeded")?;
-                Ok(json!({"status":"pending","operation":token,"itemIds":item_ids}))
+                self.begin_generation(
+                    who,
+                    Generate {
+                        conversation_id,
+                        user_message_id: None,
+                        message_id,
+                        entry_id,
+                    },
+                    true,
+                    Some(groups::Basis {
+                        expected_conversation_revision,
+                        expected_last_entry_id,
+                    }),
+                )
             }
         }
+    }
+}
+impl State {
+    fn begin_generation(
+        &mut self,
+        who: Caller,
+        request: Generate,
+        group_requested: bool,
+        basis: Option<groups::Basis>,
+    ) -> Result<Value, &'static str> {
+        let Generate {
+            conversation_id,
+            user_message_id,
+            message_id,
+            entry_id,
+        } = request.clone();
+        if selected("rintawa.inference.text").is_none() {
+            return Err("provider-unavailable");
+        }
+        if self.operations.pending_ids().iter().any(|id| {
+            self.operations
+                .work_mut(id)
+                .is_some_and(|w| w.request.conversation_id == conversation_id)
+        }) {
+            return Err("generation-busy");
+        }
+        let mut ids = vec![conversation_id, message_id, entry_id];
+        if let Some(user) = user_message_id {
+            ids.push(user);
+        }
+        if ids.iter().collect::<std::collections::BTreeSet<_>>().len() != ids.len() {
+            return Err("invalid-request");
+        }
+        let token = URL_SAFE_NO_PAD.encode(host::random_bytes(32).map_err(|_| "unavailable")?);
+        let item_ids = if group_requested {
+            vec![conversation_id.to_string()]
+        } else {
+            vec![message_id.to_string(), entry_id.to_string()]
+        };
+        let deadline = host::monotonic_millis()
+            .map_err(|_| "unavailable")?
+            .checked_add(120_000)
+            .ok_or("unavailable")?;
+        self.operations
+            .admit(
+                token.clone(),
+                who,
+                Work {
+                    basis,
+                    group_requested,
+                    group: None,
+                    request,
+                    step: Step::Recent,
+                    query: None,
+                    recent: None,
+                    persona: None,
+                    memory_owner: None,
+                    memory_token: None,
+                    memory_context: None,
+                    lore_owner: None,
+                    lore_context: None,
+                    source: None,
+                    prompt: None,
+                    provider: None,
+                    append: None,
+                    text: None,
+                    terminal: None,
+                    cleanup: false,
+                    stopped: false,
+                    deadline,
+                },
+            )
+            .map_err(|_| "limit-exceeded")?;
+        Ok(json!({"status":"pending","operation":token,"itemIds":item_ids}))
     }
 }
 fn after_lore(w: &mut Work) -> Result<(), &'static str> {
@@ -948,7 +1010,11 @@ fn advance(w: &mut Work, source_allowed: bool) -> Option<Outcome> {
                         return Some(failed("stale-context"));
                     }
                 } else {
-                    if let Err(reason) = model::current_user(&recent, &w.request) {
+                    if let Err(reason) = if let Some(basis) = &w.basis {
+                        basis.check(&recent)
+                    } else {
+                        model::current_user(&recent, &w.request).map(|_| ())
+                    } {
                         return Some(failed(reason));
                     }
                     w.group = Some(groups::Exchange::default());

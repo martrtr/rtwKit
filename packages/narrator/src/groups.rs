@@ -17,6 +17,23 @@ pub struct Participant {
 pub struct Participants {
     pub items: Vec<Participant>,
 }
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Basis {
+    #[serde(deserialize_with = "model::deserialize_revision")]
+    pub expected_conversation_revision: String,
+    pub expected_last_entry_id: Option<Uuid>,
+}
+impl Basis {
+    pub fn check(&self, recent: &Recent) -> Result<(), &'static str> {
+        if recent.conversation.revision != self.expected_conversation_revision
+            || recent.conversation.last_entry_id != self.expected_last_entry_id
+        {
+            return Err("stale-context");
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Attribution {
@@ -261,5 +278,25 @@ mod tests {
         );
         r.items[0].message.text = "x".repeat(24 * 1024);
         assert_eq!(prompt(&r, true, None, None, None), Err("prompt-too-large"));
+    }
+    #[test]
+    fn continuation_requires_the_exact_captured_head_and_revision() {
+        let r = recent();
+        let mut basis = Basis {
+            expected_conversation_revision: "1".into(),
+            expected_last_entry_id: None,
+        };
+        assert!(basis.check(&r).is_ok());
+        basis.expected_last_entry_id = Some(Uuid::from_u128(9));
+        assert_eq!(basis.check(&r), Err("stale-context"));
+        basis.expected_last_entry_id = None;
+        basis.expected_conversation_revision = "0".into();
+        assert_eq!(basis.check(&r), Err("stale-context"));
+        assert!(
+            serde_json::from_value::<Basis>(
+                json!({"expectedConversationRevision":"01","expectedLastEntryId":null})
+            )
+            .is_err()
+        );
     }
 }

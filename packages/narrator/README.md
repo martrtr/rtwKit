@@ -15,8 +15,16 @@ Group pending status omits text so the single-text client callback cannot expose
 director JSON or confuse several speakers. Saved beats appear independently.
 Stop never publishes director fragments; writer prefix retention uses the same
 provider/append lifecycle as the legacy path. Group Psychology, scene presence,
-private perception and assistant-head Continue remain separate slices. Current
+private perception and per-beat regeneration remain separate slices. Current
 group history is explicitly shared, not an actor-confidential observation source.
+
+`begin-group-continue` takes conversation/message/entry IDs and an explicit
+`expectedConversationRevision`/`expectedLastEntryId` (including null for an empty
+chat). It starts the same bounded exchange without inserting a player message.
+Only the selected Chat UI can invoke it. A changed revision or head fails before
+inference; the operation never rebases itself onto a newer conversation. Chat's
+Continue button preserves any unsent composer draft. Existing user-triggered
+endpoints retain their required real user-message ID.
 
 World-scoped story MVP component. See ../../docs/specs/p10-narrator-ai.md.
 

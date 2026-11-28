@@ -15,7 +15,7 @@ bash scripts/scan-secrets.sh
 
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-cargo clippy --locked --target wasm32-unknown-unknown -p rintawa-web-runtime -p rintawa-chat -p rintawa-character -p rintawa-narrator -p rintawa-inference-provider -p rintawa-package-manager-extension -p rintawa-world-atlas -p rintawa-memory -- -D warnings
+cargo clippy --locked --target wasm32-unknown-unknown -p rintawa-web-runtime -p rintawa-chat -p rintawa-character -p rintawa-narrator -p rintawa-inference-provider -p rintawa-package-manager-extension -p rintawa-world-atlas -p rintawa-memory -p rintawa-scenes -- -D warnings
 cargo test --locked --workspace --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps
 cargo run --quiet --locked -p rtwkit-registry-tool -- validate-repository .
@@ -38,3 +38,4 @@ bash packages/package-manager/build.sh
 
 bash packages/world-atlas/build.sh
 bash packages/memory/build.sh
+bash packages/scenes/build.sh

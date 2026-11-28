@@ -184,6 +184,7 @@ struct Work {
 #[derive(Default)]
 struct State {
     task: Option<u64>,
+    catalog_declaration: Option<u64>,
     declaration: Option<u64>,
     operations: Operations<Work>,
     queue: VecDeque<String>,
@@ -328,6 +329,19 @@ impl exports::rintawa::engine::task_handler::Guest for Character {
             state.poll_operations();
             state.advance_import();
             state.advance_reads();
+            if state.catalog_declaration.is_none() {
+                state.catalog_declaration =
+                    transport::declare_polled("rintawa/scenes/catalogs/v1").ok();
+            }
+            if let Some(d) = state.catalog_declaration {
+                for _ in 0..2 {
+                    let Ok(Some(q)) = transport::next_query(d) else {
+                        break;
+                    };
+                    let r = scene_catalog(&context.principal, &q.payload).map(response);
+                    let _ = transport::reply_query(q.handle, r.as_deref());
+                }
+            }
             let declaration = match state.declaration {
                 Some(handle) => handle,
                 None => match transport::declare_polled(POINT) {
@@ -1506,3 +1520,139 @@ impl IndexRead {
 }
 
 export!(Character);
+
+const CATALOG_ID: &str = "characters";
+const CATALOG_TITLE: &str = "Characters";
+const CATALOG_ORDER: i32 = 10;
+const CATALOG_KEY: &str = CARD;
+const CATALOG_LABEL: &str = "name";
+const CATALOG_DETAIL: &str = "";
+// Read-only integration: no dependency on Scenes or its storage.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CatalogRecipient {
+    instance_id: String,
+    component_id: String,
+    activation: String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "method",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum CatalogCall {
+    Describe {},
+    Search {
+        catalog_id: String,
+        query: String,
+        after: Option<Uuid>,
+        provider: CatalogRecipient,
+    },
+    DescribeItems {
+        item_ids: Vec<Uuid>,
+    },
+}
+fn scene_catalog(
+    owner: &runtime_context::Principal,
+    bytes: &[u8],
+) -> Option<std::result::Result<Value, &'static str>> {
+    let result: std::result::Result<Option<Value>, &'static str> = (|| {
+        if bytes.len() > 65536 {
+            return Err("message-too-large");
+        }
+        let call: CatalogCall = serde_json::from_slice(bytes).map_err(|_| "invalid-request")?;
+        if serde_json::to_value(&call).map_err(|_| "invalid-request")?
+            != serde_json::from_slice::<Value>(bytes).map_err(|_| "invalid-request")?
+        {
+            return Err("invalid-request");
+        }
+        let row = |id: Value, data: Value| -> Value {
+            let short = |s: &str, n: usize| {
+                s.char_indices()
+                    .take_while(|(i, c)| i + c.len_utf8() <= n)
+                    .map(|(_, c)| c)
+                    .collect::<String>()
+            };
+            json!({"itemId":id,"label":short(data[CATALOG_LABEL].as_str().unwrap_or("Unnamed"),256),"detail":short(data[CATALOG_DETAIL].as_str().unwrap_or(""),512)})
+        };
+        match call {
+            CatalogCall::Describe {} => Ok(Some(
+                json!({"catalogs":[{"id":CATALOG_ID,"label":CATALOG_TITLE,"order":CATALOG_ORDER}]}),
+            )),
+            CatalogCall::Search {
+                catalog_id,
+                query,
+                after,
+                provider,
+            } => {
+                if provider.instance_id != owner.instance_id
+                    || provider.component_id != owner.component_id
+                    || provider.activation != owner.activation.to_string()
+                {
+                    return Ok(None);
+                }
+                if catalog_id != CATALOG_ID || query.len() > 256 {
+                    return Err("invalid-request");
+                }
+                let rows = world_data::find_properties(
+                    CATALOG_KEY,
+                    after.map(|id| id.to_string()).as_deref(),
+                    8,
+                )
+                .map_err(|_| "unavailable")?;
+                let count = rows.len();
+                let mut items = vec![];
+                let mut next = Value::Null;
+                let query = query.to_lowercase();
+                for raw in rows {
+                    let r: Value = serde_json::from_str(&raw).map_err(|_| "invalid-stored-data")?;
+                    next = r["item"].clone();
+                    let dto = row(r["item"].clone(), r["data"].clone());
+                    if dto["label"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&query)
+                    {
+                        items.push(dto);
+                    }
+                }
+                if count < 8 {
+                    next = Value::Null;
+                }
+                Ok(Some(json!({"items":items,"next":next})))
+            }
+            CatalogCall::DescribeItems { item_ids } => {
+                if item_ids.len() > 32
+                    || item_ids
+                        .iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        != item_ids.len()
+                {
+                    return Err("invalid-request");
+                }
+                let mut items = vec![];
+                for id in item_ids {
+                    if let Some(raw) = world_data::load_property(&id.to_string(), CATALOG_KEY)
+                        .map_err(|_| "unavailable")?
+                    {
+                        let v: Value =
+                            serde_json::from_str(&raw).map_err(|_| "invalid-stored-data")?;
+                        let mut dto = row(json!(id), v["data"].clone());
+                        dto["detail"] = json!("");
+                        items.push(dto);
+                    }
+                }
+                Ok(Some(json!({"items":items})))
+            }
+        }
+    })();
+    match result {
+        Ok(None) => None,
+        Ok(Some(v)) => Some(Ok(v)),
+        Err(e) => Some(Err(e)),
+    }
+}

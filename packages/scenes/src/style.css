@@ -1,0 +1,99 @@
+.scenes {
+  height: 100dvh;
+  display: grid;
+  grid-template-columns: minmax(180px, 26%) minmax(0, 1fr);
+  color: var(--rtw-text);
+  background: var(--rtw-background);
+  overflow: hidden;
+}
+.scene-member { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .7rem 0; border-bottom: 1px solid var(--rtw-border); }
+.scene-member span { min-width: 0; overflow-wrap: anywhere; }
+.scene-member small { display: block; color: var(--rtw-muted); margin-top: .3rem; }
+.scenes details { margin-top: 1rem; }
+.scenes > aside,
+.scenes > section {
+  overflow: auto;
+  padding: 1.2rem;
+}
+.scenes > aside {
+  border-right: 1px solid var(--rtw-border);
+  background: var(--rtw-surface);
+}
+.scenes h1,
+.scenes h2 {
+  margin-top: 0;
+}
+.scenes h3 {
+  margin-bottom: 0.4rem;
+}
+.scenes p {
+  color: var(--rtw-muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.scenes nav {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+.scenes nav button {
+  text-align: left;
+}
+.scenes nav small {
+  display: block;
+  color: var(--rtw-muted);
+}
+.scenes [aria-current="page"] {
+  border-color: var(--rtw-accent);
+}
+.scenes label {
+  display: grid;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+}
+.scenes textarea {
+  min-height: 100px;
+  resize: vertical;
+}
+.scenes textarea,
+.scenes select {
+  box-sizing: border-box;
+  max-width: 100%;
+  background: var(--rtw-surface);
+  color: var(--rtw-text);
+  border: 1px solid var(--rtw-border);
+  border-radius: 0.4rem;
+  padding: 0.6rem;
+  font: inherit;
+}
+.scenes ul {
+  padding: 0;
+  list-style: none;
+}
+.scenes li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+}
+.scene-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.8rem 0;
+}
+.scene-dialogue {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 2rem;
+  border-top: 1px solid var(--rtw-border);
+}
+@media (max-width: 600px) {
+  .scenes {
+    grid-template-columns: minmax(120px, 32%) minmax(0, 1fr);
+  }
+  .scenes > aside,
+  .scenes > section {
+    padding: 0.7rem;
+  }
+}

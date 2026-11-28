@@ -38,6 +38,8 @@
     "packages/world-atlas/**/*.ts",
     "packages/world-atlas/**/*.tsx",
     "packages/memory/**/*.ts",
-    "packages/memory/**/*.tsx"
+    "packages/memory/**/*.tsx",
+    "packages/scenes/**/*.ts",
+    "packages/scenes/**/*.tsx"
   ]
 }
